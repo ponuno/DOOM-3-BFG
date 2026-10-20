@@ -58,6 +58,14 @@ ID_INLINE void		Mem_Free( void *ptr ) { Mem_Free16( ptr ); }
 void *		Mem_ClearedAlloc( const int size, const memTag_t tag );
 char *		Mem_CopyString( const char *in );
 
+#if defined( ID_3DS )
+// Replacement global operators may not be inline in standard C++ (GCC/clang);
+// they are defined in Heap.cpp.
+void *	operator new( size_t s );
+void	operator delete( void *p ) noexcept;
+void *	operator new[]( size_t s );
+void	operator delete[]( void *p ) noexcept;
+#else
 ID_INLINE void *operator new( size_t s ) {
 	return Mem_Alloc( s, TAG_NEW );
 }
@@ -70,6 +78,7 @@ ID_INLINE void *operator new[]( size_t s ) {
 ID_INLINE void operator delete[]( void *p ) {
 	Mem_Free( p );
 }
+#endif
 ID_INLINE void *operator new( size_t s, memTag_t tag ) {
 	return Mem_Alloc( s, tag );
 }

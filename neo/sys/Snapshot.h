@@ -28,7 +28,7 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __SNAPSHOT_H__
 #define __SNAPSHOT_H__
 
-#include "snapshot_jobs.h"
+#include "Snapshot_Jobs.h"
 
 extern idCVar net_verboseSnapshot;
 #define NET_VERBOSESNAPSHOT_PRINT	if ( net_verboseSnapshot.GetInteger() > 0 ) idLib::Printf

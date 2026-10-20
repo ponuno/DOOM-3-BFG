@@ -37,6 +37,21 @@ If you have questions concerning this license or the applicable additional terms
 
 #undef new
 
+#if defined( ID_3DS )
+void * operator new( size_t s ) {
+	return Mem_Alloc( s, TAG_NEW );
+}
+void operator delete( void *p ) noexcept {
+	Mem_Free( p );
+}
+void * operator new[]( size_t s ) {
+	return Mem_Alloc( s, TAG_NEW );
+}
+void operator delete[]( void *p ) noexcept {
+	Mem_Free( p );
+}
+#endif
+
 /*
 ==================
 Mem_Alloc16

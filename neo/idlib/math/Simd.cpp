@@ -128,6 +128,16 @@ long baseClocks = 0;
 
 #define TIME_TYPE int
 
+#if defined( ID_3DS )
+
+#include <3ds/svc.h>
+
+// ARM11 system tick (268 MHz)
+#define StartRecordTime( start )			start = (int)svcGetSystemTick();
+#define StopRecordTime( end )				end = (int)svcGetSystemTick();
+
+#else
+
 #pragma warning(disable : 4731)     // frame pointer register 'ebx' modified by inline assembly code
 
 long saved_ebx = 0;
@@ -150,6 +160,8 @@ long saved_ebx = 0;
 	__asm xor eax, eax						\
 	__asm cpuid
 
+
+#endif // ID_3DS
 
 #define GetBest( start, end, best )			\
 	if ( !best || end - start < best ) {	\
@@ -1215,7 +1227,9 @@ idSIMD::Test_f
 */
 void idSIMD::Test_f( const idCmdArgs &args ) {
 
+#if !defined( ID_3DS )
 	SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL );
+#endif
 
 	p_simd = processor;
 	p_generic = generic;
@@ -1268,5 +1282,7 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 	p_simd = NULL;
 	p_generic = NULL;
 
+#if !defined( ID_3DS )
 	SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_NORMAL );
+#endif
 }

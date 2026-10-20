@@ -32,6 +32,13 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __QGL_H__
 #define __QGL_H__
 
+#if defined( ID_3DS )
+
+// No OpenGL on New 3DS: only GL scalar types/enums are needed by engine headers.
+#include "../Citro3D/gl_types_3ds.h"
+
+#else
+
 
 #include <gl/gl.h>
 
@@ -545,5 +552,7 @@ extern BOOL ( WINAPI * qwglSwapLayerBuffers)(HDC, UINT);
 
 
 #endif	// hardlinlk vs dlopen
+
+#endif // ID_3DS
 
 #endif
