@@ -14,8 +14,9 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 set(SDK_ROOT "$ENV{HOME}/sdk" CACHE PATH "Compile-check SDK root")
 execute_process(COMMAND clang -print-resource-dir OUTPUT_VARIABLE CLANG_RES OUTPUT_STRIP_TRAILING_WHITESPACE)
 
-set(_3DS_FLAGS "--target=arm-none-eabihf -mcpu=mpcore -mfloat-abi=hard -mfpu=vfp -mtp=soft -ffunction-sections -ffreestanding -nostdinc -D__3DS__ -D_3DS -D__DEVKITARM__")
+set(_3DS_FLAGS "--target=arm-none-eabihf -mcpu=mpcore -mfloat-abi=hard -mfpu=vfp -mtp=soft -ffunction-sections -ffreestanding -nostdinc -D__3DS__ -D_3DS -D__DEVKITARM__ -ferror-limit=0")
 set(_3DS_INC "-isystem ${SDK_ROOT}/sysroot/include -isystem ${CLANG_RES}/include -I${SDK_ROOT}/libctru/libctru/include -I${SDK_ROOT}/citro3d/include")
 
 set(CMAKE_C_FLAGS_INIT "${_3DS_FLAGS} ${_3DS_INC}")
 set(CMAKE_CXX_FLAGS_INIT "${_3DS_FLAGS} -nostdinc++ -isystem ${SDK_ROOT}/sysroot/c++ ${_3DS_INC}")
+set(DOOM3DS_COMPILE_CHECK TRUE)

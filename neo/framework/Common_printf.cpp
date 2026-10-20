@@ -397,7 +397,9 @@ void idCommonLocal::DumpWarnings() {
 #ifndef ID_DEBUG
 		idStr	osPath;
 		osPath = fileSystem->RelativePathToOSPath( "warnings.txt", "fs_savepath" );
+#if !defined( ID_3DS )
 		WinExec( va( "Notepad.exe %s", osPath.c_str() ), SW_SHOW );
+#endif
 #endif
 	}
 }

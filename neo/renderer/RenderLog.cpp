@@ -345,7 +345,8 @@ void idRenderLog::OpenBlock( const char *label ) {
 	PC_BeginNamedEvent( label );
 
 	if ( logFile != NULL ) {
-		LogOpenBlock( RENDER_LOG_INDENT_MAIN_BLOCK, label, NULL );
+		// va_list cannot be NULL on all ABIs (it is a struct on ARM)
+		LogOpenBlockF( RENDER_LOG_INDENT_MAIN_BLOCK, "%s", label );
 	}
 }
 
@@ -382,6 +383,18 @@ void idRenderLog::Printf( const char *fmt, ... ) {
 	logFile->VPrintf( fmt, marker );
 	va_end( marker );
 //	logFile->Flush();		this makes it take waaaay too long
+}
+
+/*
+========================
+idRenderLog::LogOpenBlockF
+========================
+*/
+void idRenderLog::LogOpenBlockF( renderLogIndentLabel_t label, const char * fmt, ... ) {
+	va_list args;
+	va_start( args, fmt );
+	LogOpenBlock( label, fmt, args );
+	va_end( args );
 }
 
 /*

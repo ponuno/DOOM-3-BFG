@@ -102,7 +102,7 @@ If you have questions concerning this license or the applicable additional terms
 #define	BUILD_STRING					"n3ds-" CPUSTRING
 #define BUILD_OS_ID						2
 
-#define ALIGN16( x )					x __attribute__((aligned(16)))
+#define ALIGN16( x )					__attribute__((aligned(16))) x
 #define ALIGNTYPE16						__attribute__((aligned(16)))
 #define ALIGNTYPE128					__attribute__((aligned(128)))
 #define FORMAT_PRINTF( x )				__attribute__((format(printf, x, x + 1)))
@@ -123,6 +123,9 @@ If you have questions concerning this license or the applicable additional terms
 #define _aligned_malloc( size, a )		memalign( a, size )
 #define _aligned_free( ptr )			free( ptr )
 
+#define CALLBACK
+#define OutputDebugString( x )			Sys_DebugPrintf( "%s", ( x ) )
+#define _atoi64( x )					strtoll( x, NULL, 10 )
 #define __debugbreak()					__builtin_trap()
 #define __assume( x )					do { if ( !( x ) ) __builtin_unreachable(); } while ( 0 )
 

@@ -46,6 +46,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #if defined( ID_3DS )
 #include <stdint.h>
+#include <alloca.h>
+#ifndef _alloca
+#define _alloca alloca
+#endif
 #else
 #include <basetsd.h>				// for UINT_PTR
 #include <intrin.h>

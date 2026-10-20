@@ -32,7 +32,9 @@ If you have questions concerning this license or the applicable additional terms
 #include "tr_local.h"
 
 // Vista OpenGL wrapper check
+#if !defined( ID_3DS )
 #include "../sys/win32/win_local.h"
+#endif
 
 // DeviceContext bypasses RenderSystem to work directly with this
 idGuiModel * tr_guiModel;
@@ -840,6 +842,7 @@ void R_InitOpenGL() {
 	// Reset our gamma
 	R_SetColorMappings();
 
+#if !defined( ID_3DS )
 	static bool glCheck = false;
 	if ( !glCheck && win32.osversion.dwMajorVersion == 6 ) {
 		glCheck = true;
@@ -859,6 +862,7 @@ void R_InitOpenGL() {
 			}
 		}
 	}
+#endif // !ID_3DS
 }
 
 /*
@@ -1652,6 +1656,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 
 	common->Printf( "-------\n" );
 
+#if !defined( ID_3DS )
 	// WGL_EXT_swap_interval
 	typedef BOOL (WINAPI * PFNWGLSWAPINTERVALEXTPROC) (int interval);
 	extern	PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
@@ -1661,6 +1666,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 	} else {
 		common->Printf( "swapInterval not forced\n" );
 	}
+#endif
 
 	if ( glConfig.stereoPixelFormatAvailable && glConfig.isStereoPixelFormat ) {
 		idLib::Printf( "OpenGl quad buffer stereo pixel format active\n" );

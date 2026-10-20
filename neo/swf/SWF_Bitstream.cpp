@@ -48,7 +48,7 @@ int signForNumBits[33] = {	NBS( 0x01 ), NBS( 0x01 ), NBS( 0x02 ), NBS( 0x03 ),
 							NBS( 0x18 ), NBS( 0x19 ), NBS( 0x1A ), NBS( 0x1B ),
 							NBS( 0x1C ), NBS( 0x1D ), NBS( 0x1E ), NBS( 0x1F ), NBS( 0x20 ) };
 
-#define ID_FORCEINLINE __forceinline
+#define ID_FORCEINLINE ID_FORCE_INLINE
 
 /*
 ========================

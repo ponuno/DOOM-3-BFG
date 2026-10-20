@@ -108,7 +108,7 @@ struct idNullPtr {
 //#endif
 
 // C99 Standard
-#ifndef nullptr
+#if !defined( nullptr ) && !defined( ID_3DS )	// C++11 compilers have the keyword
 		#define nullptr	idNullPtr()		
 #endif
 

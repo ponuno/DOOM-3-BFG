@@ -28,7 +28,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "DoomLeaderboards.h"
 #include "tech5/engine/framework/precompiled.h"
-#include "tech5\engine\sys\sys_stats.h"
+#include "tech5/engine/sys/sys_stats.h"
 #include "../doomengine/source/doomdef.h"
 
 #include <map>

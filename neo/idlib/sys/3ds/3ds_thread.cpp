@@ -19,10 +19,13 @@ the Free Software Foundation, either version 3 of the License, or
 #include "../../precompiled.h"
 
 // only the parts of libctru we need: the full <3ds.h> clashes with engine names
+// libctru headers are C; only <3ds.h> adds extern "C" itself
+extern "C" {
 #include <3ds/types.h>
 #include <3ds/svc.h>
 #include <3ds/synchronization.h>
 #include <3ds/thread.h>
+}
 
 static_assert( sizeof( mutexHandle_t ) == sizeof( RecursiveLock ), "mutexHandle_t must mirror RecursiveLock" );
 static_assert( sizeof( signalHandle_t ) == sizeof( LightEvent ), "signalHandle_t must mirror LightEvent" );

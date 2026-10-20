@@ -1164,7 +1164,11 @@ idFile_Permanent::~idFile_Permanent
 */
 idFile_Permanent::~idFile_Permanent() {
 	if ( o ) {
+#if defined( ID_3DS )
+		fclose( o );
+#else
 		CloseHandle( o );
+#endif
 	}
 }
 
@@ -1196,11 +1200,19 @@ int idFile_Permanent::Read( void *buffer, int len ) {
 	tries = 0;
 	while( remaining ) {
 		block = remaining;
+#if defined( ID_3DS )
+		read = (int)fread( buf, 1, block, o );
+		if ( read < block && ferror( o ) ) {
+			idLib::Warning( "idFile_Permanent::Read failed with %d from %s", errno, name.c_str() );
+			clearerr( o );
+		}
+#else
 		DWORD bytesRead;
 		if ( !ReadFile( o, buf, block, &bytesRead, NULL ) ) {
 			idLib::Warning( "idFile_Permanent::Read failed with %d from %s", GetLastError(), name.c_str() );
 		}
 		read = bytesRead;
+#endif
 		if ( read == 0 ) {
 			// we might have been trying to read from a CD, which
 			// sometimes returns a 0 read on windows
@@ -1250,9 +1262,13 @@ int idFile_Permanent::Write( const void *buffer, int len ) {
 	tries = 0;
 	while( remaining ) {
 		block = remaining;
+#if defined( ID_3DS )
+		written = (int)fwrite( buf, 1, block, o );
+#else
 		DWORD bytesWritten;
 		WriteFile( o, buf, block, &bytesWritten, NULL );
 		written = bytesWritten;
+#endif
 		if ( written == 0 ) {
 			if ( !tries ) {
 				tries = 1;
@@ -1284,7 +1300,11 @@ idFile_Permanent::ForceFlush
 =================
 */
 void idFile_Permanent::ForceFlush() {
+#if defined( ID_3DS )
+	fflush( o );
+#else
 	FlushFileBuffers( o );
+#endif
 }
 
 /*
@@ -1293,7 +1313,11 @@ idFile_Permanent::Flush
 =================
 */
 void idFile_Permanent::Flush() {
+#if defined( ID_3DS )
+	fflush( o );
+#else
 	FlushFileBuffers( o );
+#endif
 }
 
 /*
@@ -1302,7 +1326,11 @@ idFile_Permanent::Tell
 =================
 */
 int idFile_Permanent::Tell() const {
+#if defined( ID_3DS )
+	return (int)ftell( o );
+#else
 	return SetFilePointer( o, 0, NULL, FILE_CURRENT );
+#endif
 }
 
 /*
@@ -1332,6 +1360,15 @@ idFile_Permanent::Seek
 =================
 */
 int idFile_Permanent::Seek( long offset, fsOrigin_t origin ) {
+#if defined( ID_3DS )
+	int whence = SEEK_SET;
+	switch( origin ) {
+		case FS_SEEK_CUR: whence = SEEK_CUR; break;
+		case FS_SEEK_END: whence = SEEK_END; break;
+		case FS_SEEK_SET: whence = SEEK_SET; break;
+	}
+	return ( fseek( o, offset, whence ) == 0 ) ? 0 : -1;
+#else
 	int retVal = INVALID_SET_FILE_POINTER;
 	switch( origin ) {
 		case FS_SEEK_CUR: retVal = SetFilePointer( o, offset, NULL, FILE_CURRENT ); break;
@@ -1339,6 +1376,7 @@ int idFile_Permanent::Seek( long offset, fsOrigin_t origin ) {
 		case FS_SEEK_SET: retVal = SetFilePointer( o, offset, NULL, FILE_BEGIN ); break;
 	}
 	return ( retVal == INVALID_SET_FILE_POINTER ) ? -1 : 0;
+#endif
 }
 
 #if 1

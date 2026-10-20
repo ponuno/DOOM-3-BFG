@@ -416,6 +416,21 @@ idFileSystemLocal::OpenOSFile
 idFileHandle idFileSystemLocal::OpenOSFile( const char *fileName, fsMode_t mode ) {
 	idFileHandle fp;
 
+#if defined( ID_3DS )
+	const char * fmode = "rb";
+	if ( mode == FS_WRITE ) {
+		fmode = "wb";
+	} else if ( mode == FS_APPEND ) {
+		fmode = "ab";
+	}
+	fp = fopen( fileName, fmode );
+	if ( fp != NULL ) {
+		// newlib's default stdio buffer is tiny and very slow on the SD card
+		setvbuf( fp, NULL, _IOFBF, 64 * 1024 );
+	}
+	return fp;
+#else
+
 
 	DWORD dwAccess = 0;
 	DWORD dwShare = 0;
@@ -444,6 +459,7 @@ idFileHandle idFileSystemLocal::OpenOSFile( const char *fileName, fsMode_t mode 
 		return NULL;
 				}
 	return fp;
+#endif
 }
 
 /*
@@ -452,7 +468,11 @@ idFileSystemLocal::CloseOSFile
 ================
 */
 void idFileSystemLocal::CloseOSFile( idFileHandle o ) {
+#if defined( ID_3DS )
+	fclose( o );
+#else
 	::CloseHandle( o );
+#endif
 }
 
 /*
@@ -461,7 +481,15 @@ idFileSystemLocal::DirectFileLength
 ================
 */
 int idFileSystemLocal::DirectFileLength( idFileHandle o ) {
+#if defined( ID_3DS )
+	long pos = ftell( o );
+	fseek( o, 0, SEEK_END );
+	long len = ftell( o );
+	fseek( o, pos, SEEK_SET );
+	return (int)len;
+#else
 	return GetFileSize( o, NULL );
+#endif
 }
 
 /*
@@ -1550,11 +1578,19 @@ void idFileSystemLocal::RemoveFile( const char *relativePath ) {
 
 	if ( fs_basepath.GetString()[0] ) {
 		OSPath = BuildOSPath( fs_basepath.GetString(), gameFolder, relativePath );
+#if defined( ID_3DS )
+		remove( OSPath.c_str() );
+#else
 		::DeleteFile( OSPath );
+#endif
 	}
 
 	OSPath = BuildOSPath( fs_savepath.GetString(), gameFolder, relativePath );
+#if defined( ID_3DS )
+	remove( OSPath.c_str() );
+#else
 	::DeleteFile( OSPath );
+#endif
 }
 
 /*
@@ -1757,10 +1793,18 @@ bool idFileSystemLocal::RenameFile( const char * relativePath, const char * newN
 	// this gives atomic-delete-on-rename, like POSIX rename()
 	// There is a MoveFileTransacted() on vista and above, not sure if that means there
 	// is a race condition inside MoveFileEx...
+#if defined( ID_3DS )
+	// FAT rename() does not replace an existing target
+	remove( newOSPath.c_str() );
+	const bool success = ( rename( oldOSPath.c_str(), newOSPath.c_str() ) == 0 );
+	const int err = errno;
+	if ( !success ) {
+#else
 	const bool success = ( MoveFileEx( oldOSPath.c_str(), newOSPath.c_str(), MOVEFILE_REPLACE_EXISTING ) != 0 );
 
 	if ( !success ) {
 		const int err = GetLastError();
+#endif
 		idLib::Warning( "RenameFile( %s, %s ) error %i", newOSPath.c_str(), oldOSPath.c_str(), err );
 	}
 	return success;
@@ -2338,7 +2382,7 @@ void idFileSystemLocal::CreateCRCsForResourceFileList( const idFileList & list )
 		crcFilename.SetFileExtension( ".crc" );
 		std::auto_ptr<idFile> crcOutputFile( fileSystem->OpenFileWrite( crcFilename, "fs_basepath" ) );
 		if ( crcOutputFile.get() == NULL ) {
-			idLib::Printf( "Error writing CRC file %s.\n", crcFilename );
+			idLib::Printf( "Error writing CRC file %s.\n", crcFilename.c_str() );
 			continue;
 		}
 		

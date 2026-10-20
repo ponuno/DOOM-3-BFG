@@ -66,9 +66,12 @@ void idSIMD::InitProcessor( const char *module, bool forceGeneric ) {
 	} else {
 
 		if ( processor == NULL ) {
+#if !defined( ID_3DS )
 			if ( ( cpuid & CPUID_MMX ) && ( cpuid & CPUID_SSE ) ) {
 				processor = new (TAG_MATH) idSIMD_SSE;
-			} else {
+			} else
+#endif
+			{
 				processor = generic;
 			}
 			processor->cpuid = cpuid;
@@ -130,7 +133,10 @@ long baseClocks = 0;
 
 #if defined( ID_3DS )
 
+// libctru headers are C; only <3ds.h> adds extern "C" itself
+extern "C" {
 #include <3ds/svc.h>
+}
 
 // ARM11 system tick (268 MHz)
 #define StartRecordTime( start )			start = (int)svcGetSystemTick();
@@ -1245,7 +1251,9 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 				common->Printf( "CPU does not support MMX & SSE\n" );
 				return;
 			}
+#if !defined( ID_3DS )
 			p_simd = new (TAG_MATH) idSIMD_SSE;
+#endif
 		} else {
 			common->Printf( "invalid argument, use: MMX, 3DNow, SSE, SSE2, SSE3, AltiVec\n" );
 			return;

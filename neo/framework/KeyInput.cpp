@@ -348,6 +348,7 @@ idKeyInput::LocalizedKeyName
 ========================
 */
 const char * idKeyInput::LocalizedKeyName( keyNum_t keynum ) {
+#if !defined( ID_3DS )
 	if ( keynum < K_JOY1 ) {
 		// On the PC, we want to turn the scan code in to a key label that matches the currently selected keyboard layout
 		unsigned char keystate[256] = { 0 };
@@ -366,6 +367,7 @@ const char * idKeyInput::LocalizedKeyName( keyNum_t keynum ) {
 			return bindStr;
 		}
 	}
+#endif
 
 	// check for a key string
 	for ( keyname_t * kn = keynames; kn->name; kn++ ) {

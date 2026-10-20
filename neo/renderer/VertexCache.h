@@ -28,16 +28,28 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __VERTEXCACHE2_H__
 #define __VERTEXCACHE2_H__
 
+#if defined( ID_3DS )
+// New 3DS has ~178 MB for the whole application; PC sizes would need ~186 MB here alone.
+// First-pass budgets, to be tuned from measurements (r_showVertexCache / map load log).
+const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 1 * 1024 * 1024;
+const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 3 * 1024 * 1024;
+#else
 const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
 const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
+#endif
 const int VERTCACHE_JOINT_MEMORY_PER_FRAME = 256 * 1024;
 
 const int VERTCACHE_NUM_FRAMES = 2;
 
 // there are a lot more static indexes than vertexes, because interactions are just new
 // index lists that reference existing vertexes
+#if defined( ID_3DS )
+const int STATIC_INDEX_MEMORY = 6 * 1024 * 1024;
+const int STATIC_VERTEX_MEMORY = 16 * 1024 * 1024;
+#else
 const int STATIC_INDEX_MEMORY = 31 * 1024 * 1024;
 const int STATIC_VERTEX_MEMORY = 31 * 1024 * 1024;	// make sure it fits in VERTCACHE_OFFSET_MASK!
+#endif
 
 // vertCacheHandle_t packs size, offset, and frame number into 64 bits
 typedef uint64 vertCacheHandle_t;

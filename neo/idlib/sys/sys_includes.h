@@ -48,6 +48,8 @@ If you have questions concerning this license or the applicable additional terms
 #include <alloca.h>
 #include <unistd.h>
 #include <strings.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #define _alloca							alloca
 
 

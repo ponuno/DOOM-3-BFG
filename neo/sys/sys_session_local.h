@@ -30,8 +30,13 @@ If you have questions concerning this license or the applicable additional terms
 #undef private
 #undef protected
 
+#if defined( ID_3DS )
+#include "3ds/3ds_achievements.h"
+#include "3ds/3ds_signin.h"
+#else
 #include "win32/win_achievements.h"
 #include "win32/win_signin.h"
+#endif
 
 #include "sys_lobby_backend.h"
 #include "sys_lobby.h"

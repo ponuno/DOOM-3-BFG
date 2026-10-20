@@ -95,3 +95,72 @@ endif()
 
 add_library(idlib STATIC ${IDLIB_SOURCES})
 target_include_directories(idlib PUBLIC idlib)
+
+#--------------------------------------------------------------------------
+# external (zlib, jpeg-6)
+#--------------------------------------------------------------------------
+
+include(cmake/sources.cmake)
+
+add_library(external STATIC ${EXTERNAL_SOURCES})
+target_include_directories(external PUBLIC framework/zlib)
+
+#--------------------------------------------------------------------------
+# engine (framework, renderer frontend, sound, swf, ui, cm, aas, sys)
+#--------------------------------------------------------------------------
+
+add_library(engine STATIC ${ENGINE_SOURCES} ${ENGINE_3DS_SOURCES})
+target_compile_definitions(engine PRIVATE __DOOM__)
+target_include_directories(engine PRIVATE . ..)
+target_link_libraries(engine PUBLIC idlib external)
+
+#--------------------------------------------------------------------------
+# game (d3xp, linked statically like the console builds)
+#--------------------------------------------------------------------------
+
+add_library(game STATIC ${GAME_SOURCES})
+target_compile_definitions(game PRIVATE __DOOM__ _D3XP CTF)
+target_link_libraries(game PUBLIC idlib)
+
+#--------------------------------------------------------------------------
+# doomclassic (DOOM 1/2 built into BFG; Common.cpp drives it)
+#--------------------------------------------------------------------------
+
+add_library(doomclassic STATIC ${CLASSIC_SOURCES} ${CLASSIC_3DS_SOURCES})
+target_compile_definitions(doomclassic PRIVATE _D3XP CTF)
+target_include_directories(doomclassic PRIVATE . .. ../doomclassic/doom)
+target_link_libraries(doomclassic PUBLIC idlib)
+
+#--------------------------------------------------------------------------
+# doom3ds executable (.elf -> .3dsx)
+#--------------------------------------------------------------------------
+
+if(DOOM3DS_COMPILE_CHECK)
+	# no libctru/libc to link against in the compile-check environment
+	add_library(doom3ds_check OBJECT sys/3ds/3ds_exe.cpp)
+elseif(NINTENDO_3DS)
+	# N3DS_Main() lives in sys/3ds/3ds_main.cpp (engine library); 3ds_exe.cpp holds main().
+	add_executable(doom3ds sys/3ds/3ds_exe.cpp)
+
+	# engine <-> game <-> doomclassic reference each other: link them as a group
+	target_link_libraries(doom3ds PRIVATE
+		-Wl,--start-group game engine doomclassic idlib external -Wl,--end-group
+		ctru m)
+
+	set_target_properties(doom3ds PROPERTIES OUTPUT_NAME doom3ds SUFFIX ".elf")
+
+	if(COMMAND ctr_create_3dsx)
+		ctr_generate_smdh(doom3ds.smdh
+			NAME "DOOM 3 BFG"
+			DESCRIPTION "New 3DS port (bring-up)"
+			AUTHOR "doom3ds")
+		ctr_create_3dsx(doom3ds SMDH doom3ds.smdh)
+	else()
+		find_program(TOOL_3DSXTOOL 3dsxtool HINTS $ENV{DEVKITPRO}/tools/bin)
+		if(TOOL_3DSXTOOL)
+			add_custom_command(TARGET doom3ds POST_BUILD
+				COMMAND ${TOOL_3DSXTOOL} $<TARGET_FILE:doom3ds> ${CMAKE_BINARY_DIR}/doom3ds.3dsx
+				COMMENT "Creating doom3ds.3dsx")
+		endif()
+	endif()
+endif()
