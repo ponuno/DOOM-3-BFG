@@ -592,7 +592,7 @@ idMapEntity *idMapEntity::Parse( idLexer &src, bool worldSpawn, float version ) 
 				if ( !mapBrush ) {
 					return NULL;
 				}
-				mapEnt->AddPrimitive( mapBrush );
+				mapEnt->AddParsedPrimitive( mapBrush );
 			}
 			// if is it a patch: patchDef2, patchDef3
 			else if ( token.Icmpn( "patch", 5 ) == 0 ) {
@@ -600,7 +600,7 @@ idMapEntity *idMapEntity::Parse( idLexer &src, bool worldSpawn, float version ) 
 				if ( !mapPatch ) {
 					return NULL;
 				}
-				mapEnt->AddPrimitive( mapPatch );
+				mapEnt->AddParsedPrimitive( mapPatch );
 			}
 			// assume it's a brush in Q3 or older style
 			else {
@@ -609,7 +609,7 @@ idMapEntity *idMapEntity::Parse( idLexer &src, bool worldSpawn, float version ) 
 				if ( !mapBrush ) {
 					return NULL;
 				}
-				mapEnt->AddPrimitive( mapBrush );
+				mapEnt->AddParsedPrimitive( mapBrush );
 			}
 		} else {
 			idStr key, value;
@@ -695,12 +695,40 @@ void idMapEntity::RemovePrimitiveData() {
 idMapEntity::GetGeometryCRC
 ===============
 */
+bool idMapFile::discardPrimitives = false;
+
+/*
+===============
+idMapEntity::AddParsedPrimitive
+===============
+*/
+void idMapEntity::AddParsedPrimitive( idMapPrimitive *p ) {
+	if ( !idMapFile::discardPrimitives ) {
+		primitives.Append( p );
+		return;
+	}
+	switch( p->GetType() ) {
+		case idMapPrimitive::TYPE_BRUSH:
+			discardedGeometryCRC ^= static_cast<idMapBrush*>(p)->GetGeometryCRC();
+			break;
+		case idMapPrimitive::TYPE_PATCH:
+			discardedGeometryCRC ^= static_cast<idMapPatch*>(p)->GetGeometryCRC();
+			break;
+	}
+	delete p;
+}
+
+/*
+===============
+idMapEntity::GetGeometryCRC
+===============
+*/
 unsigned int idMapEntity::GetGeometryCRC() const {
 	int i;
 	unsigned int crc;
 	idMapPrimitive	*mapPrim;
 
-	crc = 0;
+	crc = discardedGeometryCRC;
 	for ( i = 0; i < GetNumPrimitives(); i++ ) {
 		mapPrim = GetPrimitive( i );
 
@@ -826,7 +854,7 @@ bool idMapFile::Parse( const char *filename, bool ignoreRegion, bool osPath ) {
 		}
 	}
 
-	hasPrimitiveData = true;
+	hasPrimitiveData = !discardPrimitives;
 	return true;
 }
 

@@ -84,6 +84,18 @@ Sound: `sound/3DS` — sample loader from the XAudio2 version, null hardware/voi
 - libctru: main stack 2 MB (default 32 KB is too small), linear heap 8 MB (default: half of RAM).
 - Threads: 2 job workers, Game/Draw (core 2 on New 3DS), AutoRender, savegame workers.
 
+## Runtime switches (cmdline.txt, e.g. `+set n3ds_animQuant 0`)
+
+| cvar | default | effect |
+|---|---|---|
+| `n3ds_animQuant` | 1 | MD5 anim frames stored as 16-bit; load log prints sizes and max error |
+| `n3ds_noShadows` | 1 | shadow/silhouette data skipped at load, prelight shadow models dropped, no light casts shadows |
+| `n3ds_mapEntitiesOnly` | 1 | `.map` brushes/patches discarded while parsing (CRC kept; collision from `.bcmodel`) |
+| `n3ds_lazySaveBuffer` | 1 | savegame buffers not preallocated (4.4 MB) |
+| `n3ds_core1Percent` | 30 | `APT_SetAppCpuTimeLimit` for the system core |
+
+Once a map runs, a `PERF` line is logged every 2 s: fps, game ms per tick, draw/frontend/backend ms.
+
 ## Known issues to revisit
 
 - `ALIGNTYPE16 struct decal_t` — the attribute is ignored by GCC/clang in that position.

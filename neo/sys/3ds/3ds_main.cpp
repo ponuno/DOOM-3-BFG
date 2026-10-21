@@ -127,6 +127,16 @@ void __system_allocateHeaps( void ) {
 
 }
 
+/*
+	New 3DS memory/CPU switches. All default to on; each can be turned off from
+	sdmc:/doom3/cmdline.txt (e.g. "+set n3ds_animQuant 0") to isolate a problem.
+*/
+idCVar n3ds_animQuant( "n3ds_animQuant", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "store MD5 anim frames as 16-bit (halves anim memory)" );
+idCVar n3ds_noShadows( "n3ds_noShadows", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "drop stencil shadow data at load and disable shadow casting" );
+idCVar n3ds_mapEntitiesOnly( "n3ds_mapEntitiesOnly", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "discard .map brushes/patches while parsing (collision comes from .bcmodel)" );
+idCVar n3ds_lazySaveBuffer( "n3ds_lazySaveBuffer", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "do not preallocate the 4 MB savegame buffer at startup" );
+idCVar n3ds_core1Percent( "n3ds_core1Percent", "30", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "share of the system core (core 1) given to the game's threads, 0-80" );
+
 idCVar sys_logFlush( "sys_logFlush", "1", CVAR_SYSTEM | CVAR_BOOL, "flush sdmc:/doom3/log.txt after every line (slower, but survives crashes)" );
 
 static FILE *		logFile = NULL;
@@ -710,6 +720,15 @@ Sys_Init
 */
 void Sys_Init() {
 	Sys_Printf( "%s\n", Sys_GetProcessorString() );
+
+	// let threads placed on core 1 actually run (0 = none of its time is ours)
+	const int core1 = idMath::ClampInt( 0, 80, n3ds_core1Percent.GetInteger() );
+	if ( core1 > 0 ) {
+		Result rc = APT_SetAppCpuTimeLimit( core1 );
+		Sys_Printf( "core 1 time limit %d%%: %s\n", core1, R_SUCCEEDED( rc ) ? "ok" : "failed" );
+	}
+	Sys_Printf( "switches: animQuant %d noShadows %d mapEntitiesOnly %d lazySaveBuffer %d\n",
+		n3ds_animQuant.GetBool(), n3ds_noShadows.GetBool(), n3ds_mapEntitiesOnly.GetBool(), n3ds_lazySaveBuffer.GetBool() );
 	Sys_LogMemory( "Sys_Init" );
 }
 

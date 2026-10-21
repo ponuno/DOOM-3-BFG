@@ -135,13 +135,31 @@ void operator delete[]( void *p ) noexcept {
 Mem_Alloc16
 ==================
 */
+static void * memEmergencyReserve = NULL;
+static const int MEM_EMERGENCY_RESERVE = 512 * 1024;
+
 void * Mem_Alloc16( const int size, const memTag_t tag ) {
 	if ( !size ) {
 		return NULL;
 	}
+	if ( memEmergencyReserve == NULL ) {
+		static bool reserved = false;
+		if ( !reserved ) {
+			reserved = true;
+			memEmergencyReserve = malloc( MEM_EMERGENCY_RESERVE );
+		}
+	}
 	const int paddedSize = ( size + 15 ) & ~15;
 	byte * raw = (byte *)memalign( 16, paddedSize + sizeof( memHeader_t ) );
 	if ( raw == NULL ) {
+		// give the error path (printing, log file, shutdown) room to work
+		if ( memEmergencyReserve != NULL ) {
+			free( memEmergencyReserve );
+			memEmergencyReserve = NULL;
+		} else {
+			// already failed once: no more reports, just stop
+			idLib::FatalError( "Mem_Alloc16: out of memory (again) allocating %d bytes", paddedSize );
+		}
 		// Running out of memory is the expected failure on 3DS: say so, with the
 		// breakdown, instead of letting the caller crash on a NULL pointer later.
 		struct mallinfo mi = mallinfo();

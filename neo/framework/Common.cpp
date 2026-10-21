@@ -1009,11 +1009,24 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 
 		// Pre-allocate our 20 MB save buffer here on time, instead of on-demand for each save....
 
-		saveFile.SetNameAndType( SAVEGAME_CHECKPOINT_FILENAME, SAVEGAMEFILE_BINARY );
-		saveFile.PreAllocate( MIN_SAVEGAME_SIZE_BYTES );
+#if defined( ID_3DS )
+		// New 3DS: 4.4 MB held for the whole session is too much. Without the
+		// preallocation the buffers grow on the first save (in big steps), and
+		// level loads read small resources into temporary buffers instead.
+		if ( cvarSystem->GetCVarBool( "n3ds_lazySaveBuffer" ) ) {
+			saveFile.SetNameAndType( SAVEGAME_CHECKPOINT_FILENAME, SAVEGAMEFILE_BINARY );
+			saveFile.SetGranularity( 256 * 1024 );
+			stringsFile.SetNameAndType( SAVEGAME_STRINGS_FILENAME, SAVEGAMEFILE_BINARY );
+			stringsFile.SetGranularity( 64 * 1024 );
+		} else
+#endif
+		{
+			saveFile.SetNameAndType( SAVEGAME_CHECKPOINT_FILENAME, SAVEGAMEFILE_BINARY );
+			saveFile.PreAllocate( MIN_SAVEGAME_SIZE_BYTES );
 
-		stringsFile.SetNameAndType( SAVEGAME_STRINGS_FILENAME, SAVEGAMEFILE_BINARY );
-		stringsFile.PreAllocate( MAX_SAVEGAME_STRING_TABLE_SIZE );
+			stringsFile.SetNameAndType( SAVEGAME_STRINGS_FILENAME, SAVEGAMEFILE_BINARY );
+			stringsFile.PreAllocate( MAX_SAVEGAME_STRING_TABLE_SIZE );
+		}
 
 		fileSystem->BeginLevelLoad( "_startup", saveFile.GetDataPtr(), saveFile.GetAllocated() );
 

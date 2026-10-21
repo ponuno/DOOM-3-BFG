@@ -166,18 +166,22 @@ public:
 	idDict					epairs;
 
 public:
-							idMapEntity() { epairs.SetHashSize( 64 ); }
+							idMapEntity() : discardedGeometryCRC( 0 ) { epairs.SetHashSize( 64 ); }
 							~idMapEntity() { primitives.DeleteContents( true ); }
 	static idMapEntity *	Parse( idLexer &src, bool worldSpawn = false, float version = CURRENT_MAP_VERSION );
 	bool					Write( idFile *fp, int entityNum ) const;
 	int						GetNumPrimitives() const { return primitives.Num(); }
 	idMapPrimitive *		GetPrimitive( int i ) const { return primitives[i]; }
 	void					AddPrimitive( idMapPrimitive *p ) { primitives.Append( p ); }
+							// used while parsing: keeps the primitive, or (idMapFile::discardPrimitives)
+							// folds it into the geometry CRC and deletes it
+	void					AddParsedPrimitive( idMapPrimitive *p );
 	unsigned int			GetGeometryCRC() const;
 	void					RemovePrimitiveData();
 
 protected:
 	idList<idMapPrimitive*, TAG_IDLIB_LIST_MAP>	primitives;
+	unsigned int			discardedGeometryCRC;	// CRC of primitives dropped while parsing
 };
 
 
@@ -191,6 +195,11 @@ public:
 							// which is what the game and dmap want, but the editor will want to always
 							// load a .map file
 	bool					Parse( const char *filename, bool ignoreRegion = false, bool osPath = false );
+
+							// When set, brushes and patches are not kept while parsing, only the
+							// entities and the geometry CRC (which the collision and AAS files are
+							// checked against). For runtimes that load collision from .bcmodel.
+	static bool				discardPrimitives;
 	bool					Write( const char *fileName, const char *ext, bool fromBasePath = true );
 							// get the number of entities in the map
 	int						GetNumEntities() const { return entities.Num(); }
@@ -212,7 +221,7 @@ public:
 	void					RemoveEntities( const char *classname );
 	void					RemoveAllEntities();
 	void					RemovePrimitiveData();
-	bool					HasPrimitiveData() { return hasPrimitiveData; }
+	bool					HasPrimitiveData() const { return hasPrimitiveData; }
 
 protected:
 	float					version;

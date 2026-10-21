@@ -202,13 +202,30 @@ private:
 	idList<jointAnimInfo_t, TAG_MD5_ANIM>	jointInfo;
 	idList<idJointQuat, TAG_MD5_ANIM>		baseFrame;
 	idList<float, TAG_MD5_ANIM>			componentFrames;
+#if defined( ID_3DS )
+	// n3ds_animQuant: componentFrames replaced by 16-bit values,
+	// value = quantOffset[c] + quantScale[c] * q, per animated component c
+	idList<int16, TAG_MD5_ANIM>			quantFrames;
+	idList<float, TAG_MD5_ANIM>			quantOffset;
+	idList<float, TAG_MD5_ANIM>			quantScale;
+#endif
 	idStr					name;
 	idVec3					totaldelta;
 	mutable int				ref_count;
 
+#if defined( ID_3DS )
+	void					Quantize();
+#endif
+	// components [first, first+count) of frame frameNum; points into componentFrames,
+	// or (quantized) into scratch, which must hold count + 1 floats
+	const float *			FrameComponents( int frameNum, int first, int count, float * scratch ) const;
+
 public:
 							idMD5Anim();
 							~idMD5Anim();
+#if defined( ID_3DS )
+	static void				PrintQuantStats();
+#endif
 
 	void					Free();
 	bool					Reload();

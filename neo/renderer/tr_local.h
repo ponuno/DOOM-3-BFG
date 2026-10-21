@@ -156,6 +156,12 @@ public:
 };
 
 
+#if defined( ID_3DS )
+// New 3DS: no stencil shadows (n3ds_noShadows). Set in R_InitOpenGL; when true the
+// model loaders drop shadow/silhouette data and no light casts shadows.
+extern bool r_n3dsNoShadows;
+#endif
+
 class idRenderLightLocal : public idRenderLight {
 public:
 							idRenderLightLocal();
@@ -166,7 +172,13 @@ public:
 	virtual void			ForceUpdate();
 	virtual int				GetIndex();
 
-	bool					LightCastsShadows() const { return parms.forceShadows || ( !parms.noShadows && lightShader->LightCastsShadows() ); }
+	bool					LightCastsShadows() const {
+#if defined( ID_3DS )
+								if ( r_n3dsNoShadows ) {
+									return false;
+								}
+#endif
+								return parms.forceShadows || ( !parms.noShadows && lightShader->LightCastsShadows() ); }
 
 	renderLight_t			parms;					// specification
 

@@ -892,6 +892,9 @@ void idGameLocal::LoadMap( const char * mapName, int randseed ) {
 			delete mapFile;
 		}
 		mapFile = new (TAG_GAME) idMapFile;
+#if defined( ID_3DS )
+		idMapFile::discardPrimitives = cvarSystem->GetCVarBool( "n3ds_mapEntitiesOnly" );
+#endif
 		if ( !mapFile->Parse( idStr( mapName ) + ".map" ) ) {
 			delete mapFile;
 			mapFile = NULL;

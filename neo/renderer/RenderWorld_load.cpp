@@ -792,6 +792,15 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 						loaded = false;
 						break;
 					}
+#if defined( ID_3DS )
+					// precomputed (dmap) shadow volumes: not used without shadows.
+					// Lights look these up by name, so leaving them out just means no
+					// prelight shadow for that light.
+					if ( r_n3dsNoShadows ) {
+						renderModelManager->FreeModel( lastModel );
+						continue;
+					}
+#endif
 					renderModelManager->AddModel( lastModel );
 					localModels.Append( lastModel );
 				} else if ( type == "interareaportals" ) {

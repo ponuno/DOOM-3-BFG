@@ -3613,6 +3613,10 @@ void idCollisionModelManagerLocal::BuildModels( const idMapFile *mapFile ) {
 	timer.Start();
 
 	if ( !LoadCollisionModelFile( mapFile->GetName(), mapFile->GetGeometryCRC() ) ) {
+		if ( !mapFile->HasPrimitiveData() ) {
+			// n3ds_mapEntitiesOnly dropped the brushes this fallback needs
+			common->Warning( "no valid .bcmodel for %s and map primitives were discarded: world collision will be missing (set n3ds_mapEntitiesOnly 0)", mapFile->GetName() );
+		}
 
 		if ( !mapFile->GetNumEntities() ) {
 			return;

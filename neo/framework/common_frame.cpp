@@ -75,6 +75,14 @@ idCVar timescale( "timescale", "1", CVAR_SYSTEM | CVAR_FLOAT, "Number of game fr
 extern idCVar in_useJoystick;
 extern idCVar in_joystickRumble;
 
+#if defined( ID_3DS )
+// game thread -> main thread perf counters (approximate, no locking needed)
+static int		n3dsPerfTicks = 0;
+static uint64	n3dsPerfGameUs = 0;
+static uint64	n3dsPerfGameMaxUs = 0;
+static uint64	n3dsPerfDrawUs = 0;
+#endif
+
 /*
 ===============
 idGameThread::Run
@@ -129,6 +137,17 @@ int idGameThread::Run() {
 
 	commonLocal.frameTiming.finishGameTime = Sys_Microseconds();
 
+#if defined( ID_3DS )
+	{
+		const uint64 gameUs = commonLocal.frameTiming.finishGameTime - commonLocal.frameTiming.startGameTime;
+		n3dsPerfTicks += numGameFrames;
+		n3dsPerfGameUs += gameUs;
+		if ( gameUs > n3dsPerfGameMaxUs ) {
+			n3dsPerfGameMaxUs = gameUs;
+		}
+	}
+#endif
+
 	SetThreadGameTime( ( commonLocal.frameTiming.finishGameTime - commonLocal.frameTiming.startGameTime ) / 1000 );
 
 	// build render commands and geometry
@@ -138,6 +157,9 @@ int idGameThread::Run() {
 	}
 
 	commonLocal.frameTiming.finishDrawTime = Sys_Microseconds();
+#if defined( ID_3DS )
+	n3dsPerfDrawUs += commonLocal.frameTiming.finishDrawTime - commonLocal.frameTiming.finishGameTime;
+#endif
 
 	SetThreadRenderTime( ( commonLocal.frameTiming.finishDrawTime - commonLocal.frameTiming.finishGameTime ) / 1000 );
 
@@ -675,6 +697,41 @@ void idCommonLocal::Frame() {
 			}
 			lobby.DrawDebugNetworkHUD_ServerSnapshotMetrics( net_drawDebugHud.GetInteger() == 3 );
 		}
+
+#if defined( ID_3DS )
+		// New 3DS: one line every 2 seconds once a map is running
+		{
+			static int perfStart = 0;
+			static int perfFrames = 0;
+			static uint64 perfFrontendUs = 0;
+			static uint64 perfBackendUs = 0;
+			const int now = Sys_Milliseconds();
+			if ( !mapSpawned ) {
+				perfStart = now;
+				perfFrames = 0;
+				perfFrontendUs = perfBackendUs = 0;
+				n3dsPerfTicks = 0;
+				n3dsPerfGameUs = n3dsPerfGameMaxUs = n3dsPerfDrawUs = 0;
+			} else {
+				perfFrames++;
+				perfFrontendUs += time_frontend;
+				perfBackendUs += time_backend;
+				const int elapsed = now - perfStart;
+				if ( elapsed >= 2000 && perfFrames > 0 ) {
+					const float ticks = (float)Max( n3dsPerfTicks, 1 );
+					Printf( "PERF %.1fs: %d frames %.1f fps | %d ticks, game %.1f ms/tick, worst frame %.1f ms | draw %.1f frontend %.1f backend %.1f ms/frame\n",
+						elapsed * 0.001f, perfFrames, perfFrames * 1000.0f / elapsed,
+						n3dsPerfTicks, n3dsPerfGameUs * 0.001f / ticks, n3dsPerfGameMaxUs * 0.001f,
+						n3dsPerfDrawUs * 0.001f / perfFrames, perfFrontendUs * 0.001f / perfFrames, perfBackendUs * 0.001f / perfFrames );
+					perfStart = now;
+					perfFrames = 0;
+					perfFrontendUs = perfBackendUs = 0;
+					n3dsPerfTicks = 0;
+					n3dsPerfGameUs = n3dsPerfGameMaxUs = n3dsPerfDrawUs = 0;
+				}
+			}
+		}
+#endif
 
 		// report timing information
 		if ( com_speeds.GetBool() ) {
