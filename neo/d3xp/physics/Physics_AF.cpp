@@ -6229,6 +6229,49 @@ const idBounds &idPhysics_AF::GetAbsBounds( int id ) const {
 idPhysics_AF::Evaluate
 ================
 */
+#if defined( ID_3DS )
+static bool N3DS_BadF( float v ) {
+	return IEEE_FLT_IS_NAN( v ) || IEEE_FLT_IS_INF( v ) || idMath::Fabs( v ) > 1e15f;
+}
+static bool N3DS_BadVecX( const idVecX & v ) {
+	for ( int i = 0; i < v.GetSize(); i++ ) {
+		if ( N3DS_BadF( v[i] ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+static int n3dsAFPhaseReports = 0;
+static const char * n3dsAFBadPhase = NULL;
+
+// returns true (and logs once per evaluation) if a body state is non-finite after 'phase'
+static bool N3DS_AFCheckPhase( const char * phase, const char * afName, const idList<idAFBody *, TAG_IDLIB_LIST_PHYSICS> & bodies,
+		float timeStep, int numPrimaryRows, int numAuxRows ) {
+	if ( n3dsAFBadPhase != NULL || n3dsAFPhaseReports >= 20 ) {
+		return false;
+	}
+	for ( int k = 0; k < bodies.Num(); k++ ) {
+		const idAFBody * b = bodies[k];
+		const char * what = NULL;
+		const float * sv = &b->GetLinearVelocity().x;	// spatialVelocity: 6 contiguous floats
+		for ( int c = 0; c < 6; c++ ) {
+			if ( N3DS_BadF( sv[c] ) ) { what = "velocity"; }
+		}
+		const idVec3 & o = b->GetWorldOrigin();
+		if ( N3DS_BadF( o.x ) || N3DS_BadF( o.y ) || N3DS_BadF( o.z ) ) { what = "origin"; }
+		if ( what == NULL ) {
+			continue;
+		}
+		n3dsAFBadPhase = phase;
+		n3dsAFPhaseReports++;
+		common->Printf( "N3DS AF phase: '%s' body %d '%s' %s non-finite after %s (timeStep %g, %d primary rows, %d auxiliary rows)\n",
+			afName, k, b->GetName().c_str(), what, phase, timeStep, numPrimaryRows, numAuxRows );
+		return true;
+	}
+	return false;
+}
+#endif
+
 bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 	float timeStep;
 
@@ -6278,6 +6321,14 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 	timer_collision.Start();
 #endif
 #if defined( ID_3DS )
+	n3dsAFBadPhase = NULL;
+	for ( int k = 0; k < bodies.Num(); k++ ) {
+		const idVec3 & o = bodies[k]->GetWorldOrigin();
+		if ( N3DS_BadF( o.x ) || N3DS_BadF( ( &bodies[k]->GetLinearVelocity().x )[0] ) ) {
+			n3dsAFBadPhase = "already bad";		// only report the evaluation where it goes bad
+			break;
+		}
+	}
 	extern int n3dsCMStats[4];
 	const uint64 n3dsT0 = Sys_Microseconds();
 	int n3dsCM0[4];
@@ -6289,6 +6340,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// evaluate contacts
 	EvaluateContacts();
+#if defined( ID_3DS )
+	N3DS_AFCheckPhase( "EvaluateContacts", self->name.c_str(), bodies, timeStep, 0, 0 );
+#endif
 
 	// setup contact constraints
 	SetupContactConstraints();
@@ -6305,6 +6359,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// apply friction
 	ApplyFriction( timeStep, endTimeMSec );
+#if defined( ID_3DS )
+	N3DS_AFCheckPhase( "ApplyFriction", self->name.c_str(), bodies, timeStep, 0, 0 );
+#endif
 
 	// add frame constraints
 	AddFrameConstraints();
@@ -6322,9 +6379,15 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// factor matrices for primary constraints
 	PrimaryFactor();
+#if defined( ID_3DS )
+	N3DS_AFCheckPhase( "PrimaryFactor", self->name.c_str(), bodies, timeStep, 0, 0 );
+#endif
 
 	// calculate forces on bodies after applying primary constraints
 	PrimaryForces( timeStep );
+#if defined( ID_3DS )
+	N3DS_AFCheckPhase( "PrimaryForces", self->name.c_str(), bodies, timeStep, 0, 0 );
+#endif
 #if defined( ID_3DS )
 	const uint64 n3dsT2 = Sys_Microseconds();
 #endif
@@ -6337,6 +6400,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 	// calculate and apply auxiliary constraint forces
 	AuxiliaryForces( timeStep );
 #if defined( ID_3DS )
+	N3DS_AFCheckPhase( "AuxiliaryForces", self->name.c_str(), bodies, timeStep, 0, 0 );
+#endif
+#if defined( ID_3DS )
 	const uint64 n3dsT3 = Sys_Microseconds();
 #endif
 
@@ -6346,6 +6412,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// evolve current state to next state
 	Evolve( timeStep );
+#if defined( ID_3DS )
+	N3DS_AFCheckPhase( "Evolve", self->name.c_str(), bodies, timeStep, 0, 0 );
+#endif
 
 	// debug graphics
 	DebugDraw();
@@ -6365,6 +6434,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// check for collisions between current and next state
 	CheckForCollisions( timeStep );
+#if defined( ID_3DS )
+	N3DS_AFCheckPhase( "CheckForCollisions", self->name.c_str(), bodies, timeStep, 0, 0 );
+#endif
 #if defined( ID_3DS )
 	const uint64 n3dsT4 = Sys_Microseconds();
 #endif
@@ -6386,6 +6458,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 		current.atRest = gameLocal.time;
 		comeToRest = true;
 	}
+#if defined( ID_3DS )
+	N3DS_AFCheckPhase( "ApplyCollisions", self->name.c_str(), bodies, timeStep, 0, 0 );
+#endif
 
 	// test if the simulation can be suspended because the whole figure is at rest
 	if ( comeToRest && TestIfAtRest( timeStep ) ) {
@@ -6396,6 +6471,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// add gravitational force
 	AddGravity();
+#if defined( ID_3DS )
+	N3DS_AFCheckPhase( "AddGravity", self->name.c_str(), bodies, timeStep, 0, 0 );
+#endif
 
 	// move the af velocity back into the world frame
 	AddPushVelocity( current.pushVelocity );
