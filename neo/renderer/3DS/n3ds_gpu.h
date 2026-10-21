@@ -82,6 +82,9 @@ void			N3DSGPU_SetLightPass( void * projection, void * falloff, void * diffuse, 
 // falloff planes of the light projection
 void			N3DSGPU_SetLightUniforms( const float * origin, const float * s, const float * t, const float * q, const float * f );
 void			N3DSGPU_SetPassParams( int fill, int projective );
+// scissor in render target pixels (240 x 400, the 3DS framebuffer orientation),
+// right/bottom exclusive
+void			N3DSGPU_SetScissor( int enable, int left, int top, int right, int bottom );
 
 #ifdef __cplusplus
 }

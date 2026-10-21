@@ -132,6 +132,8 @@ No normal/specular maps and no shadows yet.
 | `n3ds_lighting` | 1 | light passes; 0 = everything at full brightness |
 | `n3ds_ambient` | 0.06 | brightness of lit surfaces no light reaches (Doom 3: 0) |
 | `n3ds_lightProjective` | 1 | light projection divided per pixel; 0 = per vertex |
+| `n3ds_lightScissor` | 1 | light passes clipped to the light's screen rectangle |
+| `n3ds_c3dValidate` | 0 | check every draw's indexes against its buffers (bring-up) |
 | `n3ds_debugPhysics` | 0 | heavy physics diagnostics: NaN checks per AF step, LCP dumps, trace counters, SLOW AF lines |
 | `n3ds_staticVertexKB` / `n3ds_staticIndexKB` | 0 | static vertex/index cache size; 0 = 6144/2048 with citro3d, 10240/6144 budget-only with null GL |
 | `n3ds_core1Percent` | 30 | `APT_SetAppCpuTimeLimit` for the system core |

@@ -44,7 +44,7 @@ void * NullGL_BufferStorage( GLuint name, bool * linear );	// gl_null.cpp
 bool r_n3dsC3D = false;
 
 idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: draw at most this many surfaces per frame (0 = all), for bisecting GPU hangs" );
-idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
+idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
 idCVar n3ds_c3dTest( "n3ds_c3dTest", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d bring-up test: 1 = only a test triangle, 2 = engine surfaces copied to a private buffer first (first one per frame)" );
 idCVar n3ds_c3dTrace( "n3ds_c3dTrace", "3", CVAR_RENDERER | CVAR_INTEGER, "citro3d: log begin/end of the first N 3D frames" );
 
@@ -64,9 +64,11 @@ static int		c3dBadMatrix = 0;
 static int		c3dStatTextured = 0;
 static int		c3dStatLights = 0;
 static int		c3dStatLightDraws = 0;
+static int		c3dStatScissorPixels = 0;	// light rectangles, summed
 
 idCVar n3ds_lighting( "n3ds_lighting", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: per-vertex light passes (0 = everything at full brightness)" );
 idCVar n3ds_ambient( "n3ds_ambient", "0.06", CVAR_RENDERER | CVAR_FLOAT, "citro3d: brightness of lit surfaces where no light reaches (Doom 3 itself: 0)" );
+idCVar n3ds_lightScissor( "n3ds_lightScissor", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: clip each light's passes to its screen rectangle" );
 idCVar n3ds_lightProjective( "n3ds_lightProjective", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: divide the light projection per pixel (texture unit 0 projection mode); 0 = per vertex" );
 
 // the previous frame's draws, dumped if the GPU does not finish it
@@ -479,6 +481,7 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 	//----------------------------------
 	const viewEntity_t * lastSpace = NULL;
 	bool spaceOk = true;
+	N3DSGPU_SetScissor( 0, 0, 0, 0, 0 );
 	N3DSGPU_SetPassParams( 1, 0 );
 	{
 		const float noLight[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -550,6 +553,7 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 	//----------------------------------
 	const bool projective = n3ds_lightProjective.GetBool();
 	const float lightScale = r_lightScale.GetFloat() * 0.25f;		// x 4 in the texture combiner
+	const bool useScissor = n3ds_lightScissor.GetBool();
 	N3DSGPU_SetPassParams( 0, projective ? 1 : 0 );
 	for ( const viewLight_t * vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
 		const idMaterial * lightShader = vLight->lightShader;
@@ -561,6 +565,28 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 		}
 		c3dStatLights++;
 		const float * lightRegs = vLight->shaderRegisters;
+
+		// only the light's rectangle on screen is touched. GL window pixels (x right,
+		// y up, viewport 400 x 240) -> render target pixels (240 x 400, rotated):
+		// target x = window y, target y = 400 - window x (see N3DS_SetMVP)
+		if ( useScissor ) {
+			if ( vLight->scissorRect.IsEmpty() ) {
+				continue;
+			}
+			const int wx1 = viewDef->viewport.x1 + vLight->scissorRect.x1;
+			const int wx2 = viewDef->viewport.x1 + vLight->scissorRect.x2;		// inclusive
+			const int wy1 = viewDef->viewport.y1 + vLight->scissorRect.y1;
+			const int wy2 = viewDef->viewport.y1 + vLight->scissorRect.y2;
+			const int left = idMath::ClampInt( 0, 240, wy1 );
+			const int right = idMath::ClampInt( 0, 240, wy2 + 1 );
+			const int top = idMath::ClampInt( 0, 400, 400 - ( wx2 + 1 ) );
+			const int bottom = idMath::ClampInt( 0, 400, 400 - wx1 );
+			if ( left >= right || top >= bottom ) {
+				continue;
+			}
+			N3DSGPU_SetScissor( 1, left, top, right, bottom );
+			c3dStatScissorPixels += ( right - left ) * ( bottom - top );
+		}
 		void * falloffTex = N3DS_TexForImage( vLight->falloffImage );
 
 		for ( int lightStageNum = 0; lightStageNum < lightShader->GetNumStages(); lightStageNum++ ) {
@@ -643,6 +669,7 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 		}
 	}
 	// back to the fill pass setup for the next view
+	N3DSGPU_SetScissor( 0, 0, 0, 0, 0 );
 	N3DSGPU_SetPassParams( 1, 0 );
 	N3DSGPU_SetFillPass( NULL, NULL, 0 );
 }
@@ -718,13 +745,13 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 	if ( now - c3dStatStart >= 2000 && c3dFrame3D > 0 ) {
 		const float f = (float)Max( c3dStatFrames, 1 );
-		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights) %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d\n",
-			c3dStatDraws / f, c3dStatTextured / f, c3dStatLightDraws / f, c3dStatLights / f, c3dStatTris / f, c3dStatGpuMs / f,
-			c3dStatCmdMax * 100.0f, c3dStatBad );
+		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights, light area %.1f screens) %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d\n",
+			c3dStatDraws / f, c3dStatTextured / f, c3dStatLightDraws / f, c3dStatLights / f, c3dStatScissorPixels / ( f * 96000.0f ),
+			c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad );
 		idStr texLine;
 		N3DS_TexStatsLine( texLine );
 		common->Printf( "PERF   citro3d: %s\n", texLine.c_str() );
-		c3dStatTextured = c3dStatLights = c3dStatLightDraws = 0;
+		c3dStatTextured = c3dStatLights = c3dStatLightDraws = c3dStatScissorPixels = 0;
 		c3dStatStart = now;
 		c3dStatFrames = c3dStatDraws = c3dStatTris = c3dStatBad = 0;
 		c3dStatCmdMax = c3dStatGpuMs = 0.0f;

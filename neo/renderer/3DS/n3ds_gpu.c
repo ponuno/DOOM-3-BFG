@@ -535,6 +535,14 @@ void N3DSGPU_SetLightUniforms( const float * origin, const float * s, const floa
 	C3D_FVUnifSet( GPU_VERTEX_SHADER, uLocLightF, f[0], f[1], f[2], f[3] );
 }
 
+void N3DSGPU_SetScissor( int enable, int left, int top, int right, int bottom ) {
+	if ( !enable ) {
+		C3D_SetScissor( GPU_SCISSOR_DISABLE, 0, 0, 0, 0 );
+		return;
+	}
+	C3D_SetScissor( GPU_SCISSOR_NORMAL, (u32)left, (u32)top, (u32)right, (u32)bottom );
+}
+
 void N3DSGPU_SetPassParams( int fill, int projective ) {
 	C3D_FVUnifSet( GPU_VERTEX_SHADER, uLocPassParams, fill ? 1.0f : 0.0f, projective ? 1.0f : 0.0f, 0.0f, 0.0f );
 }

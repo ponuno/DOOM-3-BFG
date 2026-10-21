@@ -58,6 +58,7 @@ struct n3dsTexture_t {
 	int					gpuBytes;
 	bool				gpuHasAlpha;
 	int					lastFrame;
+	int					retryFrame;		// after a failed upload: not before this frame
 	n3dsTexture_t *		lruPrev;
 	n3dsTexture_t *		lruNext;
 };
@@ -230,6 +231,27 @@ void N3DS_TexBeginFrame( bool has3D ) {
 
 /*
 ========================
+N3DS_TexFailed
+
+A texture that could not be uploaded waits a second before it is tried again, so
+that it does not take the per-frame upload slots from the others.
+========================
+*/
+static int failuresLogged = 0;
+
+static void N3DS_TexFailed( n3dsTexture_t * t, const n3dsTexLayout_t & layout, const char * why ) {
+	statDeferred++;
+	t->retryFrame = texFrame + 60;
+	if ( failuresLogged < 12 ) {
+		failuresLogged++;
+		common->Printf( "citro3d: texture %s (%dx%d stored fmt %d/%d -> %dx%d fmt %d, %d levels, %d bytes) not uploaded: %s; VRAM free %u KB, linear free %u KB\n",
+			t->image->GetName(), t->width, t->height, t->format, t->colorFormat, layout.width, layout.height,
+			layout.format, layout.maxLevel + 1, layout.bytes, why, N3DSGPU_VRAMFree() / 1024, N3DSGPU_LinearFree() / 1024 );
+	}
+}
+
+/*
+========================
 N3DS_TexUpload
 ========================
 */
@@ -262,20 +284,20 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		statEvictions++;
 	}
 	if ( gpu == NULL ) {
-		statDeferred++;
+		N3DS_TexFailed( t, layout, "no VRAM block (all resident textures in use this frame, or TexCreate failed)" );
 		return false;
 	}
 
 	byte * staging = (byte *)N3DSGPU_LinearAlloc( layout.bytes );
 	if ( staging == NULL ) {
 		N3DSGPU_TexFree( gpu );
-		statDeferred++;
+		N3DS_TexFailed( t, layout, "no linear memory for the staging copy" );
 		return false;
 	}
 	N3DS_BuildTexture( rgba.Ptr(), t->width, t->height, layout, n3ds_texFlip.GetBool(), staging );
 	if ( !N3DSGPU_TexUpload( gpu, staging, layout.bytes ) ) {		// takes the staging buffer
 		N3DSGPU_TexFree( gpu );
-		statDeferred++;
+		N3DS_TexFailed( t, layout, "copy refused (size mismatch or GX queue full)" );
 		return false;
 	}
 
@@ -307,6 +329,9 @@ void * N3DS_TexForImage( idImage * image ) {
 		return NULL;
 	}
 	if ( t->gpu == NULL ) {
+		if ( texFrame < t->retryFrame ) {
+			return NULL;
+		}
 		if ( uploadsThisFrame >= uploadLimit || !N3DSGPU_CanQueueTexture() ) {
 			statDeferred++;
 			return NULL;
