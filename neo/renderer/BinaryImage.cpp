@@ -359,6 +359,8 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime ) {
 	return FILE_NOT_FOUND_TIMESTAMP;
 }
 
+bool idBinaryImage::skipPixelData = false;
+
 /*
 ==========================
 idBinaryImage::LoadFromGeneratedFile
@@ -412,6 +414,13 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileT
 		// sizes are still retained, so the stored data size may be larger than
 		// just the multiplication of dimensions
 		assert( img.dataSize >= img.width * img.height * BitsForFormat( (textureFormat_t)fileData.format ) / 8 );
+		if ( skipPixelData ) {
+			img.data = NULL;
+			if ( i + 1 < numImages ) {
+				bFile->Seek( img.dataSize, FS_SEEK_CUR );
+			}
+			continue;
+		}
 		img.Alloc( img.dataSize );
 		if ( img.data == NULL ) {
 			return false;

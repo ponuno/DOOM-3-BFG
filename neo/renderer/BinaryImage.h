@@ -49,6 +49,10 @@ public:
 	void				LoadCubeFromMemory( int width, const byte * pics[6], int numLevels, textureFormat_t & textureFormat, bool gammaMips );
 
 	ID_TIME_T			LoadFromGeneratedFile( ID_TIME_T sourceFileTime );
+
+						// New 3DS bring-up: read the headers only and leave every level's
+						// data NULL (the null GL driver ignores pixels)
+	static bool			skipPixelData;
 	ID_TIME_T			WriteGeneratedFile( ID_TIME_T sourceFileTime );
 
 	const bimageFile_t &	GetFileHeader() { return fileData; }

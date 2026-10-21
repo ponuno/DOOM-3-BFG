@@ -135,6 +135,7 @@ idCVar n3ds_animQuant( "n3ds_animQuant", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INI
 idCVar n3ds_noShadows( "n3ds_noShadows", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "drop stencil shadow data at load and disable shadow casting" );
 idCVar n3ds_mapEntitiesOnly( "n3ds_mapEntitiesOnly", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "discard .map brushes/patches while parsing (collision comes from .bcmodel)" );
 idCVar n3ds_lazySaveBuffer( "n3ds_lazySaveBuffer", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "do not preallocate the 4 MB savegame buffer at startup" );
+idCVar n3ds_skipImageData( "n3ds_skipImageData", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "read only image headers, not pixels (the null GL drops them anyway)" );
 idCVar n3ds_core1Percent( "n3ds_core1Percent", "30", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "share of the system core (core 1) given to the game's threads, 0-80" );
 
 idCVar sys_logFlush( "sys_logFlush", "1", CVAR_SYSTEM | CVAR_BOOL, "flush sdmc:/doom3/log.txt after every line (slower, but survives crashes)" );
@@ -727,8 +728,8 @@ void Sys_Init() {
 		Result rc = APT_SetAppCpuTimeLimit( core1 );
 		Sys_Printf( "core 1 time limit %d%%: %s\n", core1, R_SUCCEEDED( rc ) ? "ok" : "failed" );
 	}
-	Sys_Printf( "switches: animQuant %d noShadows %d mapEntitiesOnly %d lazySaveBuffer %d\n",
-		n3ds_animQuant.GetBool(), n3ds_noShadows.GetBool(), n3ds_mapEntitiesOnly.GetBool(), n3ds_lazySaveBuffer.GetBool() );
+	Sys_Printf( "switches: animQuant %d noShadows %d mapEntitiesOnly %d lazySaveBuffer %d skipImageData %d\n",
+		n3ds_animQuant.GetBool(), n3ds_noShadows.GetBool(), n3ds_mapEntitiesOnly.GetBool(), n3ds_lazySaveBuffer.GetBool(), n3ds_skipImageData.GetBool() );
 	Sys_LogMemory( "Sys_Init" );
 }
 

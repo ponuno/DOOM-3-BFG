@@ -2789,9 +2789,16 @@ idFile * idFileSystemLocal::GetResourceFile( const char *fileName, bool memFile 
 		// 3DS: anything that does not fit the level-load buffer and is over 1 MB is
 		// streamed from the .resources container instead. All callers read through
 		// the idFile interface, so a streaming file works for them too.
+		// Callers that did not ask for a memory file (images, most binary data) are
+		// streamed too unless tiny: reading them whole into temporary heap blocks
+		// fragments the heap, and the image loader may skip most of the data.
 		static const int N3DS_MAX_BUFFERED_RESOURCE = 1024 * 1024;
+		static const int N3DS_MAX_BUFFERED_STREAM = 16 * 1024;
 		if ( rc.length > N3DS_MAX_BUFFERED_RESOURCE && rc.length >= resourceBufferAvailable ) {
 			idLib::Printf( "RES: streaming %s (%d KB)\n", rc.filename.c_str(), rc.length / 1024 );
+			return file;
+		}
+		if ( !memFile && rc.length > N3DS_MAX_BUFFERED_STREAM ) {
 			return file;
 		}
 #endif

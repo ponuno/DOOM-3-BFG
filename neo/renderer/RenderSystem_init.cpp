@@ -839,6 +839,7 @@ void R_InitOpenGL() {
 
 #if defined( ID_3DS )
 	r_n3dsNoShadows = cvarSystem->GetCVarBool( "n3ds_noShadows" );
+	idBinaryImage::skipPixelData = cvarSystem->GetCVarBool( "n3ds_skipImageData" );
 	common->Printf( "shadows: %s\n", r_n3dsNoShadows ? "disabled (n3ds_noShadows)" : "enabled" );
 #endif
 
