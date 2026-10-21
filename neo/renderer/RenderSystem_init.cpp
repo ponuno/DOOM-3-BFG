@@ -41,6 +41,7 @@ idGuiModel * tr_guiModel;
 
 #if defined( ID_3DS )
 bool r_n3dsNoShadows = false;
+bool r_n3dsDiscardStaticGeo = false;
 #endif
 
 // functions that are not called every frame
@@ -839,6 +840,7 @@ void R_InitOpenGL() {
 
 #if defined( ID_3DS )
 	r_n3dsNoShadows = cvarSystem->GetCVarBool( "n3ds_noShadows" );
+	r_n3dsDiscardStaticGeo = cvarSystem->GetCVarBool( "n3ds_discardStaticGeo" );
 	idBinaryImage::skipPixelData = cvarSystem->GetCVarBool( "n3ds_skipImageData" );
 	common->Printf( "shadows: %s\n", r_n3dsNoShadows ? "disabled (n3ds_noShadows)" : "enabled" );
 #endif

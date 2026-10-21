@@ -60,7 +60,7 @@ extern "C" {
 ================================================================================================
 */
 
-static const int	MEM_TEMP_ARENA_SIZE = 4 * 1024 * 1024;
+static const int	MEM_TEMP_ARENA_SIZE = 1536 * 1024;	// mars_city1 peak: 873 KB
 static const int	MEM_TEMP_ARENA_MIN_BLOCK = 32 * 1024;	// smaller TEMP blocks stay in the heap
 
 struct arenaBlock_t {
@@ -181,7 +181,8 @@ int Mem_LargestFreeBlock() {
 	int hi = 64 * 1024 * 1024;
 	while ( hi - lo > 16 * 1024 ) {
 		const int mid = lo + ( hi - lo ) / 2;
-		void * p = malloc( mid );
+		// volatile: GCC otherwise folds a malloc/free pair into "success"
+		void * volatile p = malloc( mid );
 		if ( p != NULL ) {
 			free( p );
 			lo = mid;

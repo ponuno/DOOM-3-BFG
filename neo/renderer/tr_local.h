@@ -160,6 +160,7 @@ public:
 // New 3DS: no stencil shadows (n3ds_noShadows). Set in R_InitOpenGL; when true the
 // model loaders drop shadow/silhouette data and no light casts shadows.
 extern bool r_n3dsNoShadows;
+extern bool r_n3dsDiscardStaticGeo;		// null GL: static vertex/index uploads are dropped
 #endif
 
 class idRenderLightLocal : public idRenderLight {

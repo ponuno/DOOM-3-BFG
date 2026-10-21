@@ -222,6 +222,18 @@ static void NullGL_BindBuffer( GLenum target, GLuint name ) {
 	}
 }
 
+/*
+	Storage is allocated lazily, on the first write or map: a buffer that is
+	only ever sized (the static vertex cache when its uploads are discarded)
+	costs nothing.
+*/
+static bool NullGL_EnsureStorage( nullBuffer_t * b ) {
+	if ( b->data == NULL && b->size > 0 ) {
+		NullGL_AllocStorage( b, b->size );
+	}
+	return b->data != NULL;
+}
+
 static void NullGL_BufferData( GLenum target, GLsizeiptr size, const GLvoid * data ) {
 	nullBuffer_t * b = NullGL_Bound( target );
 	if ( b == NULL ) {
@@ -229,19 +241,16 @@ static void NullGL_BufferData( GLenum target, GLsizeiptr size, const GLvoid * da
 	}
 	if ( b->size != size ) {
 		NullGL_FreeStorage( b );
-		if ( size > 0 ) {
-			NullGL_AllocStorage( b, size );
-		}
 		b->size = size;
 	}
-	if ( data != NULL && b->data != NULL ) {
+	if ( data != NULL && NullGL_EnsureStorage( b ) ) {
 		memcpy( b->data, data, size );
 	}
 }
 
 static void NullGL_BufferSubData( GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid * data ) {
 	nullBuffer_t * b = NullGL_Bound( target );
-	if ( b != NULL && b->data != NULL && offset + size <= b->size ) {
+	if ( b != NULL && offset + size <= b->size && NullGL_EnsureStorage( b ) ) {
 		memcpy( b->data + offset, data, size );
 	}
 }
@@ -250,12 +259,14 @@ static void NullGL_GetBufferSubData( GLenum target, GLintptr offset, GLsizeiptr 
 	nullBuffer_t * b = NullGL_Bound( target );
 	if ( b != NULL && b->data != NULL && offset + size <= b->size ) {
 		memcpy( data, b->data + offset, size );
+	} else if ( data != NULL ) {
+		memset( data, 0, size );
 	}
 }
 
 static GLvoid * NullGL_MapBuffer( GLenum target, GLintptr offset ) {
 	nullBuffer_t * b = NullGL_Bound( target );
-	if ( b == NULL || b->data == NULL ) {
+	if ( b == NULL || !NullGL_EnsureStorage( b ) ) {
 		return NULL;
 	}
 	return b->data + offset;

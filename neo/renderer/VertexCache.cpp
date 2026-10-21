@@ -201,7 +201,13 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t & vcs, const void
 	int offset = endPos - bytes;
 
 	// Actually perform the data transfer
+#if defined( ID_3DS )
+	// null GL bring-up: nothing ever reads the static buffers back, so skip the
+	// copy and never map them (the null driver then never allocates their storage)
+	if ( data != NULL && !( r_n3dsDiscardStaticGeo && &vcs == &staticData ) ) {
+#else
 	if ( data != NULL ) {
+#endif
 		MapGeoBufferSet( vcs );
 		CopyBuffer( *base + offset, (const byte *)data, bytes );
 	}
