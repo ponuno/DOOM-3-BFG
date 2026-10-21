@@ -1,4 +1,6 @@
-**Doom 3 BFG Edition GPL Source Code
+Fanmade port for New3DS
+
+Doom 3 BFG Edition GPL Source Code
 ==================================
 
 This file contains the following sections:
