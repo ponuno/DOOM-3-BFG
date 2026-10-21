@@ -231,6 +231,7 @@ void Sys_LogMemory( const char * when ) {
 	struct mallinfo mi = mallinfo();
 	Sys_Printf( "MEM [%s]: malloc used %d KB, region free %d / %d KB, linear free %d KB\n",
 		when, (int)( mi.uordblks / 1024 ), appFree / 1024, appSize / 1024, linFree / 1024 );
+	Mem_LogTags( 16 );
 }
 
 /*

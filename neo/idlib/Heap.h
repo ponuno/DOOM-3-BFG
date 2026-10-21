@@ -56,6 +56,9 @@ ID_INLINE void *	Mem_Alloc( const int size, const memTag_t tag ) { return Mem_Al
 ID_INLINE void		Mem_Free( void *ptr ) { Mem_Free16( ptr ); }
 
 void *		Mem_ClearedAlloc( const int size, const memTag_t tag );
+#if defined( ID_3DS )
+void		Mem_LogTags( int maxLines );	// per-subsystem heap usage (3DS accounting)
+#endif
 char *		Mem_CopyString( const char *in );
 
 #if defined( ID_3DS )

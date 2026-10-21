@@ -38,19 +38,97 @@ If you have questions concerning this license or the applicable additional terms
 #undef new
 
 #if defined( ID_3DS )
+
+/*
+================================================================================================
+
+	New 3DS heap accounting
+
+	Every Mem_Alloc16 block carries a 16-byte header (keeps 16-byte alignment) with
+	its size and memTag_t, so usage can be broken down by subsystem when memory runs
+	out or at checkpoints (Mem_LogTags). Blocks without a valid header (freed through
+	Mem_Free16 but not allocated by Mem_Alloc16) fall back to a plain free().
+
+================================================================================================
+*/
+
+struct memHeader_t {
+	uint32	size;
+	uint16	tag;
+	uint16	magic;
+	uint32	pad[2];
+};
+static_assert( sizeof( memHeader_t ) == 16, "header must preserve 16-byte alignment" );
+
+static const uint16 MEM_HEADER_MAGIC = 0xD35D;
+
+static const char * memTagNames[] = {
+#define MEM_TAG( x )	#x,
+#include "sys/sys_alloc_tags.h"
+};
+
+static int32	memTagBytes[TAG_NUM_TAGS];
+static int32	memTagBlocks[TAG_NUM_TAGS];
+static int32	memTotalBytes = 0;
+static int32	memPeakBytes = 0;
+
+static void Mem_Account( int tag, int bytes, int blocks ) {
+	if ( tag < 0 || tag >= TAG_NUM_TAGS ) {
+		tag = TAG_UNSET;
+	}
+	__atomic_add_fetch( &memTagBytes[tag], bytes, __ATOMIC_RELAXED );
+	__atomic_add_fetch( &memTagBlocks[tag], blocks, __ATOMIC_RELAXED );
+	const int32 total = __atomic_add_fetch( &memTotalBytes, bytes, __ATOMIC_RELAXED );
+	if ( total > memPeakBytes ) {
+		memPeakBytes = total;
+	}
+}
+
+/*
+==================
+Mem_LogTags
+
+Prints the biggest users of the engine heap.
+==================
+*/
+void Mem_LogTags( int maxLines ) {
+	int order[TAG_NUM_TAGS];
+	int n = 0;
+	for ( int i = 0; i < TAG_NUM_TAGS; i++ ) {
+		if ( memTagBytes[i] > 0 ) {
+			order[n++] = i;
+		}
+	}
+	// small n: insertion sort by bytes, descending
+	for ( int i = 1; i < n; i++ ) {
+		int t = order[i];
+		int j = i - 1;
+		while ( j >= 0 && memTagBytes[order[j]] < memTagBytes[t] ) {
+			order[j + 1] = order[j];
+			j--;
+		}
+		order[j + 1] = t;
+	}
+	idLib::Printf( "Engine heap: %d KB in use, peak %d KB\n", memTotalBytes / 1024, memPeakBytes / 1024 );
+	for ( int i = 0; i < n && i < maxLines; i++ ) {
+		const int t = order[i];
+		idLib::Printf( "  %-22s %7d KB %7d blocks\n", memTagNames[t], memTagBytes[t] / 1024, memTagBlocks[t] );
+	}
+}
+
 void * operator new( size_t s ) {
-	return Mem_Alloc( s, TAG_NEW );
+	// operator new must return a unique pointer even for 0 bytes
+	return Mem_Alloc( s ? (int)s : 1, TAG_NEW );
 }
 void operator delete( void *p ) noexcept {
 	Mem_Free( p );
 }
 void * operator new[]( size_t s ) {
-	return Mem_Alloc( s, TAG_NEW );
+	return Mem_Alloc( s ? (int)s : 1, TAG_NEW );
 }
 void operator delete[]( void *p ) noexcept {
 	Mem_Free( p );
 }
-#endif
 
 /*
 ==================
@@ -62,19 +140,58 @@ void * Mem_Alloc16( const int size, const memTag_t tag ) {
 		return NULL;
 	}
 	const int paddedSize = ( size + 15 ) & ~15;
-#if defined( ID_3DS )
-	// Running out of memory is the expected failure on 3DS: say so instead of
-	// letting the caller crash on a NULL pointer later.
-	void * ptr = _aligned_malloc( paddedSize, 16 );
-	if ( ptr == NULL ) {
+	byte * raw = (byte *)memalign( 16, paddedSize + sizeof( memHeader_t ) );
+	if ( raw == NULL ) {
+		// Running out of memory is the expected failure on 3DS: say so, with the
+		// breakdown, instead of letting the caller crash on a NULL pointer later.
 		struct mallinfo mi = mallinfo();
-		idLib::FatalError( "Mem_Alloc16: out of memory allocating %d KB (tag %d), %d KB in use",
-			paddedSize / 1024, (int)tag, (int)( mi.uordblks / 1024 ) );
+		idLib::Printf( "Mem_Alloc16: out of memory allocating %d KB for %s, malloc %d KB in use\n",
+			paddedSize / 1024, ( tag >= 0 && tag < TAG_NUM_TAGS ) ? memTagNames[tag] : "?", (int)( mi.uordblks / 1024 ) );
+		Mem_LogTags( 24 );
+		idLib::FatalError( "Mem_Alloc16: out of memory allocating %d KB for %s",
+			paddedSize / 1024, ( tag >= 0 && tag < TAG_NUM_TAGS ) ? memTagNames[tag] : "?" );
 	}
-	return ptr;
-#else
+	memHeader_t * hdr = (memHeader_t *)raw;
+	hdr->size = paddedSize;
+	hdr->tag = (uint16)tag;
+	hdr->magic = MEM_HEADER_MAGIC;
+	Mem_Account( tag, paddedSize, 1 );
+	return raw + sizeof( memHeader_t );
+}
+
+/*
+==================
+Mem_Free16
+==================
+*/
+void Mem_Free16( void *ptr ) {
+	if ( ptr == NULL ) {
+		return;
+	}
+	memHeader_t * hdr = (memHeader_t *)( (byte *)ptr - sizeof( memHeader_t ) );
+	if ( hdr->magic != MEM_HEADER_MAGIC ) {
+		// not ours: plain malloc block
+		free( ptr );
+		return;
+	}
+	hdr->magic = 0;
+	Mem_Account( hdr->tag, -(int)hdr->size, -1 );
+	free( hdr );
+}
+
+#else // !ID_3DS
+
+/*
+==================
+Mem_Alloc16
+==================
+*/
+void * Mem_Alloc16( const int size, const memTag_t tag ) {
+	if ( !size ) {
+		return NULL;
+	}
+	const int paddedSize = ( size + 15 ) & ~15;
 	return _aligned_malloc( paddedSize, 16 );
-#endif
 }
 
 /*
@@ -88,6 +205,8 @@ void Mem_Free16( void *ptr ) {
 	}
 	_aligned_free( ptr );
 }
+
+#endif // ID_3DS
 
 /*
 ==================

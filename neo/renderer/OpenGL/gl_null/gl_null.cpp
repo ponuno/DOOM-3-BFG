@@ -32,6 +32,15 @@ the Free Software Foundation, either version 3 of the License, or
 #pragma hdrstop
 #include "../../../idlib/precompiled.h"
 
+#if defined( ID_3DS )
+extern "C" {
+#include <3ds/types.h>
+#include <3ds/allocator/linear.h>
+}
+// keep this much linear (GPU-visible) memory for the system / future ndsp buffers
+static const u32 NULLGL_LINEAR_RESERVE = 1024 * 1024;
+#endif
+
 /*
 ================================================================================================
 
@@ -113,7 +122,46 @@ struct nullBuffer_t {
 	GLuint		name;
 	byte *		data;
 	GLsizeiptr	size;
+	bool		linear;		// allocated from the 3DS linear heap
 };
+
+/*
+	Buffer storage. On 3DS the vertex cache buffers go to the linear heap when they
+	fit: that memory is otherwise unused by the null driver, and it is where citro3d
+	needs vertex/index data anyway. Larger ones fall back to the engine heap.
+*/
+static void NullGL_AllocStorage( nullBuffer_t * b, GLsizeiptr size ) {
+	b->linear = false;
+	b->data = NULL;
+#if defined( ID_3DS )
+	if ( linearSpaceFree() > (u32)size + NULLGL_LINEAR_RESERVE ) {
+		b->data = (byte *)linearMemAlign( size, 128 );
+		if ( b->data != NULL ) {
+			b->linear = true;
+			idLib::Printf( "null GL: buffer %u, %d KB in linear memory (%d KB left)\n",
+				b->name, (int)( size / 1024 ), (int)( linearSpaceFree() / 1024 ) );
+			return;
+		}
+	}
+#endif
+	b->data = (byte *)Mem_Alloc16( (int)size, TAG_RENDER );
+	idLib::Printf( "null GL: buffer %u, %d KB in heap\n", b->name, (int)( size / 1024 ) );
+}
+
+static void NullGL_FreeStorage( nullBuffer_t * b ) {
+	if ( b->data == NULL ) {
+		return;
+	}
+#if defined( ID_3DS )
+	if ( b->linear ) {
+		linearFree( b->data );
+		b->data = NULL;
+		return;
+	}
+#endif
+	Mem_Free16( b->data );
+	b->data = NULL;
+}
 
 static idList< nullBuffer_t, TAG_RENDER >	buffers;
 static GLuint boundArray = 0;
@@ -149,6 +197,7 @@ static void NullGL_GenBuffers( GLsizei n, GLuint * names ) {
 		b.name = NullGL_NewName();
 		b.data = NULL;
 		b.size = 0;
+		b.linear = false;
 		buffers.Append( b );
 		names[i] = b.name;
 	}
@@ -158,7 +207,7 @@ static void NullGL_DeleteBuffers( GLsizei n, const GLuint * names ) {
 	for ( GLsizei i = 0; i < n; i++ ) {
 		for ( int j = 0; j < buffers.Num(); j++ ) {
 			if ( buffers[j].name == names[i] ) {
-				Mem_Free16( buffers[j].data );
+				NullGL_FreeStorage( &buffers[j] );
 				buffers.RemoveIndexFast( j );
 				break;
 			}
@@ -179,12 +228,11 @@ static void NullGL_BufferData( GLenum target, GLsizeiptr size, const GLvoid * da
 		return;
 	}
 	if ( b->size != size ) {
-		Mem_Free16( b->data );
-		b->data = ( size > 0 ) ? (byte *)Mem_Alloc16( (int)size, TAG_RENDER ) : NULL;
-		b->size = size;
-		if ( size > 0 && b->data == NULL ) {
-			idLib::FatalError( "null GL: out of memory allocating a %d KB buffer", (int)( size / 1024 ) );
+		NullGL_FreeStorage( b );
+		if ( size > 0 ) {
+			NullGL_AllocStorage( b, size );
 		}
+		b->size = size;
 	}
 	if ( data != NULL && b->data != NULL ) {
 		memcpy( b->data, data, size );
