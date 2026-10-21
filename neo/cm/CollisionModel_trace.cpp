@@ -236,6 +236,27 @@ void idCollisionModelManagerLocal::TraceThroughModel( cm_traceWork_t *tw ) {
 	int i, numSteps;
 	idVec3 start, end;
 	idRotation rot;
+#if defined( ID_3DS )
+	// report traces that walk most of the tree (they should touch a handful of nodes)
+	const int n3dsNodes0 = n3dsCMStats[0];
+	const int n3dsRefs0 = n3dsCMStats[1];
+	struct n3dsReport_t {
+		cm_traceWork_t * tw;
+		int nodes0, refs0;
+		~n3dsReport_t() {
+			static int reported = 0;
+			const int nodes = n3dsCMStats[0] - nodes0;
+			if ( nodes > 1500 && reported < 30 ) {
+				reported++;
+				common->Printf( "CM wide trace on '%s' (%d nodes): %s, %d nodes visited, %d polygon refs | start (%s) end (%s) extents (%s) size (%s)-(%s) angle %.2f radius %.2f\n",
+					tw->model->name.c_str(), tw->model->numNodes, tw->rotation ? "rotation" : ( tw->positionTest ? "position" : "translation" ),
+					nodes, n3dsCMStats[1] - refs0,
+					tw->start.ToString( 1 ), tw->end.ToString( 1 ), tw->extents.ToString( 2 ),
+					tw->size[0].ToString( 1 ), tw->size[1].ToString( 1 ), tw->angle, tw->radius );
+			}
+		}
+	} n3dsReport = { tw, n3dsNodes0, n3dsRefs0 };
+#endif
 
 	if ( !tw->rotation ) {
 		// trace through spatial subdivision and then through leafs

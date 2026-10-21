@@ -3545,14 +3545,7 @@ static void CM_N3DSTreeStats_r( const cm_node_t * node, int depth, int & leaves,
 #endif
 
 void idCollisionModelManagerLocal::PrintModelInfo( const cm_model_t *model ) {
-#if defined( ID_3DS )
-	{
-		int leaves = 0, maxDepth = 0, maxPolys = 0, rootPolys = 0, nodes = 0;
-		CM_N3DSTreeStats_r( model->node, 0, leaves, maxDepth, maxPolys, rootPolys, nodes );
-		common->Printf( "cm tree: %d nodes reachable, %d leaves, depth %d, max %d polygon refs in one node, %d in the root\n",
-			nodes, leaves, maxDepth, maxPolys, rootPolys );
-	}
-#endif
+
 	common->Printf( "%6i vertices (%i KB)\n", model->numVertices, (model->numVertices * sizeof(cm_vertex_t))>>10 );
 	common->Printf( "%6i edges (%i KB)\n", model->numEdges, (model->numEdges * sizeof(cm_edge_t))>>10 );
 	common->Printf( "%6i polygons (%i KB)\n", model->numPolygons, model->polygonMemory>>10 );
@@ -3691,6 +3684,14 @@ void idCollisionModelManagerLocal::BuildModels( const idMapFile *mapFile ) {
 	common->Printf( "collision data:\n" );
 	common->Printf( "%6i models\n", numModels );
 	PrintModelInfo( &model );
+#if defined( ID_3DS )
+	if ( numModels > 0 && models[0] != NULL ) {
+		int leaves = 0, maxDepth = 0, maxPolys = 0, rootPolys = 0, nodes = 0;
+		CM_N3DSTreeStats_r( models[0]->node, 0, leaves, maxDepth, maxPolys, rootPolys, nodes );
+		common->Printf( "world cm tree '%s': %d nodes reachable (model says %d), %d leaves, depth %d, max %d polygon refs in one node, %d in the root\n",
+			models[0]->name.c_str(), nodes, models[0]->numNodes, leaves, maxDepth, maxPolys, rootPolys );
+	}
+#endif
 	common->Printf( "%.0f msec to load collision data.\n", timer.Milliseconds() );
 }
 
