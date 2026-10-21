@@ -128,6 +128,12 @@ for t in 3dstools general-tools; do
 	mkdir -p "$BLD/$t"; ( cd "$BLD/$t" && "$SRC/$t/configure" --prefix=$DKP/tools && make -j"$J" && make install ) && touch "$BLD/$t/.done"
 done
 
+# CIA tools: makerom (3DSGuy/Project_CTR) and bannertool (diasurgical/bannertool)
+clone 3DSGuy/Project_CTR Project_CTR
+[ -d "$SRC/bannertool" ] || git clone -q --depth 1 --recurse-submodules --shallow-submodules https://github.com/diasurgical/bannertool "$SRC/bannertool"
+( cd "$SRC/Project_CTR/makerom" && make deps -j"$J" && make -j"$J" ) && install -m755 "$SRC/Project_CTR/makerom/bin/makerom" $DKP/tools/bin/
+( cd "$SRC/bannertool" && make -j"$J" ) && install -m755 "$SRC/bannertool/output/linux-x86_64/bannertool" $DKP/tools/bin/
+
 ( cd "$SRC/libctru/libctru" && make -j"$J" && make install )
 ( cd "$SRC/citro3d" && make -j"$J" && make install )
 

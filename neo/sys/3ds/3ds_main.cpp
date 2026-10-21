@@ -69,6 +69,13 @@ n3dsVars_t	n3ds;
 	fails and libctru panics before main(). __system_allocateHeaps below gives the
 	application heap as much as fits in that window and the rest to the linear heap,
 	which the citro3d renderer will use for vertex buffers and textures.
+
+	Extended memory (the CIA, SystemModeExt 178MB): the heap window stays 96 MB, so
+	the heap takes all of it and everything else goes to the linear heap. main() then
+	keeps N3DS_GPU_LINEAR_MB of linear memory for citro3d and hands the rest to the
+	engine allocator as its second heap (Mem_InitSecondHeap): linear memory is ordinary
+	cached RAM, only its physical layout is special. In the 124 MB mode (.3dsx) nothing
+	changes: 86 MB heap, the rest linear, no second heap.
 */
 extern "C" {
 
@@ -86,6 +93,14 @@ static const u32 N3DS_MIN_LINEAR_HEAP = 8 * 1024 * 1024;
 #define N3DS_APP_HEAP_MB 86
 #endif
 static const u32 N3DS_APP_HEAP_MAX = (u32)N3DS_APP_HEAP_MB * 1024 * 1024;
+// linear memory citro3d keeps in extended memory mode: the 124 MB mode gives it ~24 MB
+// and its tightest maps leave ~1.6 MB of that free, so 30 MB leaves real headroom
+#if !defined( N3DS_GPU_LINEAR_MB )
+#define N3DS_GPU_LINEAR_MB 30
+#endif
+static const u32 N3DS_GPU_LINEAR = (u32)N3DS_GPU_LINEAR_MB * 1024 * 1024;
+// less than this beyond the GPU share is not worth a second heap
+static const u32 N3DS_MIN_SECOND_HEAP = 4 * 1024 * 1024;
 
 void __system_allocateHeaps( void ) {
 	Result rc;
@@ -113,6 +128,10 @@ void __system_allocateHeaps( void ) {
 	// linear heap (citro3d: vertex cache, command buffer, later textures)
 	if ( heapSize > N3DS_APP_HEAP_MAX ) {
 		heapSize = N3DS_APP_HEAP_MAX;
+	}
+	// extended memory: the whole heap window, the rest is linear (GPU + second heap)
+	if ( remaining >= heapWindow + N3DS_GPU_LINEAR + N3DS_MIN_SECOND_HEAP ) {
+		heapSize = heapWindow;
 	}
 	heapSize &= ~0xFFF;
 	__ctru_heap_size = heapSize;
@@ -256,6 +275,31 @@ void R_FrameMemoryStats( int & highWater, int & size );	// renderer/tr_frontend_
 void N3DS_SoundLogMemory();								// sound/3DS/3DS_SoundSample.cpp
 void N3DS_LogDeclMemory();								// framework/DeclManager.cpp
 void Mem_SlabStats( int & chunkBytes, int & usedBytes, int & emptyBytes );	// idlib/Heap.cpp
+void Mem_InitSecondHeap( void * mem, int bytes );						// idlib/Heap.cpp
+void Mem_SecondHeapStats( int & size, int & used, int & peak );			// idlib/Heap.cpp
+
+/*
+==============
+Sys_N3DSInitSecondHeap
+
+Extended memory mode: linear memory beyond what citro3d needs becomes the engine's
+second heap. Runs before anything else allocates linear memory.
+==============
+*/
+static void Sys_N3DSInitSecondHeap() {
+	const u32 linearFree = linearSpaceFree();
+	if ( linearFree < N3DS_GPU_LINEAR + N3DS_MIN_SECOND_HEAP ) {
+		return;
+	}
+	const u32 bytes = ( linearFree - N3DS_GPU_LINEAR ) & ~0xFFF;
+	void * mem = linearAlloc( bytes );
+	if ( mem == NULL ) {
+		Sys_Printf( "second heap: linearAlloc( %d KB ) failed\n", (int)( bytes / 1024 ) );
+		return;
+	}
+	Mem_InitSecondHeap( mem, (int)bytes );
+	Sys_Printf( "second heap: %d KB of linear memory, %d KB left for the GPU\n", (int)( bytes / 1024 ), (int)( linearSpaceFree() / 1024 ) );
+}
 
 /*
 ==============
@@ -267,9 +311,12 @@ taken from the heap (its high-water footprint), the heap size, free linear memor
 */
 void Sys_N3DSMemSample( int & mallocUsedKB, int & mallocArenaKB, int & heapKB, int & linearFreeKB ) {
 	struct mallinfo mi = mallinfo();
-	mallocUsedKB = (int)( mi.uordblks / 1024 );
-	mallocArenaKB = (int)( mi.arena / 1024 );
-	heapKB = (int)( __ctru_heap_size / 1024 );
+	int h2Size, h2Used, h2Peak;
+	Mem_SecondHeapStats( h2Size, h2Used, h2Peak );
+	// the second heap counts as part of malloc / the heap
+	mallocUsedKB = (int)( ( mi.uordblks + h2Used ) / 1024 );
+	mallocArenaKB = (int)( ( mi.arena + h2Used ) / 1024 );
+	heapKB = (int)( ( __ctru_heap_size + h2Size ) / 1024 );
 	linearFreeKB = (int)( linearSpaceFree() / 1024 );
 }
 
@@ -287,6 +334,11 @@ void Sys_LogMemory( const char * when ) {
 	int slabChunk, slabUsed, slabEmpty;
 	Mem_SlabStats( slabChunk, slabUsed, slabEmpty );
 	Sys_Printf( "  small blocks: %d KB in pages, %d KB in use, %d KB in empty pages\n", slabChunk / 1024, slabUsed / 1024, slabEmpty / 1024 );
+	int h2Size, h2Used, h2Peak;
+	Mem_SecondHeapStats( h2Size, h2Used, h2Peak );
+	if ( h2Size > 0 ) {
+		Sys_Printf( "  second heap: %d KB used (peak %d KB) of %d KB\n", h2Used / 1024, h2Peak / 1024, h2Size / 1024 );
+	}
 
 	// what is inside the big tags (no allocations: safe on the out-of-memory path)
 	N3DS_TexLogMemory();
@@ -932,6 +984,7 @@ int N3DS_Main( int argc, char ** argv ) {
 	Sys_Printf( "%s, application region %d KB\n", n3ds.isNew3DS ? "New 3DS" : "Old 3DS",
 		(int)( osGetMemRegionSize( MEMREGION_APPLICATION ) / 1024 ) );
 	Sys_Printf( "heap %d KB, linear heap %d KB\n", (int)( __ctru_heap_size / 1024 ), (int)( __ctru_linear_heap_size / 1024 ) );
+	Sys_N3DSInitSecondHeap();
 	Sys_LogMemory( "start" );
 
 	Sys_BuildCommandLine();

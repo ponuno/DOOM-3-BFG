@@ -9,12 +9,20 @@ Real build (devkitPro with devkitARM, libctru, citro3d installed), from the MSYS
     cmake -S neo -B build -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake
     cmake --build build -- -k -j8
 
-Output: `build/doom3ds.3dsx`.
+Output: `build/doom3ds.3dsx`, and `build/doom3ds.cia` when `makerom` and `bannertool` are found
+in `$DEVKITPRO/tools/bin` or on PATH (Windows: put `makerom.exe` from
+github.com/3DSGuy/Project_CTR releases and `bannertool.exe` from github.com/diasurgical/bannertool
+releases into `C:\devkitPro\tools\bin`, then reconfigure).
+
+The CIA is the real build: its RSF (`neo/sys/3ds/cia/doom3ds.rsf`) asks for the 178 MB New 3DS
+memory mode (`SystemModeExt: 178MB`, 804 MHz, L2 cache). A .3dsx started from the Homebrew
+Launcher runs in the 124 MB mode of the title it borrows, which the heaviest maps (phobos3,
+mc_underground) do not fit. Install the CIA with FBI; title id 000400000D3BF000.
 
 On Linux without access to the devkitPro package servers, `tools/n3ds/build-devkitarm-linux.sh`
 builds the same toolchain from GitHub sources into `/opt/devkitpro` (binutils 2.46, GCC 16.1.0 with
 the devkitARM patch, devkitPro newlib, libctru, citro3d, picasso, 3dsxtool; only the default and
-`armv6k/fpu` multilibs). Then:
+`armv6k/fpu` multilibs) and the CIA tools makerom and bannertool. Then:
 
     . ~/devkitpro-env.sh
     cmake -S neo -B build -G "Unix Makefiles" -DCMAKE_MAKE_PROGRAM=/usr/bin/make -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake
@@ -31,7 +39,7 @@ Target: armv6k / MPCore, VFPv2, hard-float, C++14 (gnu), exceptions ON
 
 ## SD card layout
 
-    sdmc:/3ds/doom3ds/doom3ds.3dsx
+    sdmc:/3ds/doom3ds/doom3ds.3dsx   (dev build, 124 MB; or install doom3ds.cia with FBI)
     sdmc:/3ds/dspfirm.cdc            (DSP firmware dump; without it the game runs silent)
     sdmc:/doom3/base/default.cfg
     sdmc:/doom3/base/strings/english.lang
@@ -147,6 +155,22 @@ transform and premultiply alpha like gui.pixel. GUI/font images keep a level up 
 they shrink to a third, so `n3ds_hudScale`/`n3ds_uiScale` enlarge them (edge-anchored sprites such as
 `_bottomLeft` stay pinned to the screen edges); the log prints every SWF's stage size at load. Not yet: TG_SCREEN/cube texgens, cinematics, program stages, scissor.
 Skinned models are skinned on the CPU (`r_useGPUSkinning` forced to 0 with citro3d).
+
+## Memory modes and the second heap
+
+| | .3dsx (124 MB) | CIA (178 MB) |
+|---|---|---|
+| application heap (malloc) | 86 MB | 96 MB (the whole heap window) |
+| linear heap | ~25 MB, all GPU | ~70 MB: 30 MB GPU (`N3DS_GPU_LINEAR_MB`) + second heap |
+| engine memory | 86 MB | ~126 MB |
+
+The heap's virtual window is 96 MB in every mode (0x08000000-0x0E000000), so the extra
+memory of the 178 MB mode can only be linear memory. `Sys_N3DSInitSecondHeap` (start of
+`N3DS_Main`, before citro3d) takes linear memory beyond the GPU share with one `linearAlloc`
+and gives it to `Mem_InitSecondHeap` (idlib/Heap.cpp): a TLSF heap (idlib/tlsf, BSD) that
+takes over when malloc fails. Slab chunks and big blocks may live there; the slab page map
+covers it. The MEM report shows `second heap: used (peak) of size`; the tour counts it as
+part of malloc and the heap.
 
 ## Map tour (memory budgets)
 

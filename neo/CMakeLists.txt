@@ -92,7 +92,7 @@ set(IDLIB_SOURCES
 )
 
 if(NINTENDO_3DS)
-	list(APPEND IDLIB_SOURCES idlib/sys/3ds/3ds_thread.cpp)
+	list(APPEND IDLIB_SOURCES idlib/sys/3ds/3ds_thread.cpp idlib/tlsf/tlsf.c)
 else()
 	list(APPEND IDLIB_SOURCES idlib/math/Simd_SSE.cpp idlib/sys/win32/win_thread.cpp)
 endif()
@@ -206,5 +206,33 @@ elseif(NINTENDO_3DS)
 				COMMAND ${TOOL_3DSXTOOL} $<TARGET_FILE:doom3ds> ${CMAKE_BINARY_DIR}/doom3ds.3dsx
 				COMMENT "Creating doom3ds.3dsx")
 		endif()
+	endif()
+
+	# doom3ds.cia: installable title with the 178 MB New 3DS memory mode
+	# (sys/3ds/cia/doom3ds.rsf, SystemModeExt). A .3dsx runs in the 124 MB mode of
+	# the title it is launched from. Needs makerom (github.com/3DSGuy/Project_CTR)
+	# and bannertool (github.com/diasurgical/bannertool) in $DEVKITPRO/tools/bin or
+	# on PATH; tools/n3ds/build-devkitarm-linux.sh builds both.
+	find_program(TOOL_MAKEROM makerom HINTS $ENV{DEVKITPRO}/tools/bin)
+	find_program(TOOL_BANNERTOOL bannertool HINTS $ENV{DEVKITPRO}/tools/bin)
+	if(TOOL_MAKEROM AND TOOL_BANNERTOOL)
+		set(N3DS_CIA_DIR ${CMAKE_CURRENT_SOURCE_DIR}/sys/3ds/cia)
+		add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/doom3ds.bnr
+			COMMAND ${TOOL_BANNERTOOL} makebanner -i ${N3DS_CIA_DIR}/banner.png -a ${N3DS_CIA_DIR}/banner.wav -o ${CMAKE_BINARY_DIR}/doom3ds.bnr
+			DEPENDS ${N3DS_CIA_DIR}/banner.png ${N3DS_CIA_DIR}/banner.wav
+			COMMENT "Creating doom3ds.bnr")
+		add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/doom3ds.icn
+			COMMAND ${TOOL_BANNERTOOL} makesmdh -s "DOOM 3 BFG" -l "DOOM 3 BFG Edition - New 3DS port" -p "doom3ds" -i ${N3DS_CIA_DIR}/icon.png -o ${CMAKE_BINARY_DIR}/doom3ds.icn
+			DEPENDS ${N3DS_CIA_DIR}/icon.png
+			COMMENT "Creating doom3ds.icn")
+		add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/doom3ds.cia
+			COMMAND ${TOOL_MAKEROM} -f cia -o ${CMAKE_BINARY_DIR}/doom3ds.cia -elf $<TARGET_FILE:doom3ds>
+				-rsf ${N3DS_CIA_DIR}/doom3ds.rsf -icon ${CMAKE_BINARY_DIR}/doom3ds.icn -banner ${CMAKE_BINARY_DIR}/doom3ds.bnr
+				-exefslogo -target t
+			DEPENDS doom3ds ${N3DS_CIA_DIR}/doom3ds.rsf ${CMAKE_BINARY_DIR}/doom3ds.icn ${CMAKE_BINARY_DIR}/doom3ds.bnr
+			COMMENT "Creating doom3ds.cia (178 MB memory mode)")
+		add_custom_target(doom3ds_cia ALL DEPENDS ${CMAKE_BINARY_DIR}/doom3ds.cia)
+	else()
+		message(STATUS "makerom/bannertool not found: no doom3ds.cia (the .3dsx runs in the 124 MB mode only)")
 	endif()
 endif()

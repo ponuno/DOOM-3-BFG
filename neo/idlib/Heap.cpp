@@ -43,6 +43,7 @@ extern "C" {
 #include <3ds/types.h>
 #include <3ds/synchronization.h>
 }
+#include "tlsf/tlsf.h"
 
 /*
 ================================================================================================
@@ -172,6 +173,92 @@ void Mem_ArenaStats( int & used, int & peak, int & size ) {
 /*
 ================================================================================================
 
+	New 3DS second heap (extended memory mode)
+
+	The application heap window is 96 MB in every memory mode. With the 178 MB New 3DS
+	mode (the CIA build) the rest of the application's memory can only be linear
+	memory. N3DS_Main gives the part the GPU does not need to Mem_InitSecondHeap; when
+	malloc cannot satisfy a big block or a slab chunk, it comes from there. A TLSF
+	allocator (O(1), immediate coalescing) manages it under its own lock: libctru's
+	linear allocator is not thread safe and is only used by the main thread.
+
+================================================================================================
+*/
+
+static tlsf_t			heap2 = NULL;
+static uintptr_t		heap2Begin = 0;
+static uintptr_t		heap2End = 0;
+static LightLock		heap2Lock;
+static int				heap2Size = 0;
+static int				heap2Used = 0;
+static int				heap2Peak = 0;
+
+void Mem_InitSecondHeap( void * mem, int bytes ) {
+	if ( heap2 != NULL || mem == NULL || bytes < 1024 * 1024 ) {
+		return;
+	}
+	// TLSF wants its pool aligned to its own alignment (8 bytes covers 32 and 64 bits)
+	const uintptr_t start = ( (uintptr_t)mem + 7 ) & ~(uintptr_t)7;
+	bytes -= (int)( start - (uintptr_t)mem );
+	bytes &= ~7;
+	mem = (void *)start;
+	LightLock_Init( &heap2Lock );
+	heap2 = tlsf_create_with_pool( mem, bytes );
+	heap2Begin = (uintptr_t)mem;
+	heap2End = heap2Begin + bytes;
+	heap2Size = bytes;
+}
+
+static bool Heap2_Owns( const void * p ) {
+	return heap2 != NULL && (uintptr_t)p >= heap2Begin && (uintptr_t)p < heap2End;
+}
+
+static void * Heap2_Malloc( int bytes ) {
+	if ( heap2 == NULL ) {
+		return NULL;
+	}
+	LightLock_Lock( &heap2Lock );
+	void * p = tlsf_malloc( heap2, bytes );
+	if ( p != NULL ) {
+		heap2Used += (int)tlsf_block_size( p );
+		if ( heap2Used > heap2Peak ) {
+			heap2Peak = heap2Used;
+		}
+	}
+	LightLock_Unlock( &heap2Lock );
+	return p;
+}
+
+static void Heap2_Free( void * p ) {
+	LightLock_Lock( &heap2Lock );
+	heap2Used -= (int)tlsf_block_size( p );
+	tlsf_free( heap2, p );
+	LightLock_Unlock( &heap2Lock );
+}
+
+void Mem_SecondHeapStats( int & size, int & used, int & peak ) {
+	size = heap2Size;
+	used = heap2Used;
+	peak = heap2Peak;
+}
+
+// malloc, else the second heap
+static void * Raw_Malloc( int bytes ) {
+	void * p = malloc( bytes );
+	return ( p != NULL ) ? p : Heap2_Malloc( bytes );
+}
+
+static void Raw_Free( void * p ) {
+	if ( Heap2_Owns( p ) ) {
+		Heap2_Free( p );
+	} else {
+		free( p );
+	}
+}
+
+/*
+================================================================================================
+
 	New 3DS block allocator
 
 	Mem_Alloc16 used memalign( 16, n ). newlib's malloc aligns to 8 on ARM, so memalign
@@ -185,7 +272,7 @@ void Mem_ArenaStats( int & used, int & peak, int & size ) {
 	  16) per page, free slots chained inside the page. A page that empties goes to a
 	  shared pool for any class; a 512 KB chunk whose pages are all empty goes back to
 	  malloc, so level changes do not strand memory in the wrong size class.
-	- bigger blocks are malloc( n + 16 ), aligned by hand inside; the 8 bytes before
+	- bigger blocks are malloc( n + 23 ), aligned by hand inside; the 8 bytes before
 	  the block hold a magic and the malloc pointer. One malloc chunk, nothing given
 	  back in pieces.
 	Both are 16-byte aligned like before and need no per-block malloc header for the
@@ -202,7 +289,9 @@ static const int		SLAB_PAGES_PER_CHUNK = SLAB_CHUNK / SLAB_PAGE;
 static const int		SLAB_MAX_CHUNKS = 255;
 static const uintptr_t	SLAB_ADDR_BASE = 0x08000000;		// application heap address range
 static const uintptr_t	SLAB_ADDR_END = 0x10000000;
-static const int		SLAB_MAP_PAGES = ( SLAB_ADDR_END - SLAB_ADDR_BASE ) / SLAB_PAGE;
+static const int		SLAB_HEAP_PAGES = ( SLAB_ADDR_END - SLAB_ADDR_BASE ) / SLAB_PAGE;
+static const int		SLAB_HEAP2_PAGES = ( 128 * 1024 * 1024 ) / SLAB_PAGE;	// second heap: up to 128 MB mapped
+static const int		SLAB_MAP_PAGES = SLAB_HEAP_PAGES + SLAB_HEAP2_PAGES;
 
 struct slabPage_t {
 	uint16			objSize;		// 0 while in the empty pool
@@ -232,10 +321,16 @@ static int				slabEmptyPages = 0;
 
 static inline int Slab_MapIndex( const void * p ) {
 	const uintptr_t a = (uintptr_t)p;
-	if ( a < SLAB_ADDR_BASE || a >= SLAB_ADDR_END ) {
-		return -1;
+	if ( a >= SLAB_ADDR_BASE && a < SLAB_ADDR_END ) {
+		return (int)( ( a - SLAB_ADDR_BASE ) / SLAB_PAGE );
 	}
-	return (int)( ( a - SLAB_ADDR_BASE ) / SLAB_PAGE );
+	// slab pages are aligned to SLAB_PAGE in absolute addresses: index from the page
+	// boundary below the heap start, not from the (unaligned) start itself
+	const uintptr_t heap2MapBase = heap2Begin & ~(uintptr_t)( SLAB_PAGE - 1 );
+	if ( Heap2_Owns( p ) && a - heap2MapBase < (uintptr_t)SLAB_HEAP2_PAGES * SLAB_PAGE ) {
+		return SLAB_HEAP_PAGES + (int)( ( a - heap2MapBase ) / SLAB_PAGE );
+	}
+	return -1;
 }
 
 static bool Slab_Owns( const void * p ) {
@@ -276,13 +371,13 @@ static bool Slab_AddChunk() {
 	if ( slot < 0 ) {
 		return false;
 	}
-	void * raw = malloc( SLAB_CHUNK + SLAB_PAGE );
+	void * raw = Raw_Malloc( SLAB_CHUNK + SLAB_PAGE );
 	if ( raw == NULL ) {
 		return false;
 	}
 	byte * base = (byte *)( ( (uintptr_t)raw + SLAB_PAGE - 1 ) & ~(uintptr_t)( SLAB_PAGE - 1 ) );
 	if ( Slab_MapIndex( base ) < 0 || Slab_MapIndex( base + SLAB_CHUNK - 1 ) < 0 ) {
-		free( raw );		// outside the expected heap range: not ours to map
+		Raw_Free( raw );		// outside the mapped address ranges: not ours to map
 		return false;
 	}
 	slabChunks[slot].raw = raw;
@@ -307,7 +402,7 @@ static void Slab_ReleaseChunk( int slot ) {
 		slabEmptyPages--;
 		slabPageChunk[Slab_MapIndex( page )] = 0;
 	}
-	free( slabChunks[slot].raw );
+	Raw_Free( slabChunks[slot].raw );
 	slabChunks[slot].raw = NULL;
 	slabChunkCount--;
 }
@@ -387,7 +482,8 @@ static const uint32 BIG_BLOCK_MAGIC = 0xB16B10C5;
 static const int BIG_INFO = ( sizeof( uint32 ) + sizeof( void * ) + 7 ) & ~7;	// 8 bytes on the 3DS
 
 static void * Big_Alloc( int size ) {
-	byte * raw = (byte *)malloc( size + BIG_INFO + 8 );		// malloc aligns to 8: lead is BIG_INFO or +8
+	// malloc aligns to 8, the second heap (TLSF) only to 4: room for any lead up to BIG_INFO + 15
+	byte * raw = (byte *)Raw_Malloc( size + BIG_INFO + 15 );
 	if ( raw == NULL ) {
 		return NULL;
 	}
@@ -404,14 +500,14 @@ static bool Big_Owns( const void * p ) {
 	}
 	const byte * raw = *(const byte * const *)( b - sizeof( void * ) );
 	const uintptr_t lead = (uintptr_t)b - (uintptr_t)raw;
-	return lead >= (uintptr_t)BIG_INFO && lead <= (uintptr_t)BIG_INFO + 8;
+	return lead >= (uintptr_t)BIG_INFO && lead <= (uintptr_t)BIG_INFO + 15;
 }
 
 static void Big_Free( void * p ) {
 	byte * b = (byte *)p;
 	void * raw = *(void **)( b - sizeof( void * ) );
 	*(uint32 *)( b - sizeof( void * ) - sizeof( uint32 ) ) = 0;	// a stale pointer freed twice is not taken for a block again
-	free( raw );
+	Raw_Free( raw );
 }
 
 // any engine block: slab, temp arena, big block, or foreign malloc memory
