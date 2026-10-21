@@ -32,6 +32,10 @@ void			N3DSGPU_SetColor( float r, float g, float b, float a );
 // indexes: 16-bit, linear memory
 void			N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short * indexes, int numIndexes );
 
+// diagnostics: command buffer use 0..1, GPU time of the last frame (ms)
+float			N3DSGPU_CmdBufUsage( void );
+float			N3DSGPU_DrawingTimeMs( void );
+
 // make CPU writes in linear memory visible to the GPU
 void			N3DSGPU_FlushRange( const void * p, unsigned int size );
 

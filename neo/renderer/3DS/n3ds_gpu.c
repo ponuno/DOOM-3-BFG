@@ -147,6 +147,14 @@ void N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short *
 	C3D_DrawElements( GPU_TRIANGLES, numIndexes, C3D_UNSIGNED_SHORT, indexes );
 }
 
+float N3DSGPU_CmdBufUsage( void ) {
+	return initialized ? C3D_GetCmdBufUsage() : 0.0f;
+}
+
+float N3DSGPU_DrawingTimeMs( void ) {
+	return initialized ? C3D_GetDrawingTime() : 0.0f;
+}
+
 void N3DSGPU_FlushRange( const void * p, unsigned int size ) {
 	if ( p != NULL && size > 0 ) {
 		GSPGPU_FlushDataCache( p, size );

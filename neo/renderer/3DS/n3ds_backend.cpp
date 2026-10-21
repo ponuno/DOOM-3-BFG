@@ -35,8 +35,22 @@ void * NullGL_BufferStorage( GLuint name, bool * linear );	// gl_null.cpp
 
 bool r_n3dsC3D = false;
 
+idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: draw at most this many surfaces per frame (0 = all), for bisecting GPU hangs" );
+idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
+idCVar n3ds_c3dTrace( "n3ds_c3dTrace", "3", CVAR_RENDERER | CVAR_INTEGER, "citro3d: log begin/end of the first N 3D frames" );
+
 static int		c3dSkippedNotLinear = 0;
 static bool		c3dWarnedNotLinear = false;
+static int		c3dFrame3D = 0;			// 3D frames drawn so far
+static int		c3dBadDraws = 0;		// rejected by validation (total)
+static int		c3dBadLogged = 0;
+static int		c3dStatFrames = 0;
+static int		c3dStatDraws = 0;
+static int		c3dStatTris = 0;
+static int		c3dStatBad = 0;
+static float	c3dStatCmdMax = 0.0f;
+static float	c3dStatGpuMs = 0.0f;
+static int		c3dStatStart = 0;
 
 /*
 ========================
@@ -121,7 +135,44 @@ static void N3DS_MaterialColor( const idMaterial * material ) {
 N3DS_DrawView
 ========================
 */
+static bool N3DS_ValidateDraw( const drawSurf_t * surf, const idMaterial * material, const idVertexBuffer & vb,
+		const idIndexBuffer & ib, const byte * vbBase, const byte * ibBase ) {
+	const int numVerts = vb.GetSize() / (int)sizeof( idDrawVert );
+	const char * why = NULL;
+	int maxIndex = -1;
+	if ( surf->numIndexes * (int)sizeof( triIndex_t ) > ib.GetSize() ) {
+		why = "index count beyond index allocation";
+	} else if ( ( surf->numIndexes % 3 ) != 0 ) {
+		why = "index count not a multiple of 3";
+	} else {
+		const triIndex_t * idx = (const triIndex_t *)( ibBase + ib.GetOffset() );
+		for ( int k = 0; k < surf->numIndexes; k++ ) {
+			if ( idx[k] > maxIndex ) {
+				maxIndex = idx[k];
+			}
+		}
+		if ( maxIndex >= numVerts ) {
+			why = "index beyond vertex allocation";
+		}
+	}
+	if ( why == NULL ) {
+		return true;
+	}
+	c3dBadDraws++;
+	c3dStatBad++;
+	if ( c3dBadLogged < 8 ) {
+		c3dBadLogged++;
+		common->Printf( "citro3d: bad draw (%s): %s, %d indexes (max %d), %d verts, vb %p+%d size %d, ib %p+%d size %d\n",
+			why, material->GetName(), surf->numIndexes, maxIndex, numVerts,
+			vbBase, vb.GetOffset(), vb.GetSize(), ibBase, ib.GetOffset(), ib.GetSize() );
+	}
+	return false;
+}
+
 static void N3DS_DrawView( const viewDef_t * viewDef ) {
+	const int maxDraws = n3ds_c3dMaxDraws.GetInteger();
+	const bool validate = n3ds_c3dValidate.GetBool();
+	int draws = 0;
 	const viewEntity_t * lastSpace = NULL;
 	GLuint lastVBName = 0, lastIBName = 0;
 	byte * vbBase = NULL;
@@ -166,6 +217,22 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 			continue;
 		}
 
+		if ( validate && !N3DS_ValidateDraw( surf, material, vb, ib, vbBase, ibBase ) ) {
+			continue;
+		}
+		if ( maxDraws > 0 && draws >= maxDraws ) {
+			break;
+		}
+		// never let the command buffer overflow: a truncated draw sequence hangs the GPU
+		if ( N3DSGPU_CmdBufUsage() > 0.9f ) {
+			if ( c3dBadLogged < 8 ) {
+				c3dBadLogged++;
+				common->Printf( "citro3d: command buffer 90%% full after %d draws, rest of the frame dropped\n", draws );
+			}
+			break;
+		}
+		draws++;
+
 		if ( surf->space != lastSpace ) {
 			N3DS_SetMVP( surf->space->mvp );
 			lastSpace = surf->space;
@@ -176,6 +243,8 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 
 		backEnd.pc.c_drawElements++;
 		backEnd.pc.c_drawIndexes += surf->numIndexes;
+		c3dStatDraws++;
+		c3dStatTris += surf->numIndexes / 3;
 	}
 }
 
@@ -190,7 +259,26 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 	const uint64 start = Sys_Microseconds();
 
+	// is there a 3D view this frame? (for tracing the first ones)
+	bool has3D = false;
+	for ( const emptyCommand_t * c = cmds; c != NULL; c = (const emptyCommand_t *)c->next ) {
+		if ( c->commandId == RC_DRAW_VIEW_3D ) {
+			const viewDef_t * v = ( (const drawSurfsCommand_t *)c )->viewDef;
+			if ( v != NULL && !v->isSubview && v->viewEntitys != NULL ) {
+				has3D = true;
+			}
+		}
+	}
+	const bool trace = has3D && c3dFrame3D < n3ds_c3dTrace.GetInteger();
+	if ( trace ) {
+		common->Printf( "citro3d: 3D frame %d: begin\n", c3dFrame3D );
+	}
+
 	N3DSGPU_BeginFrame( 0x182030FF );
+	if ( trace ) {
+		common->Printf( "citro3d: 3D frame %d: GPU ready, previous frame %.2f ms\n", c3dFrame3D, N3DSGPU_DrawingTimeMs() );
+	}
+	const int drawsBefore = c3dStatDraws;
 	for ( ; cmds != NULL; cmds = (const emptyCommand_t *)cmds->next ) {
 		if ( cmds->commandId != RC_DRAW_VIEW_3D ) {
 			continue;
@@ -201,7 +289,35 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		}
 		N3DS_DrawView( viewDef );
 	}
+	const float cmdUse = N3DSGPU_CmdBufUsage();
+	if ( trace ) {
+		common->Printf( "citro3d: 3D frame %d: %d draws, command buffer %.0f%%, submitting\n",
+			c3dFrame3D, c3dStatDraws - drawsBefore, cmdUse * 100.0f );
+	}
 	N3DSGPU_EndFrame();
+	if ( trace ) {
+		common->Printf( "citro3d: 3D frame %d: submitted\n", c3dFrame3D );
+	}
+	if ( has3D ) {
+		c3dFrame3D++;
+	}
+
+	// a line every 2 seconds next to the PERF lines
+	c3dStatFrames++;
+	c3dStatCmdMax = Max( c3dStatCmdMax, cmdUse );
+	c3dStatGpuMs += N3DSGPU_DrawingTimeMs();
+	const int now = Sys_Milliseconds();
+	if ( c3dStatStart == 0 ) {
+		c3dStatStart = now;
+	}
+	if ( now - c3dStatStart >= 2000 && c3dFrame3D > 0 ) {
+		const float f = (float)Max( c3dStatFrames, 1 );
+		common->Printf( "PERF   citro3d: %.0f draws %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d\n",
+			c3dStatDraws / f, c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad );
+		c3dStatStart = now;
+		c3dStatFrames = c3dStatDraws = c3dStatTris = c3dStatBad = 0;
+		c3dStatCmdMax = c3dStatGpuMs = 0.0f;
+	}
 
 	backEnd.pc.totalMicroSec = Sys_Microseconds() - start;
 }
