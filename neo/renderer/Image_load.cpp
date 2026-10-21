@@ -30,6 +30,9 @@ If you have questions concerning this license or the applicable additional terms
 #include "../idlib/precompiled.h"
 
 #include "tr_local.h"
+#if defined( ID_3DS )
+#include "3DS/n3ds_gpu.h"
+#endif
 
 /*
 ================
@@ -192,6 +195,9 @@ void idImage::GenerateImage( const byte *pic, int width, int height, textureFilt
 		const byte * data = im.GetImageData( i );
 		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
 	}
+#if defined( ID_3DS )
+	N3DS_KeepLevel( im, RB_N3DS_TexKeepSize( usage ) );		// _white, _noFalloff, _quadratic, ...
+#endif
 }
 
 /*
@@ -234,6 +240,47 @@ void idImage::GenerateCubeImage( const byte *pic[6], int size, textureFilter_t f
 		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
 	}
 }
+
+#if defined( ID_3DS )
+/*
+========================
+idImage::N3DS_KeepLevel
+
+citro3d: hand one level to the texture cache, the largest with data that is not
+over keepSize, else the smallest with data.
+========================
+*/
+void idImage::N3DS_KeepLevel( idBinaryImage & im, int keepSize ) {
+	if ( keepSize <= 0 || opts.textureType != TT_2D ) {
+		return;
+	}
+	int pick = -1;
+	for ( int i = 0; i < im.NumImages(); i++ ) {
+		const bimageImage_t & img = im.GetImageHeader( i );
+		if ( im.GetImageData( i ) == NULL || img.destZ != 0 ) {
+			continue;
+		}
+		if ( pick < 0 || ( img.width <= keepSize && img.height <= keepSize ) ) {
+			pick = i;
+			if ( img.width <= keepSize && img.height <= keepSize ) {
+				break;
+			}
+		}
+	}
+	if ( pick < 0 ) {
+		return;
+	}
+	int wrap = N3DS_WRAP_CLAMP;
+	if ( repeat == TR_REPEAT ) {
+		wrap = N3DS_WRAP_REPEAT;
+	} else if ( repeat == TR_CLAMP_TO_ZERO || repeat == TR_CLAMP_TO_ZERO_ALPHA ) {
+		wrap = N3DS_WRAP_ZERO;
+	}
+	const bimageImage_t & img = im.GetImageHeader( pick );
+	RB_N3DS_ImageLevel( this, opts.format, opts.colorFormat, img.width, img.height,
+		im.GetImageData( pick ), img.dataSize, wrap, usage == TD_COVERAGE );
+}
+#endif
 
 /*
 ===============
@@ -432,27 +479,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 
 #if defined( ID_3DS )
 	idBinaryImage::keepLevelMaxSize = 0;
-	if ( n3dsKeepSize > 0 && opts.textureType == TT_2D ) {
-		// the largest level with data that is not over the size, else the smallest with data
-		int pick = -1;
-		for ( int i = 0; i < im.NumImages(); i++ ) {
-			const bimageImage_t & img = im.GetImageHeader( i );
-			if ( im.GetImageData( i ) == NULL || img.destZ != 0 ) {
-				continue;
-			}
-			if ( pick < 0 || ( img.width <= n3dsKeepSize && img.height <= n3dsKeepSize ) ) {
-				pick = i;
-				if ( img.width <= n3dsKeepSize && img.height <= n3dsKeepSize ) {
-					break;
-				}
-			}
-		}
-		if ( pick >= 0 ) {
-			const bimageImage_t & img = im.GetImageHeader( pick );
-			RB_N3DS_ImageLevel( this, opts.format, opts.colorFormat, img.width, img.height,
-				im.GetImageData( pick ), img.dataSize, repeat == TR_REPEAT, usage == TD_COVERAGE );
-		}
-	}
+	N3DS_KeepLevel( im, n3dsKeepSize );
 #endif
 }
 

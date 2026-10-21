@@ -101,7 +101,15 @@ Textures (`n3ds_textures.cpp`, `n3ds_texconv.cpp`): at image load one level no l
 When a surface is drawn, that level is decoded, mipmapped, tiled (8x8 Morton tiles) and copied to
 VRAM as RGB565 / RGBA5551 / RGBA4 / A8, a few per frame; VRAM is an LRU cache. The shader decodes
 the half-float st itself (table of powers of two in a uniform array). Perforated materials use
-their coverage image as an alpha-test mask on texture unit 1. Lighting is not done yet.
+their coverage image as an alpha-test mask on texture unit 1. Generated images (`_white`,
+`_noFalloff`, `_quadratic`, ...) are kept from `idImage::GenerateImage`.
+
+Lighting (`n3ds_backend.cpp`): a fill pass draws every opaque/perforated surface once (diffuse at
+`n3ds_ambient`, unlit materials at full brightness, depth written), then every interaction of
+every light is added with depth EQUAL: light projection (unit 0, per-pixel divide with the PICA
+projection mode) x falloff (unit 1) x diffuse (unit 2) x light colour x max(0, N.L) per vertex,
+x4 in the last combiner stage so `r_lightScale` 3 overbright survives the 0..1 vertex colour.
+No normal/specular maps and no shadows yet.
 
 ## Runtime switches (cmdline.txt, e.g. `+set n3ds_animQuant 0`)
 
@@ -114,12 +122,16 @@ their coverage image as an alpha-test mask on texture unit 1. Lighting is not do
 | `n3ds_skipImageData` | 1 | `.bimage` pixel data is seeked over, not read (null GL); resources opened as streams are no longer buffered whole |
 | `n3ds_lazyInteractions` | 0 | light/entity interactions are not all pre-generated at map start (created when first in view) |
 | `n3ds_discardStaticGeo` | 1 | null GL: static vertex/index cache uploads dropped, their buffers never get storage (-8 MB heap, -3 MB linear) |
-| `n3ds_renderer` | 1 | 0 = null GL (nothing drawn), 1 = citro3d (stage 2: diffuse textures, no lighting yet) |
+| `n3ds_renderer` | 1 | 0 = null GL (nothing drawn), 1 = citro3d (stage 3: diffuse textures, per-vertex lights) |
 | `n3ds_textures` | 1 | citro3d: 0 = flat colour per material |
 | `n3ds_texMaxSize` | 128 | largest texture side; set at startup (the kept level is chosen at load) |
 | `n3ds_texUploadsPerFrame` | 4 | textures decoded and copied to VRAM per frame |
 | `n3ds_texFlip` | 1 | texture rows stored bottom-up; toggle if textures are upside down |
 | `n3ds_texMips` | 1 | mip maps |
+| `n3ds_texUploadsAfterLoad` | 256 | upload limit for the first 3 frames after a map load |
+| `n3ds_lighting` | 1 | light passes; 0 = everything at full brightness |
+| `n3ds_ambient` | 0.06 | brightness of lit surfaces no light reaches (Doom 3: 0) |
+| `n3ds_lightProjective` | 1 | light projection divided per pixel; 0 = per vertex |
 | `n3ds_debugPhysics` | 0 | heavy physics diagnostics: NaN checks per AF step, LCP dumps, trace counters, SLOW AF lines |
 | `n3ds_staticVertexKB` / `n3ds_staticIndexKB` | 0 | static vertex/index cache size; 0 = 6144/2048 with citro3d, 10240/6144 budget-only with null GL |
 | `n3ds_core1Percent` | 30 | `APT_SetAppCpuTimeLimit` for the system core |

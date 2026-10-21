@@ -808,6 +808,9 @@ void idImageManager::EndLevelLoad() {
 	int	end = Sys_Milliseconds();
 	common->Printf( "%5i images loaded in %5.1f seconds\n", loadCount, (end-start) * 0.001 );
 	common->Printf( "----------------------------------------\n" );
+#if defined( ID_3DS )
+	RB_N3DS_TexLevelLoaded();
+#endif
 	//R_ListImages_f( idCmdArgs( "sorted sorted", false ) );
 }
 

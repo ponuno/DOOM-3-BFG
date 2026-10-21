@@ -10,7 +10,7 @@
 #ifndef __N3DS_TEXTURES_H__
 #define __N3DS_TEXTURES_H__
 
-void		N3DS_TexBeginFrame();
+void		N3DS_TexBeginFrame( bool has3D );
 void *		N3DS_TexForImage( idImage * image );		// GPU texture or NULL
 void		N3DS_TexStatsLine( idStr & line );
 

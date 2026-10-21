@@ -1,12 +1,21 @@
-; New 3DS vertex shader, stage 2: textured world, no lighting yet.
+; New 3DS vertex shader, stage 3: textured world lit per vertex.
 ;   v0 = position (float3)
 ;   v1 = normal (ubyte4, 0..255 -> -1..1)
 ;   v2 = st (the two raw half floats of idDrawVert, read as signed shorts)
-;   colour   = surfColor * (0.35 + 0.65 * |N . L|) with a fixed model-space L
-;   texcoord = st decoded from half float, to texture units 0 and 1
+;
+; One program for both passes, chosen by uniforms (all in model space):
+;   fill pass  (passParams.x = 1): texcoord1 = texcoord2 = st (unit 1 alpha mask,
+;              unit 2 diffuse), colour = surfColor
+;   light pass (passParams.x = 0): texcoord0 = light projection (s, t, q) for
+;              unit 0, texcoord1 = (falloff, 0.5) for unit 1, texcoord2 = st for
+;              the diffuse map on unit 2, colour = surfColor * max(0, N.L)
+;              (N.L replaced by 1 when lightOrigin.w = 0, ambient lights)
+;   passParams.y = 1: unit 0 divides by q per pixel (projection texture),
+;                  0: s/q, t/q are computed here and q = 1
 
 ; Uniforms
 .fvec mvp[4], surfColor
+.fvec lightOrigin, lightS, lightT, lightQ, lightF, passParams
 ; half float exponent table, set once by n3ds_gpu.c:
 ;   pow2[e] = ( 2^(e-15), 2^(e-25) ) so that value = x + mantissa * y
 ;   pow2[0] = ( 0, 2^-24 ) (zero and denormals)
@@ -14,9 +23,8 @@
 
 ; Constants
 .constf consts(1.0, 0.0, 0.0078431373, -1.0)
-.constf lightDir(0.32, 0.53, 0.78, 0.0)
-.constf shadeK(0.35, 0.65, 0.0, 0.0)
 .constf halfK(32768.0, 0.0009765625, -1024.0, -2.0)
+.constf lightK(0.0001, 0.5, -8.0, 0.0)
 .alias  ones   consts.xxxx
 .alias  zeros  consts.yyyy
 .alias  bscale consts.zzzz
@@ -25,8 +33,10 @@
 ; Outputs
 .out outpos position
 .out outclr color
-.out outtc0 texcoord0
+.out outtc0 texcoord0.xy
+.out -      texcoord0w outtc0.p
 .out outtc1 texcoord1
+.out outtc2 texcoord2
 
 ; Inputs
 .alias inpos v0
@@ -44,7 +54,7 @@
 	dp4 outpos.z, mvp[2], r0
 	dp4 outpos.w, mvp[3], r0
 
-	; ---- st: half float bits -> float ----
+	; ---- st: half float bits -> float, into r11.xy ----
 	; r5 = raw bits as signed integers (-32768..32767)
 	mov r5, inst
 	; r6 = 1 where the sign bit is set
@@ -66,26 +76,63 @@
 	mad r11.y, r9.y, r10.y, r10.x
 	mul r11.xy, r11.xy, r6.xy
 	mov r11.zw, zeros
-	mov outtc0, r11
-	mov outtc1, r11
+	mov outtc2, r11
 
-	; ---- shading ----
+	; ---- light projection ----
+	; r1 = ( s, t, q, falloff )
+	dp4 r1.x, lightS, r0
+	dp4 r1.y, lightT, r0
+	dp4 r1.z, lightQ, r0
+	dp4 r1.w, lightF, r0
+	; r2.x = 1 when q is in front of the light
+	slt r2, lightK.xxxx, r1.zzzz
+	; r3 = divided: ( s / q, t / q, 1 ) with q kept away from 0
+	max r4, lightK.xxxx, r1.zzzz
+	rcp r4, r4.x
+	mul r3.xy, r1.xy, r4.xy
+	mov r3.z, ones
+	; r4 = raw ( s, t, q ) for the per-pixel projection
+	mov r4.xyz, r1.xyz
+	; r3 = passParams.y ? r4 : r3
+	add r4.xyz, r4.xyz, -r3.xyz
+	mad r3.xyz, r4.xyz, passParams.yyy, r3.xyz
+	; behind the light: (-8, -8, 1), outside the zero-clamped texture
+	mov r4.xy, lightK.zz
+	mov r4.z, ones
+	add r3.xyz, r3.xyz, -r4.xyz
+	mad r3.xyz, r3.xyz, r2.xxx, r4.xyz
+	mov r3.w, ones
+	mov outtc0, r3
+
+	; texcoord1 = passParams.x ? st : ( falloff, 0.5 )
+	mov r4.x, r1.w
+	mov r4.y, lightK.y
+	mov r4.zw, zeros
+	add r5, r11, -r4
+	mad r4, r5, passParams.xxxx, r4
+	mov outtc1, r4
+
+	; ---- per-vertex N.L ----
 	; r1 = normal in -1..1
 	mov r1, innrm
 	mul r1, bscale, r1
 	add r1, bbias, r1
-
-	; r2.x = |dot( L, N )|
-	dp3 r2, lightDir, r1
-	mov r3, -r2
-	max r2, r2, r3
-
-	; r2 = 0.35 + 0.65 * r2.x
-	mul r2, shadeK.yyyy, r2.xxxx
-	add r2, shadeK.xxxx, r2
+	; r2 = normalize( lightOrigin - position )
+	add r2.xyz, lightOrigin.xyz, -r0.xyz
+	dp3 r3.x, r2.xyz, r2.xyz
+	max r3.x, lightK.x, r3.x
+	rsq r3.x, r3.x
+	mul r2.xyz, r2.xyz, r3.xxx
+	; r3.x = max( 0, N.L )
+	dp3 r3.x, r1.xyz, r2.xyz
+	max r3.x, zeros, r3.x
+	; r3.x = w * N.L + ( 1 - w )
+	add r3.x, -ones, r3.x
+	mul r3.x, lightOrigin.w, r3.x
+	add r3.x, ones, r3.x
 
 	; outclr = surfColor * shade, alpha from surfColor
-	mul r4, surfColor, r2.xxxx
+	mul r4, surfColor, r3.xxxx
 	mov r4.w, surfColor.w
 	mov outclr, r4
 

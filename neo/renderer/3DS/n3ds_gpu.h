@@ -57,13 +57,29 @@ enum {
 unsigned int	N3DSGPU_VRAMFree( void );
 unsigned int	N3DSGPU_LinearFree( void );
 void *			N3DSGPU_LinearAlloc( unsigned int size );
-// NULL when VRAM has no room; maxLevel = number of mip levels - 1
+// NULL when VRAM has no room; maxLevel = number of mip levels - 1; wrap: N3DS_WRAP_*
 void *			N3DSGPU_TexCreate( int width, int height, int format, int maxLevel, int repeat );
 // copies the whole chain from staging (linear memory, takes ownership) to VRAM
 int				N3DSGPU_TexUpload( void * tex, void * staging, unsigned int size );
 void			N3DSGPU_TexFree( void * tex );
-// tex0 colour (and alpha), tex1 alpha mask or NULL; alphaTest: discard alpha <= 0.5
-void			N3DSGPU_SetTextures( void * tex0, void * tex1, int alphaTest );
+// wrap modes for N3DSGPU_TexCreate
+enum {
+	N3DS_WRAP_CLAMP		= 0,
+	N3DS_WRAP_REPEAT	= 1,
+	N3DS_WRAP_ZERO		= 2		// clamp to a black, transparent border
+};
+
+// fill pass: diffuse (or NULL = vertex colour only) modulated by the vertex colour,
+// depth written; alphaSource 0 = no alpha test, 1 = diffuse alpha, 2 = mask alpha
+void			N3DSGPU_SetFillPass( void * diffuse, void * mask, int alphaSource );
+// light pass: projection x falloff x diffuse x vertex colour x 4, added where the
+// depth equals the fill pass; NULL textures count as white; projective: unit 0
+// divides by q per pixel
+void			N3DSGPU_SetLightPass( void * projection, void * falloff, void * diffuse, int projective );
+// model-space light origin (w = 1: N.L shading, 0: none) and the S, T, Q and
+// falloff planes of the light projection
+void			N3DSGPU_SetLightUniforms( const float * origin, const float * s, const float * t, const float * q, const float * f );
+void			N3DSGPU_SetPassParams( int fill, int projective );
 
 #ifdef __cplusplus
 }

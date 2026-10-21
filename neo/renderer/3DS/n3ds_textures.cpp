@@ -37,6 +37,7 @@ idCVar n3ds_textures( "n3ds_textures", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d:
 idCVar n3ds_texMaxSize( "n3ds_texMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d: largest texture size; the level kept at load is the largest one not over this", 8, 512 );
 idCVar n3ds_texMips( "n3ds_texMips", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: build mip maps" );
 idCVar n3ds_texUploadsPerFrame( "n3ds_texUploadsPerFrame", "4", CVAR_RENDERER | CVAR_INTEGER, "citro3d: textures decoded and copied to VRAM per frame at most", 1, 64 );
+idCVar n3ds_texUploadsAfterLoad( "n3ds_texUploadsAfterLoad", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d: texture upload limit for the first 3D frames after a map load" );
 idCVar n3ds_texFlip( "n3ds_texFlip", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: store texture rows bottom-up (the PICA samples t = 0 at the last row); toggle if textures are upside down" );
 idCVar n3ds_texVRAMReserveKB( "n3ds_texVRAMReserveKB", "64", CVAR_RENDERER | CVAR_INTEGER, "citro3d: VRAM left free by the texture cache" );
 
@@ -49,7 +50,7 @@ struct n3dsTexture_t {
 	int					height;
 	int					dataSize;
 	byte *				data;
-	bool				repeat;
+	int					wrap;			// N3DS_WRAP_*
 	bool				alphaOnly;		// coverage images: only the alpha is used
 	bool				unsupported;	// the level cannot be decoded
 	// on the GPU
@@ -65,9 +66,11 @@ static n3dsTexture_t *	lruHead = NULL;			// most recently used
 static n3dsTexture_t *	lruTail = NULL;
 static int				texFrame = 1;
 static int				uploadsThisFrame = 0;
+static int				uploadLimit = 4;
 static bool				lastFlip = true;
 static int				lastMaxSize = 128;
 static bool				lastMips = true;
+static int				boostFrames = 0;		// 3D frames with a raised upload limit after a level load
 
 // stats (reset by N3DS_TexStatsLine)
 static int				statUploads = 0;
@@ -129,8 +132,17 @@ int RB_N3DS_TexKeepSize( textureUsage_t usage ) {
 	if ( !r_n3dsC3D ) {
 		return 0;
 	}
-	if ( usage != TD_DIFFUSE && usage != TD_DEFAULT && usage != TD_COVERAGE ) {
-		return 0;
+	switch ( usage ) {
+		case TD_DIFFUSE:
+		case TD_DEFAULT:
+		case TD_COVERAGE:
+		case TD_LIGHT:
+		case TD_LOOKUP_TABLE_MONO:
+		case TD_LOOKUP_TABLE_RGB1:
+		case TD_LOOKUP_TABLE_RGBA:
+			break;
+		default:
+			return 0;
 	}
 	return n3ds_texMaxSize.GetInteger();
 }
@@ -143,7 +155,7 @@ Called at the end of idImage::ActuallyLoadImage with the kept level.
 ========================
 */
 void RB_N3DS_ImageLevel( idImage * image, int format, int colorFormat, int width, int height,
-						 const byte * data, int dataSize, bool repeat, bool alphaOnly ) {
+						 const byte * data, int dataSize, int wrap, bool alphaOnly ) {
 	RB_N3DS_ImagePurged( image );
 	if ( data == NULL || dataSize <= 0 ) {
 		return;
@@ -158,7 +170,7 @@ void RB_N3DS_ImageLevel( idImage * image, int format, int colorFormat, int width
 	t->dataSize = dataSize;
 	t->data = (byte *)Mem_Alloc( dataSize, TAG_IMAGE );
 	memcpy( t->data, data, dataSize );
-	t->repeat = repeat;
+	t->wrap = wrap;
 	t->alphaOnly = alphaOnly;
 	image->n3dsTex = t;
 	keptCount++;
@@ -188,9 +200,19 @@ void RB_N3DS_ImagePurged( idImage * image ) {
 N3DS_TexBeginFrame
 ========================
 */
-void N3DS_TexBeginFrame() {
+void RB_N3DS_TexLevelLoaded() {
+	boostFrames = 3;
+}
+
+void N3DS_TexBeginFrame( bool has3D ) {
 	texFrame++;
 	uploadsThisFrame = 0;
+	uploadLimit = n3ds_texUploadsPerFrame.GetInteger();
+	if ( has3D && boostFrames > 0 ) {
+		// first frames of a map: get everything in view onto the GPU at once
+		boostFrames--;
+		uploadLimit = Max( uploadLimit, n3ds_texUploadsAfterLoad.GetInteger() );
+	}
 	// conversion settings changed: everything is rebuilt as it is seen again
 	const bool flip = n3ds_texFlip.GetBool();
 	const int maxSize = n3ds_texMaxSize.GetInteger();
@@ -228,7 +250,7 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 	void * gpu = NULL;
 	for ( ;; ) {
 		if ( N3DSGPU_VRAMFree() >= (unsigned int)layout.bytes + reserve ) {
-			gpu = N3DSGPU_TexCreate( layout.width, layout.height, layout.format, layout.maxLevel, t->repeat ? 1 : 0 );
+			gpu = N3DSGPU_TexCreate( layout.width, layout.height, layout.format, layout.maxLevel, t->wrap );
 			if ( gpu != NULL ) {
 				break;
 			}
@@ -285,7 +307,7 @@ void * N3DS_TexForImage( idImage * image ) {
 		return NULL;
 	}
 	if ( t->gpu == NULL ) {
-		if ( uploadsThisFrame >= n3ds_texUploadsPerFrame.GetInteger() ) {
+		if ( uploadsThisFrame >= uploadLimit ) {
 			return NULL;
 		}
 		uploadsThisFrame++;
