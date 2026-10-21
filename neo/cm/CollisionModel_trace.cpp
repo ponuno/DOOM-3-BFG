@@ -56,6 +56,7 @@ idCollisionModelManagerLocal::TraceTrmThroughNode
 #if defined( ID_3DS )
 // New 3DS: collision query statistics (read by the game's slow-frame logs)
 int n3dsCMStats[4];		// 0 BSP nodes visited, 1 polygon refs walked, 2 brush refs walked, 3 leaf/node tests
+extern idCVar n3ds_debugPhysics;
 #endif
 
 void idCollisionModelManagerLocal::TraceTrmThroughNode( cm_traceWork_t *tw, cm_node_t *node ) {
@@ -63,11 +64,13 @@ void idCollisionModelManagerLocal::TraceTrmThroughNode( cm_traceWork_t *tw, cm_n
 	cm_brushRef_t *bref;
 #if defined( ID_3DS )
 	n3dsCMStats[3]++;
+	if ( n3ds_debugPhysics.GetBool() ) {
 	for ( pref = node->polygons; pref; pref = pref->next ) {
 		n3dsCMStats[1]++;
 	}
 	for ( bref = node->brushes; bref; bref = bref->next ) {
 		n3dsCMStats[2]++;
+	}
 	}
 #endif
 
@@ -246,7 +249,7 @@ void idCollisionModelManagerLocal::TraceThroughModel( cm_traceWork_t *tw ) {
 		~n3dsReport_t() {
 			static int reported = 0;
 			const int nodes = n3dsCMStats[0] - nodes0;
-			if ( nodes > 1500 && reported < 30 ) {
+			if ( nodes > 1500 && reported < 30 && n3ds_debugPhysics.GetBool() ) {
 				reported++;
 				common->Printf( "CM wide trace on '%s' (%d nodes): %s, %d nodes visited, %d polygon refs | start (%s) end (%s) extents (%s) size (%s)-(%s) angle %.2f radius %.2f\n",
 					tw->model->name.c_str(), tw->model->numNodes, tw->rotation ? "rotation" : ( tw->positionTest ? "position" : "translation" ),

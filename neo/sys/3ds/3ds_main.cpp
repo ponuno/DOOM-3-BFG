@@ -150,6 +150,7 @@ idCVar n3ds_lazyInteractions( "n3ds_lazyInteractions", "0", CVAR_SYSTEM | CVAR_B
 idCVar n3ds_discardStaticGeo( "n3ds_discardStaticGeo", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "null GL: drop static vertex/index cache uploads instead of keeping an 11 MB copy nobody draws" );
 idCVar n3ds_renderer( "n3ds_renderer", "1", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "0 = null GL (nothing drawn), 1 = citro3d" );
 idCVar n3ds_staticVertexKB( "n3ds_staticVertexKB", "0", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "static vertex cache size, 0 = default for the renderer" );
+idCVar n3ds_debugPhysics( "n3ds_debugPhysics", "0", CVAR_SYSTEM | CVAR_BOOL, "heavy physics diagnostics: NaN checks after every AF step, LCP dumps, collision trace counters, SLOW AF lines" );
 idCVar n3ds_staticIndexKB( "n3ds_staticIndexKB", "0", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "static index cache size, 0 = default for the renderer" );
 idCVar n3ds_core1Percent( "n3ds_core1Percent", "30", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "share of the system core (core 1) given to the game's threads, 0-80" );
 

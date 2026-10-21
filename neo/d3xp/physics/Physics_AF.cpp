@@ -54,6 +54,9 @@ idCVar n3ds_afMaxEvalMs( "n3ds_afMaxEvalMs", "100", CVAR_GAME | CVAR_INTEGER, "a
 #endif
 
 #if defined( ID_3DS )
+// heavy diagnostics are off unless n3ds_debugPhysics is set (see sys/3ds/3ds_main.cpp)
+extern idCVar n3ds_debugPhysics;
+#define N3DS_DBG ( n3ds_debugPhysics.GetBool() )
 static bool N3DS_BadF( float v ) {
 	return IEEE_FLT_IS_NAN( v ) || IEEE_FLT_IS_INF( v ) || idMath::Fabs( v ) > 1e15f;
 }
@@ -88,7 +91,7 @@ static const char * n3dsAFBadPhase = NULL;
 // returns true (and logs once per evaluation) if a body state is non-finite after 'phase'
 static bool N3DS_AFCheckPhase( const char * phase, const char * afName, const idList<idAFBody *, TAG_IDLIB_LIST_PHYSICS> & bodies,
 		float timeStep, int numPrimaryRows, int numAuxRows ) {
-	if ( n3dsAFBadPhase != NULL || n3dsAFPhaseReports >= 20 ) {
+	if ( !N3DS_DBG || n3dsAFBadPhase != NULL || n3dsAFPhaseReports >= 20 ) {
 		return false;
 	}
 	for ( int k = 0; k < bodies.Num(); k++ ) {
@@ -4582,9 +4585,9 @@ void idAFTree::Factor() const {
 				childI.Negate();
 
 #if defined( ID_3DS )
-				if ( N3DS_BadMatX( child->body1->J ) ) { N3DS_TreeReport( "Factor: child body J", child->body1 ); }
-				if ( N3DS_BadMatX( child->body1->I ) ) { N3DS_TreeReport( "Factor: child body I", child->body1 ); }
-				if ( N3DS_BadMatX( childI ) ) { N3DS_TreeReport( "Factor: childI = -J^T I J", child->body1 ); }
+				if ( N3DS_DBG && N3DS_BadMatX( child->body1->J ) ) { N3DS_TreeReport( "Factor: child body J", child->body1 ); }
+				if ( N3DS_DBG && N3DS_BadMatX( child->body1->I ) ) { N3DS_TreeReport( "Factor: child body I", child->body1 ); }
+				if ( N3DS_DBG && N3DS_BadMatX( childI ) ) { N3DS_TreeReport( "Factor: childI = -J^T I J", child->body1 ); }
 #endif
 				child->invI = childI;
 				if ( !child->invI.InverseFastSelf() ) {
@@ -4592,7 +4595,7 @@ void idAFTree::Factor() const {
 									child->invI.GetNumRows(), child->invI.GetNumColumns(), child->GetName().c_str() );
 				}
 #if defined( ID_3DS )
-				if ( N3DS_BadMatX( child->invI ) ) { N3DS_TreeReport( "Factor: inverse of childI", child->body1 ); }
+				if ( N3DS_DBG && N3DS_BadMatX( child->invI ) ) { N3DS_TreeReport( "Factor: inverse of childI", child->body1 ); }
 #endif
 				child->J = child->invI * child->J;
 
@@ -4600,7 +4603,7 @@ void idAFTree::Factor() const {
 			}
 
 #if defined( ID_3DS )
-			if ( N3DS_BadMatX( body->I ) ) { N3DS_TreeReport( "Factor: body I after children", body ); }
+			if ( N3DS_DBG && N3DS_BadMatX( body->I ) ) { N3DS_TreeReport( "Factor: body I after children", body ); }
 #endif
 			body->invI = body->I;
 			if ( !body->invI.InverseFastSelf() && child != NULL ) {
@@ -4608,7 +4611,7 @@ void idAFTree::Factor() const {
 								child->invI.GetNumRows(), child->invI.GetNumColumns(), body->GetName().c_str() );
 			}
 #if defined( ID_3DS )
-			if ( N3DS_BadMatX( body->invI ) ) { N3DS_TreeReport( "Factor: body invI", body ); }
+			if ( N3DS_DBG && N3DS_BadMatX( body->invI ) ) { N3DS_TreeReport( "Factor: body invI", body ); }
 #endif
 			if ( body->primaryConstraint ) {
 				body->J = body->invI * body->J;
@@ -4814,8 +4817,8 @@ void idAFTree::CalculateForces( float timeStep ) const {
 
 		body->totalForce.SubVec6(0) = body->current->externalForce + body->auxForce.SubVec6(0);
 #if defined( ID_3DS )
-		if ( N3DS_BadVecX( body->auxForce ) ) { N3DS_TreeReport( "CalculateForces: auxForce", body ); }
-		if ( N3DS_BadVecX( body->totalForce ) ) { N3DS_TreeReport( "CalculateForces: external + aux force", body ); }
+		if ( N3DS_DBG && N3DS_BadVecX( body->auxForce ) ) { N3DS_TreeReport( "CalculateForces: auxForce", body ); }
+		if ( N3DS_DBG && N3DS_BadVecX( body->totalForce ) ) { N3DS_TreeReport( "CalculateForces: external + aux force", body ); }
 #endif
 	}
 
@@ -4839,10 +4842,10 @@ void idAFTree::CalculateForces( float timeStep ) const {
 			c->s = c->J1 * c->body1->acceleration + c->J2 * c->body2->acceleration + invStep * ( c->c1 + c->c2 );
 			c->fl.isZero = false;
 #if defined( ID_3DS )
-			if ( N3DS_BadVecX( body->acceleration ) ) { N3DS_TreeReport( "CalculateForces: acceleration (invI * F + v/dt)", body ); }
-			if ( N3DS_BadMatX( c->J1 ) || N3DS_BadMatX( c->J2 ) ) { N3DS_TreeReport( "CalculateForces: constraint J1/J2", body ); }
-			if ( N3DS_BadVecX( c->c1 ) || N3DS_BadVecX( c->c2 ) ) { N3DS_TreeReport( "CalculateForces: constraint c1/c2 (error terms)", body ); }
-			if ( N3DS_BadVecX( c->s ) ) { N3DS_TreeReport( "CalculateForces: rhs s", body ); }
+			if ( N3DS_DBG && N3DS_BadVecX( body->acceleration ) ) { N3DS_TreeReport( "CalculateForces: acceleration (invI * F + v/dt)", body ); }
+			if ( N3DS_DBG && ( N3DS_BadMatX( c->J1 ) || N3DS_BadMatX( c->J2 ) ) ) { N3DS_TreeReport( "CalculateForces: constraint J1/J2", body ); }
+			if ( N3DS_DBG && ( N3DS_BadVecX( c->c1 ) || N3DS_BadVecX( c->c2 ) ) ) { N3DS_TreeReport( "CalculateForces: constraint c1/c2 (error terms)", body ); }
+			if ( N3DS_DBG && N3DS_BadVecX( c->s ) ) { N3DS_TreeReport( "CalculateForces: rhs s", body ); }
 #endif
 		}
 		body->s.Zero();
@@ -4852,7 +4855,7 @@ void idAFTree::CalculateForces( float timeStep ) const {
 	// solve for primary constraints
 	Solve();
 #if defined( ID_3DS )
-	for ( i = 0; i < sortedBodies.Num(); i++ ) {
+	for ( i = 0; N3DS_DBG && i < sortedBodies.Num(); i++ ) {
 		if ( sortedBodies[i]->primaryConstraint && N3DS_BadVecX( sortedBodies[i]->primaryConstraint->lm ) ) {
 			N3DS_TreeReport( "CalculateForces: lm after Solve", sortedBodies[i] );
 			break;
@@ -5337,15 +5340,18 @@ void idPhysics_AF::AuxiliaryForces( float timeStep ) {
 
 #if defined( ID_3DS )
 	// keep a copy of the LCP problem: if the solver returns NaN from finite inputs, dump it
-	float * n3dsJmk = (float *)_alloca16( jmk.GetNumRows() * jmk.GetNumColumns() * sizeof( float ) );
-	float * n3dsRhs = (float *)_alloca16( numAuxConstraints * 3 * sizeof( float ) );
+	const bool n3dsDbg = N3DS_DBG;
+	float * n3dsJmk = n3dsDbg ? (float *)_alloca16( jmk.GetNumRows() * jmk.GetNumColumns() * sizeof( float ) ) : NULL;
+	float * n3dsRhs = n3dsDbg ? (float *)_alloca16( numAuxConstraints * 3 * sizeof( float ) ) : NULL;
+	if ( n3dsDbg ) {
 	memcpy( n3dsJmk, jmk.ToFloatPtr(), jmk.GetNumRows() * jmk.GetNumColumns() * sizeof( float ) );
 	for ( i = 0; i < numAuxConstraints; i++ ) {
 		n3dsRhs[i * 3 + 0] = rhs[i];
 		n3dsRhs[i * 3 + 1] = lo[i];
 		n3dsRhs[i * 3 + 2] = hi[i];
 	}
-	{
+	}
+	if ( n3dsDbg ) {
 		// which LCP input is already bad?
 		const char * badIn = NULL;
 		for ( i = 0; i < numAuxConstraints && badIn == NULL; i++ ) {
@@ -5365,7 +5371,7 @@ void idPhysics_AF::AuxiliaryForces( float timeStep ) {
 		return;		// bad monkey!
 	}
 #if defined( ID_3DS )
-	if ( N3DS_BadVecX( lm ) ) {
+	if ( n3dsDbg && N3DS_BadVecX( lm ) ) {
 		N3DS_TreeReport( va( "AuxiliaryForces: LCP output lm with finite inputs? (%d constraints)", numAuxConstraints ), bodies.Num() ? bodies[0] : NULL );
 		static int dumps = 0;
 		if ( dumps < 3 ) {
@@ -5532,7 +5538,7 @@ void idPhysics_AF::Evolve( float timeStep ) {
 #if defined( ID_3DS )
 	{
 		static int reports = 0;
-		for ( i = 0; i < bodies.Num() && reports < 10; i++ ) {
+		for ( i = 0; N3DS_DBG && i < bodies.Num() && reports < 10; i++ ) {
 			if ( N3DS_BadState( bodies[i]->next ) ) {
 				reports++;
 				const idVec6 & sv = bodies[i]->current->spatialVelocity;
@@ -5758,7 +5764,7 @@ void idPhysics_AF::CheckForCollisions( float timeStep ) {
 #if defined( ID_3DS )
 				{
 					static int reports = 0;
-					if ( reports < 10 && N3DS_BadState( body->next ) ) {
+					if ( reports < 10 && N3DS_DBG && N3DS_BadState( body->next ) ) {
 						reports++;
 						common->Printf( "N3DS AF collision: '%s' body '%s' bad state from clip.Motion: fraction %g endpos (%s) normal (%s) entity %d | start (%s) end (%s) rotation angle %g vec (%s)\n",
 							self->name.c_str(), body->GetName().c_str(), collision.fraction, collision.endpos.ToString( 2 ), collision.c.normal.ToString( 2 ),
@@ -6462,7 +6468,7 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 #endif
 #if defined( ID_3DS )
 	n3dsAFBadPhase = NULL;
-	for ( int k = 0; k < bodies.Num(); k++ ) {
+	for ( int k = 0; N3DS_DBG && k < bodies.Num(); k++ ) {
 		const idVec3 & o = bodies[k]->GetWorldOrigin();
 		if ( N3DS_BadF( o.x ) || N3DS_BadF( ( &bodies[k]->GetLinearVelocity().x )[0] ) ) {
 			n3dsAFBadPhase = "already bad";		// only report the evaluation where it goes bad
@@ -6555,7 +6561,7 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 #if defined( ID_3DS )
 	{
 		static int reports = 0;
-		for ( int k = 0; k < bodies.Num() && reports < 10; k++ ) {
+		for ( int k = 0; N3DS_DBG && k < bodies.Num() && reports < 10; k++ ) {
 			if ( N3DS_BadState( bodies[k]->next ) && !N3DS_BadState( bodies[k]->current ) ) {
 				reports++;
 				const idVec6 & nv = bodies[k]->next->spatialVelocity;
@@ -6644,7 +6650,7 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 	{
 		// report the first time a figure's state becomes non-finite
 		static int nanReports = 0;
-		if ( nanReports < 20 ) {
+		if ( nanReports < 20 && N3DS_DBG ) {
 			for ( int k = 0; k < bodies.Num(); k++ ) {
 				const idVec3 & o = bodies[k]->current->worldOrigin;
 				if ( IEEE_FLT_IS_NAN( o.x ) || IEEE_FLT_IS_NAN( o.y ) || IEEE_FLT_IS_NAN( o.z ) || IEEE_FLT_IS_INF( o.x ) ) {
@@ -6669,14 +6675,16 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 				rowsA += auxiliaryConstraints[k]->J1.GetNumRows();
 			}
 			const bool stop = n3ds_afMaxEvalMs.GetInteger() > 0 && totalMs >= n3ds_afMaxEvalMs.GetFloat();
-			gameLocal.Printf( "SLOW AF %s: %.1f ms = contacts %.1f + primary %.1f + auxiliary/LCP %.1f + collisions %.1f | %d bodies, %d contacts, %d primary rows, %d auxiliary rows, active %.1f s%s | cm: %d nodes, %d node tests, %d polygon refs, %d brush refs\n",
-				self->name.c_str(), totalMs, ( n3dsT1 - n3dsT0 ) * 0.001f, ( n3dsT2 - n3dsT1 ) * 0.001f,
-				( n3dsT3 - n3dsT2 ) * 0.001f, ( n3dsT4 - n3dsT3 ) * 0.001f,
-				bodies.Num(), contacts.Num(), rowsP, rowsA, current.activateTime, stop ? " -> put to rest" : "",
-				n3dsCMStats[0] - n3dsCM0[0], n3dsCMStats[3] - n3dsCM0[3], n3dsCMStats[1] - n3dsCM0[1], n3dsCMStats[2] - n3dsCM0[2] );
-			gameLocal.Printf( "    contacts: %d queries, world %.1f ms, entities %.1f ms (%d entity models tested)\n",
-				(int)( n3dsClipStats[3] - n3dsCL0[3] ), ( n3dsClipStats[0] - n3dsCL0[0] ) * 0.001f,
-				( n3dsClipStats[1] - n3dsCL0[1] ) * 0.001f, (int)( n3dsClipStats[2] - n3dsCL0[2] ) );
+			if ( N3DS_DBG || stop ) {
+				gameLocal.Printf( "SLOW AF %s: %.1f ms = contacts %.1f + primary %.1f + auxiliary/LCP %.1f + collisions %.1f | %d bodies, %d contacts, %d primary rows, %d auxiliary rows, active %.1f s%s | cm: %d nodes, %d node tests, %d polygon refs, %d brush refs\n",
+					self->name.c_str(), totalMs, ( n3dsT1 - n3dsT0 ) * 0.001f, ( n3dsT2 - n3dsT1 ) * 0.001f,
+					( n3dsT3 - n3dsT2 ) * 0.001f, ( n3dsT4 - n3dsT3 ) * 0.001f,
+					bodies.Num(), contacts.Num(), rowsP, rowsA, current.activateTime, stop ? " -> put to rest" : "",
+					n3dsCMStats[0] - n3dsCM0[0], n3dsCMStats[3] - n3dsCM0[3], n3dsCMStats[1] - n3dsCM0[1], n3dsCMStats[2] - n3dsCM0[2] );
+				gameLocal.Printf( "    contacts: %d queries, world %.1f ms, entities %.1f ms (%d entity models tested)\n",
+					(int)( n3dsClipStats[3] - n3dsCL0[3] ), ( n3dsClipStats[0] - n3dsCL0[0] ) * 0.001f,
+					( n3dsClipStats[1] - n3dsCL0[1] ) * 0.001f, (int)( n3dsClipStats[2] - n3dsCL0[2] ) );
+			}
 			if ( stop ) {
 				Rest();
 			}
