@@ -1053,6 +1053,70 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 	}
 }
 
+
+/*
+========================
+N3DS_LogWeaponSurfaces
+
+Diagnostics: the view weapon (weaponDepthHack spaces) and what happens to each of
+its surfaces, logged whenever that set changes (weapon switch, first frame).
+========================
+*/
+static int c3dWeaponSignature = 0;
+static int c3dWeaponLogs = 0;
+
+static void N3DS_LogWeaponSurfaces( const viewDef_t * viewDef ) {
+	if ( c3dWeaponLogs >= 12 ) {
+		return;
+	}
+	int signature = 0x1234;
+	int numSpaces = 0;
+	for ( const viewEntity_t * v = viewDef->viewEntitys; v != NULL; v = v->next ) {
+		if ( v->weaponDepthHack ) {
+			numSpaces++;
+			signature = signature * 31 + (int)(UINT_PTR)( v->entityDef != NULL ? v->entityDef->parms.hModel : NULL );
+		}
+	}
+	int numSurfs = 0;
+	for ( int i = 0; i < viewDef->numDrawSurfs; i++ ) {
+		const drawSurf_t * surf = viewDef->drawSurfs[i];
+		if ( surf->space != NULL && surf->space->weaponDepthHack ) {
+			numSurfs++;
+			signature = signature * 31 + (int)(UINT_PTR)surf->material + surf->numIndexes;
+		}
+	}
+	if ( signature == c3dWeaponSignature ) {
+		return;
+	}
+	c3dWeaponSignature = signature;
+	c3dWeaponLogs++;
+	common->Printf( "citro3d weapon: %d weaponDepthHack entities, %d surfaces in the view\n", numSpaces, numSurfs );
+	for ( const viewEntity_t * v = viewDef->viewEntitys; v != NULL; v = v->next ) {
+		if ( v->weaponDepthHack && v->entityDef != NULL && v->entityDef->parms.hModel != NULL ) {
+			common->Printf( "  entity model %s, skin %s\n", v->entityDef->parms.hModel->Name(),
+				v->entityDef->parms.customSkin != NULL ? v->entityDef->parms.customSkin->GetName() : "-" );
+		}
+	}
+	for ( int i = 0; i < viewDef->numDrawSurfs; i++ ) {
+		const drawSurf_t * surf = viewDef->drawSurfs[i];
+		if ( surf->space == NULL || !surf->space->weaponDepthHack ) {
+			continue;
+		}
+		const idMaterial * m = surf->material;
+		n3dsFillImages_t images;
+		if ( m != NULL ) {
+			N3DS_FillImages( m, surf->shaderRegisters, images );
+		}
+		idVertexBuffer vb;
+		const bool hasVB = vertexCache.GetVertexBuffer( surf->ambientCache, &vb );
+		common->Printf( "  surf %s: %d indexes, coverage %d, sort %.1f, %s, vb %s, image %s (%s)\n",
+			m != NULL ? m->GetName() : "NULL", surf->numIndexes, m != NULL ? (int)m->Coverage() : -1,
+			m != NULL ? m->GetSort() : 0.0f, N3DS_SkipSurface( surf ) ? "SKIPPED" : "drawn", hasVB ? "ok" : "MISSING",
+			( m != NULL && images.color != NULL ) ? images.color->GetName() : "none",
+			( m != NULL && images.color != NULL && images.color->n3dsTex != NULL ) ? "kept" : "no level" );
+	}
+}
+
 /*
 ========================
 RB_N3DS_ExecuteBackEndCommands
@@ -1102,6 +1166,7 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		if ( viewDef == NULL || viewDef->isSubview || viewDef->viewEntitys == NULL ) {
 			continue;
 		}
+		N3DS_LogWeaponSurfaces( viewDef );
 		if ( useHW ) {
 			N3DS_DrawViewHW( viewDef );
 		} else {
