@@ -851,6 +851,27 @@ bool idAF::Load( idEntity *ent, const char *fileName ) {
 	numJoints = animator->NumJoints();
 	joints = ( idJointMat * )_alloca16( numJoints * sizeof( joints[0] ) );
 	gameEdit->ANIM_CreateAnimFrame( model, animator->GetAnim( modifiedAnim )->MD5Anim( 0 ), numJoints, joints, 1, animator->ModelDef()->GetVisualOffset(), animator->RemoveOrigin() );
+#if defined( ID_3DS )
+	{
+		static int reported = 0;
+		for ( i = 0; i < numJoints && reported < 20; i++ ) {
+			const float * m = joints[i].ToFloatPtr();
+			bool bad = false;
+			for ( int k = 0; k < 12; k++ ) {
+				if ( IEEE_FLT_IS_NAN( m[k] ) || IEEE_FLT_IS_INF( m[k] ) || idMath::Fabs( m[k] ) > 1e8f ) {
+					bad = true;
+				}
+			}
+			if ( bad ) {
+				reported++;
+				gameLocal.Printf( "N3DS AF check: '%s' (%s): anim '%s' gives a bad joint %d '%s': %g %g %g %g | %g %g %g %g | %g %g %g %g\n",
+					ent->name.c_str(), name.c_str(), animator->GetAnim( modifiedAnim )->MD5Anim( 0 )->Name(), i, animator->GetJointName( (jointHandle_t)i ),
+					m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11] );
+				break;
+			}
+		}
+	}
+#endif
 
 	// set all vector positions from model joints
 	file->Finish( GetJointTransform, joints, animator );
@@ -931,6 +952,22 @@ bool idAF::Load( idEntity *ent, const char *fileName ) {
 
 	isLoaded = true;
 
+#if defined( ID_3DS )
+	{
+		static int reportedBodies = 0;
+		for ( i = 0; i < physicsObj.GetNumBodies() && reportedBodies < 20; i++ ) {
+			const idAFBody * body = physicsObj.GetBody( i );
+			const idVec3 & o = body->GetWorldOrigin();
+			const idBounds b = ( body->GetClipModel() != NULL ) ? body->GetClipModel()->GetBounds() : idBounds( vec3_origin );
+			if ( IEEE_FLT_IS_NAN( o.x ) || IEEE_FLT_IS_NAN( b[0].x ) || IEEE_FLT_IS_NAN( b[1].x ) ||
+					idMath::Fabs( o.x ) > 1e7f || b[1].x - b[0].x > 1e5f || b[1].x < b[0].x ) {
+				reportedBodies++;
+				gameLocal.Printf( "N3DS AF check: '%s' (%s) body %d '%s': origin (%s) clip bounds (%s)-(%s)\n",
+					ent->name.c_str(), name.c_str(), i, body->GetName().c_str(), o.ToString( 1 ), b[0].ToString( 1 ), b[1].ToString( 1 ) );
+			}
+		}
+	}
+#endif
 	return true;
 }
 

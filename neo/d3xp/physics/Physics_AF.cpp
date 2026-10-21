@@ -6409,6 +6409,22 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 #if defined( ID_3DS )
 	{
+		// report the first time a figure's state becomes non-finite
+		static int nanReports = 0;
+		if ( nanReports < 20 ) {
+			for ( int k = 0; k < bodies.Num(); k++ ) {
+				const idVec3 & o = bodies[k]->current->worldOrigin;
+				if ( IEEE_FLT_IS_NAN( o.x ) || IEEE_FLT_IS_NAN( o.y ) || IEEE_FLT_IS_NAN( o.z ) || IEEE_FLT_IS_INF( o.x ) ) {
+					nanReports++;
+					gameLocal.Printf( "N3DS AF NaN: '%s' body %d '%s' origin (%s) after %.2f s active, mass %g, inverse mass %g\n",
+						self->name.c_str(), k, bodies[k]->GetName().c_str(), o.ToString( 1 ), current.activateTime,
+						bodies[k]->mass, bodies[k]->invMass );
+					break;
+				}
+			}
+		}
+	}
+	{
 		const uint64 n3dsT5 = Sys_Microseconds();
 		const float totalMs = ( n3dsT5 - n3dsT0 ) * 0.001f;
 		if ( totalMs >= n3ds_afSlowMs.GetFloat() ) {
