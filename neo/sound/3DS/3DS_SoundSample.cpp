@@ -85,6 +85,56 @@ int N3DS_SoundEvictions() { const int n = sampleEvictions; sampleEvictions = 0; 
 
 /*
 ========================
+idSoundSample_3DS::N3DS_LogMemory
+
+Memory diagnostics: resident sample data and the biggest resident samples.
+========================
+*/
+void N3DS_SoundLogMemory() {
+	idSoundSample_3DS::N3DS_LogMemory();
+}
+
+void idSoundSample_3DS::N3DS_LogMemory() {
+	if ( allSamples.Num() == 0 ) {
+		return;
+	}
+	const int TOP = 6;
+	const idSoundSample_3DS * top[TOP] = {};
+	int resident = 0, residentBytes = 0, whole = 0, wholeBytes = 0, onDemand = 0;
+	for ( int i = 0; i < allSamples.Num(); i++ ) {
+		const idSoundSample_3DS * s = allSamples[i];
+		if ( !s->generatedName.IsEmpty() && !s->dataLoaded ) {
+			onDemand++;
+		}
+		if ( !s->dataLoaded ) {
+			continue;
+		}
+		resident++;
+		residentBytes += s->totalBufferSize;
+		if ( s->generatedName.IsEmpty() ) {
+			whole++;
+			wholeBytes += s->totalBufferSize;
+		}
+		for ( int k = 0; k < TOP; k++ ) {
+			if ( top[k] == NULL || s->totalBufferSize > top[k]->totalBufferSize ) {
+				for ( int m = TOP - 1; m > k; m-- ) {
+					top[m] = top[m - 1];
+				}
+				top[k] = s;
+				break;
+			}
+		}
+	}
+	idLib::Printf( "  sound: %d samples, %d resident %d KB (%d never dropped %d KB), %d not loaded, budget %d KB\n",
+		allSamples.Num(), resident, residentBytes / 1024, whole, wholeBytes / 1024, onDemand, n3ds_soundMemoryKB.GetInteger() );
+	for ( int k = 0; k < TOP && top[k] != NULL; k++ ) {
+		idLib::Printf( "    %4d KB %s%s%s\n", top[k]->totalBufferSize / 1024, top[k]->GetName(),
+			top[k]->neverPurge ? " (never purge)" : "", top[k]->activeVoices > 0 ? " (playing)" : "" );
+	}
+}
+
+/*
+========================
 idSoundSample_3DS::idSoundSample_3DS
 ========================
 */

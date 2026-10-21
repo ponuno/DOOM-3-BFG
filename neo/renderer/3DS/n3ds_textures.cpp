@@ -61,6 +61,7 @@ struct n3dsTexture_t {
 	bool				gpuHasAlpha;
 	int					lastFrame;
 	int					retryFrame;		// after a failed upload: not before this frame
+	bool				everUploaded;	// diagnostics: drawn at least once since load
 	n3dsTexture_t *		lruPrev;
 	n3dsTexture_t *		lruNext;
 };
@@ -316,6 +317,7 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 
 	t->gpu = gpu;
 	t->gpuBytes = layout.bytes;
+	t->everUploaded = true;
 	t->gpuHasAlpha = ( layout.format != N3DS_TEXCONV_RGB565 );
 	residentCount++;
 	residentBytes += layout.bytes;
@@ -373,4 +375,91 @@ void N3DS_TexStatsLine( idStr & line ) {
 		keptCount, keptBytes / 1024 );
 	statUploads = statEvictions = statDeferred = statFailed = 0;
 	statUploadUs = 0;
+}
+
+/*
+========================
+N3DS_TexLogMemory
+
+Memory diagnostics (MEM checkpoints): what the kept levels are made of, how many of
+them were ever drawn, and the biggest ones.
+========================
+*/
+static const char * N3DS_FormatName( int format ) {
+	switch ( format ) {
+		case FMT_DXT1:		return "DXT1";
+		case FMT_DXT5:		return "DXT5";
+		case FMT_RGBA8:		return "RGBA8";
+		case FMT_XRGB8:		return "XRGB8";
+		case FMT_ALPHA:		return "ALPHA";
+		case FMT_L8A8:		return "L8A8";
+		case FMT_LUM8:		return "LUM8";
+		case FMT_INT8:		return "INT8";
+		case FMT_RGB565:	return "RGB565";
+		default:			return "other";
+	}
+}
+
+void N3DS_TexLogMemory() {
+	if ( globalImages == NULL || globalImages->images.Num() == 0 ) {
+		return;
+	}
+	enum { CLS_WORLD, CLS_GUI, CLS_FONT, CLS_SWF, CLS_LIGHT, CLS_NUM };
+	static const char * clsNames[CLS_NUM] = { "world", "guis/", "fonts", "swf", "lights/" };
+	int clsCount[CLS_NUM] = {}, clsBytes[CLS_NUM] = {};
+	int fmtCount[3] = {}, fmtBytes[3] = {};		// DXT1, DXT5, other
+	int usedCount = 0, usedBytes = 0, total = 0, totalBytes = 0;
+	const int TOP = 8;
+	const n3dsTexture_t * top[TOP] = {};
+
+	for ( int i = 0; i < globalImages->images.Num(); i++ ) {
+		const idImage * image = globalImages->images[i];
+		const n3dsTexture_t * t = ( image != NULL ) ? (const n3dsTexture_t *)image->n3dsTex : NULL;
+		if ( t == NULL ) {
+			continue;
+		}
+		const char * name = image->GetName();
+		int cls = CLS_WORLD;
+		if ( idStr::Icmpn( name, "newfonts/", 9 ) == 0 || idStr::Icmpn( name, "fonts/", 6 ) == 0 ) {
+			cls = CLS_FONT;
+		} else if ( idStr::Icmpn( name, "generated/swf/", 14 ) == 0 ) {
+			cls = CLS_SWF;
+		} else if ( idStr::Icmpn( name, "guis/", 5 ) == 0 ) {
+			cls = CLS_GUI;
+		} else if ( idStr::Icmpn( name, "lights/", 7 ) == 0 ) {
+			cls = CLS_LIGHT;
+		}
+		clsCount[cls]++;
+		clsBytes[cls] += t->dataSize;
+		const int f = ( t->format == FMT_DXT1 ) ? 0 : ( t->format == FMT_DXT5 ) ? 1 : 2;
+		fmtCount[f]++;
+		fmtBytes[f] += t->dataSize;
+		total++;
+		totalBytes += t->dataSize;
+		if ( t->everUploaded ) {
+			usedCount++;
+			usedBytes += t->dataSize;
+		}
+		for ( int k = 0; k < TOP; k++ ) {
+			if ( top[k] == NULL || t->dataSize > top[k]->dataSize ) {
+				for ( int m = TOP - 1; m > k; m-- ) {
+					top[m] = top[m - 1];
+				}
+				top[k] = t;
+				break;
+			}
+		}
+	}
+	idLib::Printf( "  textures: %d idImages (%d B each), %d kept levels %d KB, drawn since load %d / %d KB\n",
+		globalImages->images.Num(), (int)sizeof( idImage ), total, totalBytes / 1024, usedCount, usedBytes / 1024 );
+	idLib::Printf( "    by kind: %s %d/%d KB, %s %d/%d KB, %s %d/%d KB, %s %d/%d KB, %s %d/%d KB\n",
+		clsNames[0], clsCount[0], clsBytes[0] / 1024, clsNames[1], clsCount[1], clsBytes[1] / 1024,
+		clsNames[2], clsCount[2], clsBytes[2] / 1024, clsNames[3], clsCount[3], clsBytes[3] / 1024,
+		clsNames[4], clsCount[4], clsBytes[4] / 1024 );
+	idLib::Printf( "    by format: DXT1 %d/%d KB, DXT5 %d/%d KB, other %d/%d KB\n",
+		fmtCount[0], fmtBytes[0] / 1024, fmtCount[1], fmtBytes[1] / 1024, fmtCount[2], fmtBytes[2] / 1024 );
+	for ( int k = 0; k < TOP && top[k] != NULL; k++ ) {
+		idLib::Printf( "    %4d KB %dx%d %s%s %s\n", top[k]->dataSize / 1024, top[k]->width, top[k]->height,
+			N3DS_FormatName( top[k]->format ), top[k]->everUploaded ? "" : " (not drawn)", top[k]->image->GetName() );
+	}
 }

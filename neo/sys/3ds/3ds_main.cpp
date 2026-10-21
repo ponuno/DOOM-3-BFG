@@ -251,6 +251,11 @@ void Sys_DebugVPrintf( const char *fmt, va_list arg ) {
 Sys_LogMemory
 ==============
 */
+void N3DS_TexLogMemory();								// renderer/3DS/n3ds_textures.cpp
+void R_FrameMemoryStats( int & highWater, int & size );	// renderer/tr_frontend_main.cpp
+void N3DS_SoundLogMemory();								// sound/3DS/3DS_SoundSample.cpp
+void N3DS_LogDeclMemory();								// framework/DeclManager.cpp
+
 void Sys_LogMemory( const char * when ) {
 	const int appFree = (int)osGetMemRegionFree( MEMREGION_APPLICATION );
 	const int appSize = (int)osGetMemRegionSize( MEMREGION_APPLICATION );
@@ -262,6 +267,16 @@ void Sys_LogMemory( const char * when ) {
 		when, (int)( mi.uordblks / 1024 ), (int)( mi.fordblks / 1024 ), Mem_LargestFreeBlock() / 1024, appFree / 1024, appSize / 1024, linFree / 1024,
 		arenaUsed / 1024, arenaPeak / 1024, arenaSize / 1024 );
 	Mem_LogTags( 16 );
+
+	// what is inside the big tags (no allocations: safe on the out-of-memory path)
+	N3DS_TexLogMemory();
+	int frameHigh, frameSize;
+	R_FrameMemoryStats( frameHigh, frameSize );
+	if ( frameHigh > 0 ) {
+		Sys_Printf( "  frame memory: peak %d KB of %d KB (x2)\n", frameHigh / 1024, frameSize / 1024 );
+	}
+	N3DS_SoundLogMemory();
+	N3DS_LogDeclMemory();
 }
 
 /*

@@ -643,6 +643,8 @@ idMD5Anim quantization statistics
 static int		quantAnims = 0;
 static int		quantBytesBefore = 0;
 static int		quantBytesAfter = 0;
+static int		quantBoundsBytes = 0;
+static int		quantJointBytes = 0;
 static float	quantMaxQuatError = 0.0f;
 static float	quantMaxTransError = 0.0f;
 static idStr	quantWorstAnim;
@@ -727,6 +729,8 @@ void idMD5Anim::Quantize() {
 	quantBytesBefore += componentFrames.Allocated();
 	componentFrames.Clear();
 	quantBytesAfter += quantFrames.Allocated() + quantOffset.Allocated() + quantScale.Allocated();
+	quantBoundsBytes += bounds.Allocated();
+	quantJointBytes += jointInfo.Allocated() + baseFrame.Allocated();
 
 	if ( maxQuatError > quantMaxQuatError || maxTransError > quantMaxTransError ) {
 		quantWorstAnim = name;
@@ -751,6 +755,8 @@ void idMD5Anim::PrintQuantStats() {
 	}
 	idLib::Printf( "anim quantization: %d anims, %d KB -> %d KB, max error rotation %.6f translation %.4f (%s)\n",
 		quantAnims, quantBytesBefore / 1024, quantBytesAfter / 1024, quantMaxQuatError, quantMaxTransError, quantWorstAnim.c_str() );
+	idLib::Printf( "anim memory besides frames: bounds %d KB, joint info + base frame %d KB\n",
+		quantBoundsBytes / 1024, quantJointBytes / 1024 );
 }
 
 #endif // ID_3DS

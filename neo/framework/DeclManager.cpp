@@ -225,6 +225,9 @@ public:
 	const idDeclFile *			GetImplicitDeclFile() const { return &implicitDecls; }
 
 	void						ConvertPDAsToStrings( const idCmdArgs &args );
+#if defined( ID_3DS )
+	void						N3DS_LogMemory();
+#endif
 
 private:
 	idSysMutex					mutex;
@@ -254,6 +257,68 @@ idCVar idDeclManagerLocal::decl_show( "decl_show", "0", CVAR_SYSTEM, "set to 1 t
 
 idDeclManagerLocal	declManagerLocal;
 idDeclManager *		declManager = &declManagerLocal;
+
+#if defined( ID_3DS )
+/*
+===================
+idDeclManagerLocal::N3DS_LogMemory
+
+Memory diagnostics: decl source text kept per type (Huffman compressed), and how
+many decls of each type have been parsed.
+===================
+*/
+void idDeclManagerLocal::N3DS_LogMemory() {
+	struct typeStat_t { int type, count, parsed, textBytes, rawBytes; };
+	typeStat_t stats[DECL_MAX_TYPES];
+	int numStats = 0, totalText = 0, totalRaw = 0, totalCount = 0, totalParsed = 0;
+	for ( int i = 0; i < declTypes.Num() && i < DECL_MAX_TYPES; i++ ) {
+		if ( declTypes[i] == NULL || linearLists[i].Num() == 0 ) {
+			continue;
+		}
+		typeStat_t & st = stats[numStats++];
+		st.type = i;
+		st.count = linearLists[i].Num();
+		st.parsed = st.textBytes = st.rawBytes = 0;
+		for ( int j = 0; j < linearLists[i].Num(); j++ ) {
+			const idDeclLocal * decl = linearLists[i][j];
+			if ( decl->declState == DS_PARSED ) {
+				st.parsed++;
+			}
+			if ( decl->textSource != NULL ) {
+				st.textBytes += decl->compressedLength;
+				st.rawBytes += decl->textLength;
+			}
+		}
+		totalText += st.textBytes;
+		totalRaw += st.rawBytes;
+		totalCount += st.count;
+		totalParsed += st.parsed;
+	}
+	if ( numStats == 0 ) {
+		return;
+	}
+	// small n: insertion sort by kept text, descending
+	for ( int i = 1; i < numStats; i++ ) {
+		typeStat_t t = stats[i];
+		int j = i - 1;
+		while ( j >= 0 && stats[j].textBytes < t.textBytes ) {
+			stats[j + 1] = stats[j];
+			j--;
+		}
+		stats[j + 1] = t;
+	}
+	idLib::Printf( "  decls: %d (%d parsed), source text kept %d KB (%d KB uncompressed), %d decl files\n",
+		totalCount, totalParsed, totalText / 1024, totalRaw / 1024, loadedFiles.Num() );
+	for ( int i = 0; i < numStats && i < 8; i++ ) {
+		idLib::Printf( "    %-14s %5d decls %5d parsed, text %5d KB\n", declTypes[stats[i].type]->typeName.c_str(),
+			stats[i].count, stats[i].parsed, stats[i].textBytes / 1024 );
+	}
+}
+
+void N3DS_LogDeclMemory() {
+	declManagerLocal.N3DS_LogMemory();
+}
+#endif
 
 /*
 ====================================================================================

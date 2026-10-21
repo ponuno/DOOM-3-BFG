@@ -737,11 +737,15 @@ void idCommonLocal::Frame() {
 					extern int n3dsRenderStats[8];
 					extern int n3dsFramePeakIndex, n3dsFramePeakVertex, n3dsCacheOverflows, n3dsFrameIndexBytes, n3dsFrameVertexBytes;
 					const float rf = (float)Max( n3dsRenderStats[0], 1 );
-					Printf( "PERF   scene/frame: ents %.0f lights %.0f guiSurfs %.0f draws %.0f tris %.0f newInteractions %.1f deformVerts %.0f | frame cache peak idx %d / %d KB, vtx %d / %d KB, overflows %d\n",
+					extern void R_FrameMemoryStats( int & highWater, int & size );
+					int frameMemHigh, frameMemSize;
+					R_FrameMemoryStats( frameMemHigh, frameMemSize );
+					Printf( "PERF   scene/frame: ents %.0f lights %.0f guiSurfs %.0f draws %.0f tris %.0f newInteractions %.1f deformVerts %.0f | frame cache peak idx %d / %d KB, vtx %d / %d KB, overflows %d | frame memory peak %d / %d KB\n",
 						n3dsRenderStats[1] / rf, n3dsRenderStats[2] / rf, n3dsRenderStats[3] / rf, n3dsRenderStats[4] / rf,
 						n3dsRenderStats[5] / rf, n3dsRenderStats[6] / rf, n3dsRenderStats[7] / rf,
 						n3dsFramePeakIndex / 1024, n3dsFrameIndexBytes / 1024,
-						n3dsFramePeakVertex / 1024, n3dsFrameVertexBytes / 1024, n3dsCacheOverflows );
+						n3dsFramePeakVertex / 1024, n3dsFrameVertexBytes / 1024, n3dsCacheOverflows,
+						frameMemHigh / 1024, frameMemSize / 1024 );
 					memset( n3dsRenderStats, 0, sizeof( n3dsRenderStats ) );
 					n3dsFramePeakIndex = n3dsFramePeakVertex = n3dsCacheOverflows = 0;
 					perfStart = now;

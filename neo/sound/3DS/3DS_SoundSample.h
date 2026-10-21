@@ -81,6 +81,8 @@ public:
 
 	float			GetAmplitude( int timeMS ) const;
 
+	static void		N3DS_LogMemory();	// memory diagnostics at MEM checkpoints
+
 protected:
 	friend class idSoundHardware_3DS;
 	friend class idSoundVoice_3DS;

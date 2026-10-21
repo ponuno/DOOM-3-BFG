@@ -60,6 +60,24 @@ idSysInterlockedInteger frameAllocTypeCount[FRAME_ALLOC_MAX];
 int frameHighWaterTypeCount[FRAME_ALLOC_MAX];
 #endif
 
+#if defined( ID_3DS )
+/*
+====================
+R_FrameMemoryStats
+
+Memory diagnostics: largest per-frame allocation seen so far and the size of each
+of the NUM_FRAME_DATA blocks.
+====================
+*/
+void R_FrameMemoryStats( int & highWater, int & size ) {
+	highWater = 0;
+	for ( int i = 0; i < NUM_FRAME_DATA; i++ ) {
+		highWater = Max( highWater, smpFrameData[i].highWaterAllocated );
+	}
+	size = MAX_FRAME_MEMORY;
+}
+#endif
+
 /*
 ====================
 R_ToggleSmpFrame
