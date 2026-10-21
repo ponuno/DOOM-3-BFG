@@ -127,23 +127,27 @@ if(NINTENDO_3DS)
 	set(DOOM3DS_APP_HEAP_MB 86 CACHE STRING "New 3DS application heap in MB (max 96); the rest is linear (GPU) memory")
 	target_compile_definitions(engine PRIVATE N3DS_APP_HEAP_MB=${DOOM3DS_APP_HEAP_MB})
 
-	# vertex shader: picasso -> .shbin -> C array
-	set(N3DS_SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/renderer/3DS/n3ds_vshader.v.pica)
-	set(N3DS_SHADER_BIN ${CMAKE_CURRENT_BINARY_DIR}/n3ds_vshader.shbin)
-	set(N3DS_SHADER_C   ${CMAKE_CURRENT_BINARY_DIR}/n3ds_vshader_shbin.c)
-	if(DOOM3DS_COMPILE_CHECK)
-		file(WRITE ${N3DS_SHADER_C} "#include <stdint.h>\nconst uint8_t n3ds_vshader_shbin[4] = {0};\nconst uint32_t n3ds_vshader_shbin_size = 0;\n")
-	else()
-		find_program(TOOL_PICASSO picasso HINTS $ENV{DEVKITPRO}/tools/bin REQUIRED)
-		add_custom_command(OUTPUT ${N3DS_SHADER_BIN}
-			COMMAND ${TOOL_PICASSO} -o ${N3DS_SHADER_BIN} ${N3DS_SHADER_SRC}
-			DEPENDS ${N3DS_SHADER_SRC}
-			COMMENT "picasso n3ds_vshader.v.pica")
-		add_custom_command(OUTPUT ${N3DS_SHADER_C}
-			COMMAND ${CMAKE_COMMAND} -DIN=${N3DS_SHADER_BIN} -DOUT=${N3DS_SHADER_C} -DNAME=n3ds_vshader_shbin -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2c.cmake
-			DEPENDS ${N3DS_SHADER_BIN} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2c.cmake)
-	endif()
-	target_sources(engine PRIVATE ${N3DS_SHADER_C})
+	# vertex shaders: picasso -> .shbin -> C array
+	#   n3ds_vshader      textured world, per-vertex light passes (n3ds_lighting 0/1)
+	#   n3ds_vshader_lit  hardware fragment lighting (n3ds_lighting 2)
+	foreach(N3DS_SHADER n3ds_vshader n3ds_vshader_lit)
+		set(N3DS_SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/renderer/3DS/${N3DS_SHADER}.v.pica)
+		set(N3DS_SHADER_BIN ${CMAKE_CURRENT_BINARY_DIR}/${N3DS_SHADER}.shbin)
+		set(N3DS_SHADER_C   ${CMAKE_CURRENT_BINARY_DIR}/${N3DS_SHADER}_shbin.c)
+		if(DOOM3DS_COMPILE_CHECK)
+			file(WRITE ${N3DS_SHADER_C} "#include <stdint.h>\nconst uint8_t ${N3DS_SHADER}_shbin[4] = {0};\nconst uint32_t ${N3DS_SHADER}_shbin_size = 0;\n")
+		else()
+			find_program(TOOL_PICASSO picasso HINTS $ENV{DEVKITPRO}/tools/bin REQUIRED)
+			add_custom_command(OUTPUT ${N3DS_SHADER_BIN}
+				COMMAND ${TOOL_PICASSO} -o ${N3DS_SHADER_BIN} ${N3DS_SHADER_SRC}
+				DEPENDS ${N3DS_SHADER_SRC}
+				COMMENT "picasso ${N3DS_SHADER}.v.pica")
+			add_custom_command(OUTPUT ${N3DS_SHADER_C}
+				COMMAND ${CMAKE_COMMAND} -DIN=${N3DS_SHADER_BIN} -DOUT=${N3DS_SHADER_C} -DNAME=${N3DS_SHADER}_shbin -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2c.cmake
+				DEPENDS ${N3DS_SHADER_BIN} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2c.cmake)
+		endif()
+		target_sources(engine PRIVATE ${N3DS_SHADER_C})
+	endforeach()
 endif()
 
 #--------------------------------------------------------------------------

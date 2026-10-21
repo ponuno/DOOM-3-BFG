@@ -1,0 +1,110 @@
+; New 3DS vertex shader for the hardware-lit path (n3ds_lighting 2).
+;   v0 = position (float3)
+;   v1 = normal (ubyte4, 0..255 -> -1..1)
+;   v2 = st (the two raw half floats of idDrawVert, read as signed shorts)
+;
+; The PICA fragment lighting needs, per vertex, the eye-space normal as a
+; quaternion that rotates (0,0,1) onto it, and the vector from the vertex to the
+; eye. Light positions are given in the same eye space (n3ds_gpu.c).
+;   outnq    = ( n.x / 2c, n.y / 2c, c, 0 ), c = sqrt( (1 + n.z) / 2 )
+;              (a half turn about the axis halfway between z and n)
+;   outview  = -( modelView * position )
+;   texcoord0 = texcoord1 = st (diffuse on unit 0, alpha mask on unit 1)
+;   colour   = surfColor
+
+; Uniforms
+.fvec mvp[4], mv[3], surfColor
+; half float exponent table, set once by n3ds_gpu.c (see n3ds_vshader.v.pica)
+.fvec pow2[32]
+
+; Constants
+.constf consts(1.0, 0.0, 0.0078431373, -1.0)
+.constf halfK(32768.0, 0.0009765625, -1024.0, -2.0)
+.constf quatK(0.5, 0.0001, 0.0, 0.0)
+.alias  ones   consts.xxxx
+.alias  zeros  consts.yyyy
+.alias  bscale consts.zzzz
+.alias  bbias  consts.wwww
+
+; Outputs
+.out outpos  position
+.out outnq   normalquat
+.out outview view
+.out outclr  color
+.out outtc0  texcoord0
+.out outtc1  texcoord1
+
+; Inputs
+.alias inpos v0
+.alias innrm v1
+.alias inst  v2
+
+.proc main
+	; r0 = (xyz, 1)
+	mov r0.xyz, inpos
+	mov r0.w,   ones
+
+	; outpos = mvp * r0
+	dp4 outpos.x, mvp[0], r0
+	dp4 outpos.y, mvp[1], r0
+	dp4 outpos.z, mvp[2], r0
+	dp4 outpos.w, mvp[3], r0
+
+	; eye-space position, view vector = -position
+	dp4 r1.x, mv[0], r0
+	dp4 r1.y, mv[1], r0
+	dp4 r1.z, mv[2], r0
+	mov r1.w, zeros
+	mov outview, -r1
+
+	; ---- st: half float bits -> float, into r11.xy ----
+	mov r5, inst
+	slt r6, r5, zeros
+	mad r7, r6, halfK.xxxx, r5
+	mul r8, halfK.yyyy, r7
+	flr r8, r8
+	mad r9, r8, halfK.zzzz, r7
+	mova a0.xy, r8.xy
+	mul r6, halfK.wwww, r6
+	add r6, ones, r6
+	mov r10, pow2[a0.x]
+	mad r11.x, r9.x, r10.y, r10.x
+	mov r10, pow2[a0.y]
+	mad r11.y, r9.y, r10.y, r10.x
+	mul r11.xy, r11.xy, r6.xy
+	mov r11.zw, zeros
+	mov outtc0, r11
+	mov outtc1, r11
+
+	; ---- normal: model -> eye (rotation part of mv), normalized ----
+	mov r2, innrm
+	mul r2, bscale, r2
+	add r2, bbias, r2
+	mov r2.w, zeros
+	dp3 r3.x, mv[0], r2
+	dp3 r3.y, mv[1], r2
+	dp3 r3.z, mv[2], r2
+	dp3 r4.x, r3.xyz, r3.xyz
+	max r4.x, quatK.y, r4.x
+	rsq r4.x, r4.x
+	mul r3.xyz, r3.xyz, r4.xxx
+
+	; ---- quaternion ----
+	; r4.x = c^2 = ( 1 + n.z ) / 2, kept above 0 (n = -z gives a half turn about x)
+	add r4.x, ones, r3.z
+	mul r4.x, quatK.x, r4.x
+	max r4.x, quatK.y, r4.x
+	; r5.x = 1 / c, r5.y = c
+	rsq r5.x, r4.x
+	rcp r5.y, r5.x
+	; xy = n.xy * 0.5 / c
+	mul r6.xy, quatK.xx, r3.xy
+	mul r6.xy, r6.xy, r5.xx
+	mov r6.z, r5.y
+	mov r6.w, zeros
+	mov outnq, r6
+
+	mov outclr, surfColor
+
+	end
+.end

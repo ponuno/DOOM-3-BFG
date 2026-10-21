@@ -13,9 +13,11 @@
 
 #include "n3ds_gpu.h"
 
-// generated at build time from n3ds_vshader.v.pica (picasso + cmake/bin2c.cmake)
+// generated at build time from n3ds_vshader*.v.pica (picasso + cmake/bin2c.cmake)
 extern const u8		n3ds_vshader_shbin[];
 extern const u32	n3ds_vshader_shbin_size;
+extern const u8		n3ds_vshader_lit_shbin[];
+extern const u32	n3ds_vshader_lit_shbin_size;
 
 #define DISPLAY_TRANSFER_FLAGS \
 	( GX_TRANSFER_FLIP_VERT( 0 ) | GX_TRANSFER_OUT_TILED( 0 ) | GX_TRANSFER_RAW_COPY( 0 ) | \
@@ -36,6 +38,15 @@ static int					uLocLightT = -1;
 static int					uLocLightQ = -1;
 static int					uLocLightF = -1;
 static int					uLocPassParams = -1;
+// hardware-lit program (n3ds_vshader_lit.v.pica)
+static DVLB_s *				vshDvlbLit = NULL;
+static shaderProgram_s		programLit;
+static int					litOk = 0;
+static int					litMvp = -1;
+static int					litMv = -1;
+static int					litColor = -1;
+static int					litPow2 = -1;
+static int					activeLit = 0;			// program in use
 static int					texEnvMode = -1;		// texture combiner setup of the current pass
 static int					alphaTestOn = -1;
 
@@ -56,6 +67,26 @@ void N3DSGPU_SetHangCallback( void ( *callback )( unsigned int waitedMs ) ) {
 const char * N3DSGPU_LastError( void ) {
 	return lastError;
 }
+
+// half float exponent table for the st decode (see n3ds_vshader.v.pica)
+static void N3DS_SetPow2( int loc ) {
+	for ( int e = 0; e < 32; e++ ) {
+		float x, y;
+		if ( e == 0 ) {
+			x = 0.0f;
+			y = 1.0f / 16777216.0f;			// 2^-24: denormals
+		} else if ( e == 31 ) {
+			x = 65504.0f;					// inf / nan: largest half
+			y = 0.0f;
+		} else {
+			x = ( e >= 15 ) ? (float)( 1 << ( e - 15 ) ) : 1.0f / (float)( 1 << ( 15 - e ) );
+			y = x / 1024.0f;
+		}
+		C3D_FVUnifSet( GPU_VERTEX_SHADER, loc + e, x, y, 0.0f, 0.0f );
+	}
+}
+
+static void N3DS_HWLightInit( void );
 
 int N3DSGPU_Init( void ) {
 	if ( initialized ) {
@@ -98,21 +129,20 @@ int N3DSGPU_Init( void ) {
 		lastError = "shader uniforms not found";
 		return 0;
 	}
-	// half float exponent table for the st decode (see n3ds_vshader.v.pica)
-	for ( int e = 0; e < 32; e++ ) {
-		float x, y;
-		if ( e == 0 ) {
-			x = 0.0f;
-			y = 1.0f / 16777216.0f;			// 2^-24: denormals
-		} else if ( e == 31 ) {
-			x = 65504.0f;					// inf / nan: largest half
-			y = 0.0f;
-		} else {
-			x = ( e >= 15 ) ? (float)( 1 << ( e - 15 ) ) : 1.0f / (float)( 1 << ( 15 - e ) );
-			y = x / 1024.0f;
-		}
-		C3D_FVUnifSet( GPU_VERTEX_SHADER, uLocPow2 + e, x, y, 0.0f, 0.0f );
+	N3DS_SetPow2( uLocPow2 );
+
+	// the hardware-lit program; the renderer falls back to the other one without it
+	vshDvlbLit = DVLB_ParseFile( (u32 *)n3ds_vshader_lit_shbin, n3ds_vshader_lit_shbin_size );
+	if ( vshDvlbLit != NULL && vshDvlbLit->numDVLE >= 1 ) {
+		shaderProgramInit( &programLit );
+		shaderProgramSetVsh( &programLit, &vshDvlbLit->DVLE[0] );
+		litMvp = shaderInstanceGetUniformLocation( programLit.vertexShader, "mvp" );
+		litMv = shaderInstanceGetUniformLocation( programLit.vertexShader, "mv" );
+		litColor = shaderInstanceGetUniformLocation( programLit.vertexShader, "surfColor" );
+		litPow2 = shaderInstanceGetUniformLocation( programLit.vertexShader, "pow2" );
+		litOk = ( litMvp >= 0 && litMv >= 0 && litColor >= 0 && litPow2 >= 0 );
 	}
+	N3DS_HWLightInit();
 
 	C3D_AttrInfo * attrInfo = C3D_GetAttrInfo();
 	AttrInfo_Init( attrInfo );
@@ -147,8 +177,16 @@ void N3DSGPU_Shutdown( void ) {
 		C3D_FrameEnd( 0 );
 		inFrame = 0;
 	}
+	C3D_LightEnvBind( NULL );
 	shaderProgramFree( &program );
 	DVLB_Free( vshDvlb );
+	if ( vshDvlbLit != NULL ) {
+		shaderProgramFree( &programLit );
+		DVLB_Free( vshDvlbLit );
+		vshDvlbLit = NULL;
+	}
+	litOk = 0;
+	activeLit = 0;
 	C3D_RenderTargetDelete( topTarget );
 	C3D_Fini();
 	initialized = 0;
@@ -198,11 +236,11 @@ void N3DSGPU_SetMatrix( const float * rows ) {
 		mtx.r[i].z = rows[i * 4 + 2];
 		mtx.r[i].w = rows[i * 4 + 3];
 	}
-	C3D_FVUnifMtx4x4( GPU_VERTEX_SHADER, uLocMvp, &mtx );
+	C3D_FVUnifMtx4x4( GPU_VERTEX_SHADER, activeLit ? litMvp : uLocMvp, &mtx );
 }
 
 void N3DSGPU_SetColor( float r, float g, float b, float a ) {
-	C3D_FVUnifSet( GPU_VERTEX_SHADER, uLocColor, r, g, b, a );
+	C3D_FVUnifSet( GPU_VERTEX_SHADER, activeLit ? litColor : uLocColor, r, g, b, a );
 }
 
 void N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short * indexes, int numIndexes ) {
@@ -545,4 +583,212 @@ void N3DSGPU_SetScissor( int enable, int left, int top, int right, int bottom ) 
 
 void N3DSGPU_SetPassParams( int fill, int projective ) {
 	C3D_FVUnifSet( GPU_VERTEX_SHADER, uLocPassParams, fill ? 1.0f : 0.0f, projective ? 1.0f : 0.0f, 0.0f, 0.0f );
+}
+
+/*
+================================================================================================
+
+	Hardware fragment lighting (n3ds_lighting 2)
+
+	Eight PICA light slots. All slots share one distance attenuation table over
+	0..1; each light scales its distance into it (distAttnScale = 1 / radius),
+	written straight into the slot so the table is uploaded only once. Spot
+	lights get their own cone table per slot, rebuilt when the cone changes.
+	Light colours carry colour / scale; the combiner multiplies by scale.
+
+================================================================================================
+*/
+
+static C3D_LightEnv		hwEnv;
+static C3D_Light		hwLights[8];
+static C3D_LightLutDA	hwDistLut;
+static C3D_LightLut		hwSpotLut[8];
+static float			hwSpotCos[8];			// cone the slot's table was built for (2 = none)
+static int				hwEnabledMask = -1;
+static int				hwEnvBound = 0;
+
+static float N3DS_DistAttn( float x, float unused0, float unused1 ) {
+	// 1 at the light, 0 at its radius, soft towards both ends
+	(void)unused0;
+	(void)unused1;
+	if ( x >= 1.0f ) {
+		return 0.0f;
+	}
+	const float a = 1.0f - x * x;
+	return a * a;
+}
+
+static float hwSpotParam;
+static float N3DS_SpotCone( float c, float cosOuter ) {
+	// cosine of the angle to the spot axis -> 0 outside the cone, 1 well inside
+	const float width = ( 1.0f - cosOuter ) * 0.35f + 0.0001f;
+	float v = ( c - cosOuter ) / width;
+	if ( v < 0.0f ) {
+		v = 0.0f;
+	} else if ( v > 1.0f ) {
+		v = 1.0f;
+	}
+	return v * v * ( 3.0f - 2.0f * v );
+}
+
+static void N3DS_HWLightInit( void ) {
+	C3D_LightEnvInit( &hwEnv );
+	C3D_Material mtl;
+	memset( &mtl, 0, sizeof( mtl ) );
+	mtl.ambient[0] = mtl.ambient[1] = mtl.ambient[2] = 1.0f;
+	mtl.diffuse[0] = mtl.diffuse[1] = mtl.diffuse[2] = 1.0f;
+	C3D_LightEnvMaterial( &hwEnv, &mtl );
+	C3D_LightEnvAmbient( &hwEnv, 0.0f, 0.0f, 0.0f );
+	LightLutDA_Create( &hwDistLut, N3DS_DistAttn, 0.0f, 1.0f, 0.0f, 0.0f );
+	for ( int i = 0; i < 8; i++ ) {
+		C3D_LightInit( &hwLights[i], &hwEnv );
+		C3D_LightSpecular0( &hwLights[i], 0.0f, 0.0f, 0.0f );
+		C3D_LightSpecular1( &hwLights[i], 0.0f, 0.0f, 0.0f );
+		C3D_LightDistAttn( &hwLights[i], &hwDistLut );
+		C3D_LightEnable( &hwLights[i], false );
+		hwSpotCos[i] = 2.0f;
+	}
+	hwEnabledMask = 0;
+	hwEnvBound = 0;
+	(void)hwSpotParam;
+}
+
+int N3DSGPU_UseProgram( int lit ) {
+	if ( lit && !litOk ) {
+		return 0;
+	}
+	if ( lit == activeLit ) {
+		return 1;
+	}
+	activeLit = lit;
+	C3D_BindProgram( lit ? &programLit : &program );
+	N3DS_SetPow2( lit ? litPow2 : uLocPow2 );		// the programs' uniforms share registers
+	texEnvMode = -1;
+	alphaTestOn = -1;
+	if ( !lit ) {
+		C3D_LightEnvBind( NULL );
+		hwEnvBound = 0;
+		N3DSGPU_SetFillPass( NULL, NULL, 0 );
+	}
+	return 1;
+}
+
+void N3DSGPU_SetModelView( const float * rows ) {
+	if ( !activeLit ) {
+		return;
+	}
+	C3D_FVUnifSet( GPU_VERTEX_SHADER, litMv + 0, rows[0], rows[1], rows[2], rows[3] );
+	C3D_FVUnifSet( GPU_VERTEX_SHADER, litMv + 1, rows[4], rows[5], rows[6], rows[7] );
+	C3D_FVUnifSet( GPU_VERTEX_SHADER, litMv + 2, rows[8], rows[9], rows[10], rows[11] );
+}
+
+void N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, float invRadius,
+		const float * spotDir, float cosOuter ) {
+	if ( slot < 0 || slot >= 8 ) {
+		return;
+	}
+	C3D_Light * light = &hwLights[slot];
+	C3D_FVec pos = FVec4_New( eyePos[0], eyePos[1], eyePos[2], 1.0f );
+	C3D_LightPosition( light, &pos );
+	C3D_LightDiffuse( light, color[0], color[1], color[2] );
+	// shared table, per-light scale (no table upload)
+	light->conf.distAttnBias = f32tof20( 0.0f );
+	light->conf.distAttnScale = f32tof20( invRadius );
+	light->flags |= C3DF_Light_Dirty;
+	if ( spotDir != NULL ) {
+		C3D_LightSpotDir( light, spotDir[0], spotDir[1], spotDir[2] );
+		if ( hwSpotCos[slot] != cosOuter ) {
+			hwSpotCos[slot] = cosOuter;
+			LightLut_FromFunc( &hwSpotLut[slot], N3DS_SpotCone, cosOuter, true );
+			C3D_LightSpotLut( light, &hwSpotLut[slot] );
+		} else {
+			C3D_LightSpotEnable( light, true );
+		}
+	} else {
+		C3D_LightSpotEnable( light, false );
+	}
+}
+
+void N3DSGPU_HWEnableLights( int mask ) {
+	if ( mask == hwEnabledMask ) {
+		return;
+	}
+	for ( int i = 0; i < 8; i++ ) {
+		const int on = ( mask >> i ) & 1;
+		if ( on != ( ( hwEnabledMask >> i ) & 1 ) || hwEnabledMask < 0 ) {
+			C3D_LightEnable( &hwLights[i], on != 0 );
+		}
+	}
+	hwEnabledMask = mask;
+}
+
+void N3DSGPU_HWAmbient( float r, float g, float b ) {
+	C3D_LightEnvAmbient( &hwEnv, r, g, b );
+}
+
+void N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, int scale ) {
+	// lit: diffuse x fragment lighting x scale x vertex colour; unlit: diffuse x vertex colour
+	if ( alphaSource == 2 && mask == NULL ) {
+		alphaSource = 0;
+	}
+	if ( alphaSource != 0 && diffuse == NULL ) {
+		alphaSource = 0;
+	}
+	if ( diffuse != NULL ) {
+		C3D_TexBind( 0, (C3D_Tex *)diffuse );
+	}
+	if ( alphaSource == 2 ) {
+		C3D_TexBind( 1, (C3D_Tex *)mask );
+	}
+	if ( lit != hwEnvBound ) {
+		hwEnvBound = lit;
+		C3D_LightEnvBind( lit ? &hwEnv : NULL );
+	}
+	const int key = 0x400 | ( diffuse != NULL ? 1 : 0 ) | ( alphaSource << 1 ) | ( lit ? 8 : 0 ) | ( scale << 4 );
+	if ( key != texEnvMode ) {
+		const int first = ( texEnvMode & 0x400 ) == 0 || texEnvMode < 0;
+		texEnvMode = key;
+		C3D_TexEnv * env = C3D_GetTexEnv( 0 );
+		C3D_TexEnvInit( env );
+		const GPU_TEVSRC light = lit ? GPU_FRAGMENT_PRIMARY_COLOR : GPU_PRIMARY_COLOR;
+		if ( diffuse != NULL ) {
+			C3D_TexEnvSrc( env, C3D_RGB, GPU_TEXTURE0, light, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_RGB, GPU_MODULATE );
+		} else {
+			C3D_TexEnvSrc( env, C3D_RGB, light, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_RGB, GPU_REPLACE );
+		}
+		if ( lit ) {
+			C3D_TexEnvScale( env, C3D_RGB, scale >= 4 ? GPU_TEVSCALE_4 : ( scale >= 2 ? GPU_TEVSCALE_2 : GPU_TEVSCALE_1 ) );
+		}
+		if ( alphaSource == 1 ) {
+			C3D_TexEnvSrc( env, C3D_Alpha, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+		} else if ( alphaSource == 2 ) {
+			C3D_TexEnvSrc( env, C3D_Alpha, GPU_TEXTURE1, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+		} else {
+			C3D_TexEnvSrc( env, C3D_Alpha, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+		}
+		C3D_TexEnvFunc( env, C3D_Alpha, GPU_REPLACE );
+
+		// stage 1: x vertex colour (lit: the diffuse stage colour; unlit: already in)
+		env = C3D_GetTexEnv( 1 );
+		C3D_TexEnvInit( env );
+		if ( lit ) {
+			C3D_TexEnvSrc( env, C3D_RGB, GPU_PREVIOUS, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_RGB, GPU_MODULATE );
+		}
+		if ( diffuse != NULL && !lit ) {
+			// unlit with texture: stage 0 was texture x light (= vertex colour) already
+		}
+		if ( first ) {
+			N3DS_StageInit( 2 );
+			C3D_DepthTest( true, GPU_GREATER, GPU_WRITE_ALL );
+			C3D_AlphaBlend( GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO );
+		}
+	}
+	const int at = ( alphaSource != 0 ) ? 1 : 0;
+	if ( at != alphaTestOn ) {
+		alphaTestOn = at;
+		C3D_AlphaTest( at != 0, GPU_GREATER, 127 );
+	}
 }

@@ -22,6 +22,8 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 	is added on top (light pass, depth equal): light projection x falloff x diffuse
 	x light colour x max(0, N.L) per vertex, the same light model as the PC
 	interaction shader without normal and specular maps. No shadows (n3ds_noShadows).
+	n3ds_lighting 2 (default) uses the PICA fragment lighting instead, see
+	N3DS_DrawViewHW below.
 	Textures come from n3ds_textures.cpp; surfaces whose texture is not on the GPU
 	(yet) get one flat colour per material.
 	Vertex and index data come straight from the vertex cache buffers, which the
@@ -66,7 +68,9 @@ static int		c3dStatLights = 0;
 static int		c3dStatLightDraws = 0;
 static int		c3dStatScissorPixels = 0;	// light rectangles, summed
 
-idCVar n3ds_lighting( "n3ds_lighting", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: per-vertex light passes (0 = everything at full brightness)" );
+idCVar n3ds_lighting( "n3ds_lighting", "2", CVAR_RENDERER | CVAR_INTEGER, "citro3d: 0 = everything at full brightness, 1 = a pass per light (projected light images, per-vertex N.L), 2 = PICA fragment lighting, one pass, up to 8 lights per surface" );
+idCVar n3ds_hwSpotFlip( "n3ds_hwSpotFlip", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d n3ds_lighting 2: reverse the spot light direction (if the flashlight lights everything but its cone)" );
+idCVar n3ds_hwLightScale( "n3ds_hwLightScale", "4", CVAR_RENDERER | CVAR_INTEGER, "citro3d n3ds_lighting 2: overbright range, 2 or 4 (light colours are divided by it, the combiner multiplies)" );
 idCVar n3ds_ambient( "n3ds_ambient", "0.06", CVAR_RENDERER | CVAR_FLOAT, "citro3d: brightness of lit surfaces where no light reaches (Doom 3 itself: 0)" );
 idCVar n3ds_lightScissor( "n3ds_lightScissor", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: clip each light's passes to its screen rectangle" );
 idCVar n3ds_lightProjective( "n3ds_lightProjective", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: divide the light projection per pixel (texture unit 0 projection mode); 0 = per vertex" );
@@ -472,7 +476,7 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 	memset( &buffers, 0, sizeof( buffers ) );
 	buffers.validate = n3ds_c3dValidate.GetBool();
 	int draws = 0;
-	const bool lighting = n3ds_lighting.GetBool();
+	const bool lighting = ( n3ds_lighting.GetInteger() == 1 );
 	const float ambient = lighting ? n3ds_ambient.GetFloat() : 1.0f;
 	c3dDrawRecord_t record;
 
@@ -675,6 +679,381 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 }
 
 /*
+================================================================================================
+
+	Hardware fragment lighting path (n3ds_lighting 2)
+
+	One pass per surface: the PICA lights it per pixel with up to 8 lights. The
+	lights of a surface come from the frontend's interaction lists (each
+	interaction surface is matched to the view's surface with the same vertex
+	data and space). Doom 3 lights become PICA lights:
+	  point light     -> positional light, distance attenuation over its radius
+	  projected light -> spot light along the frustum axis, cone from the frustum,
+	                     attenuated over the falloff range
+	  ambient light   -> added to the surface's ambient colour
+	The projection/falloff images and normal maps are not used yet.
+
+================================================================================================
+*/
+
+static const int N3DS_MAX_FRAME_LIGHTS = 64;
+
+struct n3dsHWLight_t {
+	float	eyePos[3];
+	float	color[3];		// already / combiner scale, clamped
+	float	invRadius;
+	bool	spot;
+	float	spotDir[3];		// eye space
+	float	cosOuter;
+	bool	ambient;
+};
+
+static n3dsHWLight_t	hwFrameLights[N3DS_MAX_FRAME_LIGHTS];
+
+// per view surface: up to 8 lights and the ambient light sum
+struct n3dsSurfLights_t {
+	byte	lights[8];
+	byte	numLights;
+	float	ambient[3];
+};
+static n3dsSurfLights_t *	hwSurfLights = NULL;
+static int					hwSurfLightsAlloc = 0;
+static int *				hwHash = NULL;
+static int					hwHashSize = 0;
+static int					c3dStatHWLit = 0;
+static int					c3dStatHWLightsPerSurf = 0;
+static int					c3dStatHWDropped = 0;		// lights beyond 8 on a surface
+static int					c3dStatHWSlotLoads = 0;
+
+static inline unsigned int N3DS_SurfKey( const drawSurf_t * surf ) {
+	const uint64 a = (uint64)surf->ambientCache;
+	const uint64 b = (uint64)(UINT_PTR)surf->space;
+	uint64 h = a * 0x9E3779B97F4A7C15ULL ^ ( b + ( a >> 29 ) );
+	h ^= h >> 31;
+	return (unsigned int)h;
+}
+
+static void N3DS_EyePoint( const float m[16], const idVec3 & p, float out[3] ) {
+	for ( int i = 0; i < 3; i++ ) {
+		out[i] = p.x * m[0 * 4 + i] + p.y * m[1 * 4 + i] + p.z * m[2 * 4 + i] + m[3 * 4 + i];
+	}
+}
+
+static void N3DS_EyeDir( const float m[16], const idVec3 & d, float out[3] ) {
+	for ( int i = 0; i < 3; i++ ) {
+		out[i] = d.x * m[0 * 4 + i] + d.y * m[1 * 4 + i] + d.z * m[2 * 4 + i];
+	}
+}
+
+// direction through the apex where s/q = sq and t/q = tq
+static idVec3 N3DS_FrustumDir( const idPlane proj[4], float sq, float tq ) {
+	const idVec3 s = proj[0].Normal() - sq * proj[2].Normal();
+	const idVec3 t = proj[1].Normal() - tq * proj[2].Normal();
+	idVec3 d = s.Cross( t );
+	if ( d * proj[2].Normal() < 0.0f ) {
+		d = -d;
+	}
+	d.Normalize();
+	return d;
+}
+
+static bool N3DS_SetupHWLight( const viewDef_t * viewDef, const viewLight_t * vLight, float colorScale, n3dsHWLight_t & out ) {
+	const idMaterial * lightShader = vLight->lightShader;
+	const float * lightRegs = vLight->shaderRegisters;
+	// colour of the first stage that passes its condition
+	const float lightScale = r_lightScale.GetFloat();
+	bool found = false;
+	for ( int i = 0; i < lightShader->GetNumStages(); i++ ) {
+		const shaderStage_t * stage = lightShader->GetStage( i );
+		if ( !lightRegs[ stage->conditionRegister ] ) {
+			continue;
+		}
+		for ( int c = 0; c < 3; c++ ) {
+			out.color[c] = idMath::ClampFloat( 0.0f, 1.0f, lightScale * lightRegs[ stage->color.registers[c] ] / colorScale );
+		}
+		found = true;
+		break;
+	}
+	if ( !found || ( out.color[0] <= 0.0f && out.color[1] <= 0.0f && out.color[2] <= 0.0f ) ) {
+		return false;
+	}
+	out.ambient = lightShader->IsAmbientLight();
+	const float * worldToEye = viewDef->worldSpace.modelViewMatrix;
+	N3DS_EyePoint( worldToEye, vLight->globalLightOrigin, out.eyePos );
+
+	const idPlane * proj = vLight->lightProject;
+	const float qLen = proj[2].Normal().Length();
+	if ( qLen < 1e-6f ) {
+		// point light: s, t and falloff are 0.5 + 0.5 * x / radius along the light axes
+		float r = 0.0f;
+		int n = 0;
+		const int planes[3] = { 0, 1, 3 };
+		for ( int k = 0; k < 3; k++ ) {
+			const float len = proj[ planes[k] ].Normal().Length();
+			if ( len > 1e-6f ) {
+				r += 0.5f / len;
+				n++;
+			}
+		}
+		r = ( n > 0 ) ? r / n : 300.0f;
+		out.invRadius = 1.0f / Max( r, 1.0f );
+		out.spot = false;
+		out.cosOuter = 2.0f;
+		return true;
+	}
+
+	// projected light: axis where s/q = t/q = 0.5, cone to the frustum edges
+	const idVec3 axis = N3DS_FrustumDir( proj, 0.5f, 0.5f );
+	const idVec3 edgeS = N3DS_FrustumDir( proj, 1.0f, 0.5f );
+	const idVec3 edgeT = N3DS_FrustumDir( proj, 0.5f, 1.0f );
+	const float cosOuter = Min( axis * edgeS, axis * edgeT );
+	out.spot = true;
+	out.cosOuter = idMath::ClampFloat( 0.0f, 0.999f, cosOuter );
+	N3DS_EyeDir( worldToEye, n3ds_hwSpotFlip.GetBool() ? -axis : axis, out.spotDir );
+	// falloff plane: 0 at the start, 1 at the end of the light
+	const idPlane & f = proj[3];
+	const float along = f.Normal() * axis;
+	float range = 512.0f;
+	if ( along > 1e-6f ) {
+		const float atOrigin = f.Distance( vLight->globalLightOrigin );
+		range = ( 1.0f - atOrigin ) / along;
+	}
+	out.invRadius = 1.0f / Max( range, 1.0f );
+	return true;
+}
+
+static void N3DS_ModelViewRows( const float m[16], float rows[12] ) {
+	for ( int i = 0; i < 3; i++ ) {
+		rows[i * 4 + 0] = m[0 * 4 + i];
+		rows[i * 4 + 1] = m[1 * 4 + i];
+		rows[i * 4 + 2] = m[2 * 4 + i];
+		rows[i * 4 + 3] = m[3 * 4 + i];
+	}
+}
+
+static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
+	const int numSurfs = viewDef->numDrawSurfs;
+	const int combinerScale = ( n3ds_hwLightScale.GetInteger() >= 4 ) ? 4 : 2;
+	const float ambientLevel = n3ds_ambient.GetFloat();
+
+	// ---- per-surface light lists ----
+	if ( numSurfs > hwSurfLightsAlloc ) {
+		Mem_Free( hwSurfLights );
+		hwSurfLightsAlloc = numSurfs + 256;
+		hwSurfLights = (n3dsSurfLights_t *)Mem_Alloc( hwSurfLightsAlloc * sizeof( n3dsSurfLights_t ), TAG_RENDER );
+	}
+	int hashSize = 64;
+	while ( hashSize < numSurfs * 2 ) {
+		hashSize <<= 1;
+	}
+	if ( hashSize > hwHashSize ) {
+		Mem_Free( hwHash );
+		hwHashSize = hashSize;
+		hwHash = (int *)Mem_Alloc( hwHashSize * sizeof( int ), TAG_RENDER );
+	}
+	hashSize = hwHashSize;
+	memset( hwHash, -1, hashSize * sizeof( int ) );
+	for ( int i = 0; i < numSurfs; i++ ) {
+		const drawSurf_t * surf = viewDef->drawSurfs[i];
+		hwSurfLights[i].numLights = 0;
+		hwSurfLights[i].ambient[0] = hwSurfLights[i].ambient[1] = hwSurfLights[i].ambient[2] = 0.0f;
+		if ( N3DS_SkipSurface( surf ) ) {
+			continue;
+		}
+		unsigned int h = N3DS_SurfKey( surf ) & ( hashSize - 1 );
+		while ( hwHash[h] >= 0 ) {
+			h = ( h + 1 ) & ( hashSize - 1 );
+		}
+		hwHash[h] = i;
+	}
+
+	int numLights = 0;
+	for ( const viewLight_t * vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
+		const idMaterial * lightShader = vLight->lightShader;
+		if ( lightShader == NULL || lightShader->IsFogLight() || lightShader->IsBlendLight() ) {
+			continue;
+		}
+		if ( vLight->localInteractions == NULL && vLight->globalInteractions == NULL ) {
+			continue;
+		}
+		if ( numLights >= N3DS_MAX_FRAME_LIGHTS ) {
+			break;
+		}
+		n3dsHWLight_t & light = hwFrameLights[numLights];
+		if ( !N3DS_SetupHWLight( viewDef, vLight, (float)combinerScale, light ) ) {
+			continue;
+		}
+		c3dStatLights++;
+		for ( int list = 0; list < 2; list++ ) {
+			for ( const drawSurf_t * inter = ( list == 0 ) ? vLight->localInteractions : vLight->globalInteractions;
+					inter != NULL; inter = inter->nextOnLight ) {
+				unsigned int h = N3DS_SurfKey( inter ) & ( hashSize - 1 );
+				int found = -1;
+				while ( hwHash[h] >= 0 ) {
+					const drawSurf_t * s = viewDef->drawSurfs[ hwHash[h] ];
+					if ( s->ambientCache == inter->ambientCache && s->space == inter->space ) {
+						found = hwHash[h];
+						break;
+					}
+					h = ( h + 1 ) & ( hashSize - 1 );
+				}
+				if ( found < 0 ) {
+					continue;
+				}
+				n3dsSurfLights_t & sl = hwSurfLights[found];
+				if ( light.ambient ) {
+					for ( int c = 0; c < 3; c++ ) {
+						sl.ambient[c] += light.color[c];
+					}
+					continue;
+				}
+				bool dup = false;
+				for ( int k = 0; k < sl.numLights; k++ ) {
+					if ( sl.lights[k] == numLights ) {
+						dup = true;
+						break;
+					}
+				}
+				if ( dup ) {
+					continue;
+				}
+				if ( sl.numLights < 8 ) {
+					sl.lights[ sl.numLights++ ] = (byte)numLights;
+				} else {
+					c3dStatHWDropped++;
+				}
+			}
+		}
+		numLights++;
+	}
+
+	// ---- draw ----
+	n3dsBuffers_t buffers;
+	memset( &buffers, 0, sizeof( buffers ) );
+	buffers.validate = n3ds_c3dValidate.GetBool();
+	c3dDrawRecord_t record;
+	int slotLight[8];
+	for ( int k = 0; k < 8; k++ ) {
+		slotLight[k] = -1;
+	}
+	const viewEntity_t * lastSpace = NULL;
+	bool spaceOk = true;
+	int draws = 0;
+	const int maxDraws = n3ds_c3dMaxDraws.GetInteger();
+	const int test = n3ds_c3dTest.GetInteger();
+
+	for ( int i = 0; i < numSurfs; i++ ) {
+		const drawSurf_t * surf = viewDef->drawSurfs[i];
+		if ( N3DS_SkipSurface( surf ) ) {
+			continue;
+		}
+		const idMaterial * material = surf->material;
+		const unsigned short * indexes;
+		const byte * verts = N3DS_SurfaceBuffers( surf, buffers, &indexes, &record );
+		if ( verts == NULL ) {
+			continue;
+		}
+		if ( maxDraws > 0 && draws >= maxDraws ) {
+			break;
+		}
+		if ( !N3DS_CommandRoom( draws ) ) {
+			return;
+		}
+		if ( surf->space != lastSpace ) {
+			spaceOk = N3DS_SetMVP( surf->space->mvp );
+			lastSpace = surf->space;
+			if ( spaceOk ) {
+				float rows[12];
+				N3DS_ModelViewRows( surf->space->modelViewMatrix, rows );
+				N3DSGPU_SetModelView( rows );
+			} else if ( c3dBadMatrix++ < 8 ) {
+				common->Printf( "citro3d: non-finite matrix for %s, its surfaces are skipped\n", material->GetName() );
+			}
+		}
+		if ( !spaceOk ) {
+			continue;
+		}
+		draws++;
+
+		n3dsFillImages_t images;
+		N3DS_FillImages( material, surf->shaderRegisters, images );
+		void * colorTex = N3DS_TexForImage( images.color );
+		void * maskTex = NULL;
+		int alphaSource = 0;
+		if ( colorTex != NULL && images.mask != NULL ) {
+			if ( images.mask == images.color ) {
+				alphaSource = 1;
+			} else {
+				maskTex = N3DS_TexForImage( images.mask );
+				alphaSource = ( maskTex != NULL ) ? 2 : 0;
+			}
+		}
+
+		const bool lit = images.lit || images.color == NULL;
+		if ( lit ) {
+			const n3dsSurfLights_t & sl = hwSurfLights[i];
+			// slots: keep lights already loaded, load the rest into free slots
+			int used = 0;
+			int need[8];
+			int numNeed = 0;
+			for ( int k = 0; k < sl.numLights; k++ ) {
+				const int l = sl.lights[k];
+				int slot = -1;
+				for ( int s = 0; s < 8; s++ ) {
+					if ( slotLight[s] == l ) {
+						slot = s;
+						break;
+					}
+				}
+				if ( slot >= 0 ) {
+					used |= 1 << slot;
+				} else {
+					need[numNeed++] = l;
+				}
+			}
+			for ( int k = 0; k < numNeed; k++ ) {
+				const int l = need[k];
+				int slot = l & 7;							// the light's usual slot, if free here
+				if ( used & ( 1 << slot ) ) {
+					for ( slot = 0; slot < 8 && ( used & ( 1 << slot ) ); slot++ ) {
+					}
+				}
+				const n3dsHWLight_t & hl = hwFrameLights[l];
+				N3DSGPU_HWSetLight( slot, hl.eyePos, hl.color, hl.invRadius, hl.spot ? hl.spotDir : NULL, hl.cosOuter );
+				slotLight[slot] = l;
+				used |= 1 << slot;
+				c3dStatHWSlotLoads++;
+			}
+			N3DSGPU_HWEnableLights( used );
+			const float base = ambientLevel / combinerScale;
+			N3DSGPU_HWAmbient( idMath::ClampFloat( 0.0f, 1.0f, base + sl.ambient[0] ),
+				idMath::ClampFloat( 0.0f, 1.0f, base + sl.ambient[1] ), idMath::ClampFloat( 0.0f, 1.0f, base + sl.ambient[2] ) );
+			c3dStatHWLit++;
+			c3dStatHWLightsPerSurf += sl.numLights;
+		}
+
+		// diffuse stage colour (lit) / full brightness (unlit)
+		float r = 1.0f, g = 1.0f, b = 1.0f;
+		if ( lit && surf->shaderRegisters != NULL ) {
+			const shaderStage_t * diffuseStage = N3DS_DiffuseStage( material, surf->shaderRegisters );
+			if ( diffuseStage != NULL ) {
+				r = idMath::ClampFloat( 0.0f, 1.0f, surf->shaderRegisters[ diffuseStage->color.registers[0] ] );
+				g = idMath::ClampFloat( 0.0f, 1.0f, surf->shaderRegisters[ diffuseStage->color.registers[1] ] );
+				b = idMath::ClampFloat( 0.0f, 1.0f, surf->shaderRegisters[ diffuseStage->color.registers[2] ] );
+			}
+		}
+		if ( colorTex != NULL ) {
+			c3dStatTextured++;
+			N3DSGPU_SetColor( r, g, b, 1.0f );
+		} else {
+			N3DS_MaterialColor( material, 1.0f );
+		}
+		N3DSGPU_SetHWPass( colorTex, maskTex, alphaSource, lit ? 1 : 0, combinerScale );
+		N3DS_Draw( surf, verts, indexes, record, test );
+	}
+}
+
+/*
 ========================
 RB_N3DS_ExecuteBackEndCommands
 ========================
@@ -704,6 +1083,11 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	N3DSGPU_BeginFrame( 0x182030FF );
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: drawing" );
 	N3DS_TexBeginFrame( has3D );
+	// lighting path for this frame (the lit program may be missing: fall back)
+	const bool useHW = ( n3ds_lighting.GetInteger() == 2 ) && n3ds_c3dTest.GetInteger() == 0 && N3DSGPU_UseProgram( 1 );
+	if ( !useHW ) {
+		N3DSGPU_UseProgram( 0 );
+	}
 	c3dRecordSet ^= 1;
 	c3dNumRecords[c3dRecordSet] = 0;
 	if ( trace ) {
@@ -718,7 +1102,11 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		if ( viewDef == NULL || viewDef->isSubview || viewDef->viewEntitys == NULL ) {
 			continue;
 		}
-		N3DS_DrawView( viewDef );
+		if ( useHW ) {
+			N3DS_DrawViewHW( viewDef );
+		} else {
+			N3DS_DrawView( viewDef );
+		}
 	}
 	const float cmdUse = N3DSGPU_CmdBufUsage();
 	if ( trace ) {
@@ -748,6 +1136,11 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights, light area %.1f screens) %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d\n",
 			c3dStatDraws / f, c3dStatTextured / f, c3dStatLightDraws / f, c3dStatLights / f, c3dStatScissorPixels / ( f * 96000.0f ),
 			c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad );
+		if ( c3dStatHWLit > 0 ) {
+			common->Printf( "PERF   citro3d HW lights: %.0f lit surfaces, %.2f lights each, %.0f slot loads, %.0f lights over 8 dropped per frame\n",
+				c3dStatHWLit / f, c3dStatHWLightsPerSurf / (float)c3dStatHWLit, c3dStatHWSlotLoads / f, c3dStatHWDropped / f );
+		}
+		c3dStatHWLit = c3dStatHWLightsPerSurf = c3dStatHWSlotLoads = c3dStatHWDropped = 0;
 		idStr texLine;
 		N3DS_TexStatsLine( texLine );
 		common->Printf( "PERF   citro3d: %s\n", texLine.c_str() );

@@ -851,6 +851,12 @@ void R_InitOpenGL() {
 			r_n3dsC3D ? "citro3d" : "null GL", n3dsStaticVertexMemory / 1024, n3dsStaticIndexMemory / 1024,
 			r_n3dsDiscardStaticGeo ? " (budget only)" : "" );
 	}
+	if ( r_n3dsC3D ) {
+		// the citro3d backend cannot skin on the GPU (too few shader uniforms for the
+		// joints): the frontend skins on the CPU instead, as with r_useGPUSkinning 0
+		r_useGPUSkinning.SetBool( false );
+	}
+	common->Printf( "skinning: %s\n", r_useGPUSkinning.GetBool() ? "GPU" : "CPU" );
 	idBinaryImage::skipPixelData = cvarSystem->GetCVarBool( "n3ds_skipImageData" );
 	common->Printf( "shadows: %s\n", r_n3dsNoShadows ? "disabled (n3ds_noShadows)" : "enabled" );
 #endif

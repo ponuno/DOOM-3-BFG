@@ -82,6 +82,21 @@ void			N3DSGPU_SetLightPass( void * projection, void * falloff, void * diffuse, 
 // falloff planes of the light projection
 void			N3DSGPU_SetLightUniforms( const float * origin, const float * s, const float * t, const float * q, const float * f );
 void			N3DSGPU_SetPassParams( int fill, int projective );
+// hardware fragment lighting (n3ds_lighting 2): program 1 = n3ds_vshader_lit
+int				N3DSGPU_UseProgram( int lit );		// 0 if the lit program is not available
+// rows[12]: model -> eye 3x4, row-major (lit program)
+void			N3DSGPU_SetModelView( const float * rows );
+// slot 0..7: eye-space position, colour (already / scale), 1 / radius for the
+// distance attenuation; spotDir (eye space, pointing away from the light) and the
+// cone's outer cosine, or NULL for a point light
+void			N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, float invRadius,
+								const float * spotDir, float cosOuter );
+void			N3DSGPU_HWEnableLights( int mask );
+void			N3DSGPU_HWAmbient( float r, float g, float b );
+// one pass: diffuse (unit 0, or NULL) x (lit ? fragment lighting x scale : 1) x vertex
+// colour; alphaSource as N3DSGPU_SetFillPass (mask on unit 1); depth written
+void			N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, int scale );
+
 // scissor in render target pixels (240 x 400, the 3DS framebuffer orientation),
 // right/bottom exclusive
 void			N3DSGPU_SetScissor( int enable, int left, int top, int right, int bottom );
