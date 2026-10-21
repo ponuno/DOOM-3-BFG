@@ -258,6 +258,7 @@ set(ENGINE_3DS_SOURCES
 	sound/3DS/3DS_SoundHardware.cpp
 	sound/3DS/3DS_SoundSample.cpp
 	sound/3DS/3DS_SoundVoice.cpp
+	sound/3DS/n3ds_audio.c
 )
 
 set(ENGINE_WIN32_SOURCES

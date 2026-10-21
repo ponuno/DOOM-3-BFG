@@ -837,7 +837,6 @@ sdmc:/doom3/cmdline.txt (if present), so tests can be changed without rebuilding
 static void Sys_BuildCommandLine() {
 	idStr cmd =
 		"+set com_skipIntroVideos 1 "
-		"+set s_noSound 1 "
 		"+set com_disableAutoSaves 1 "
 		"+set r_cullDynamicLightTriangles 0 ";	// per-frame light-tri culling of moving models: CPU + frame index cache	// map-start autosave needs ~2 MB of buffers; no room yet
 

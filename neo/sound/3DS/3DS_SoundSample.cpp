@@ -57,11 +57,42 @@ static void FreeBuffer( void * p ) {
 }
 
 /*
+================================================================================================
+
+	New 3DS: sample data on demand
+
+	LoadResource() reads only the header of a generated .idwav (format, length,
+	amplitude) and remembers where each buffer's data sits in the file. Small
+	samples are read right away; the rest are read the first time a voice plays
+	them (EnsureData, main thread). All sample data shares n3ds_soundMemoryKB:
+	when it is full, the least recently played samples that no voice uses give
+	their data back.
+
+================================================================================================
+*/
+idCVar n3ds_soundMemoryKB( "n3ds_soundMemoryKB", "8192", CVAR_SOUND | CVAR_INTEGER, "New 3DS: memory for sound sample data; least recently played samples are dropped when it is full" );
+idCVar n3ds_soundPreloadKB( "n3ds_soundPreloadKB", "48", CVAR_SOUND | CVAR_INTEGER, "New 3DS: samples up to this size are read at level load, bigger ones when first played" );
+
+static idList< idSoundSample_3DS *, TAG_AUDIO >	allSamples;
+static int										sampleDataBytes = 0;
+static int										sampleLoadsOnDemand = 0;
+static int										sampleEvictions = 0;
+static int										sampleUseClock = 0;
+
+int N3DS_SoundDataKB() { return sampleDataBytes / 1024; }
+int N3DS_SoundLoadsOnDemand() { const int n = sampleLoadsOnDemand; sampleLoadsOnDemand = 0; return n; }
+int N3DS_SoundEvictions() { const int n = sampleEvictions; sampleEvictions = 0; return n; }
+
+/*
 ========================
 idSoundSample_3DS::idSoundSample_3DS
 ========================
 */
 idSoundSample_3DS::idSoundSample_3DS() {
+	dataLoaded = false;
+	activeVoices = 0;
+	lastUse = 0;
+	allSamples.Append( this );
 	timestamp = FILE_NOT_FOUND_TIMESTAMP;
 	loaded = false;
 	neverPurge = false;
@@ -84,6 +115,112 @@ idSoundSample_3DS::~idSoundSample_3DS
 */
 idSoundSample_3DS::~idSoundSample_3DS() {
 	FreeData();
+	allSamples.Remove( this );
+}
+
+/*
+========================
+idSoundSample_3DS::FreeBuffers
+
+Only the sample data; the header stays.
+========================
+*/
+void idSoundSample_3DS::FreeBuffers() {
+	N3DS_SoundLock();
+	for ( int i = 0; i < buffers.Num(); i++ ) {
+		if ( buffers[i].buffer != NULL ) {
+			FreeBuffer( buffers[i].buffer );
+			sampleDataBytes -= buffers[i].bufferSize;
+			buffers[i].buffer = NULL;
+		}
+	}
+	dataLoaded = false;
+	N3DS_SoundUnlock();
+}
+
+/*
+========================
+idSoundSample_3DS::ReadBuffers
+========================
+*/
+bool idSoundSample_3DS::ReadBuffers( idFile * f ) {
+	int total = 0;
+	for ( int i = 0; i < buffers.Num(); i++ ) {
+		total += buffers[i].bufferSize;
+	}
+	MakeRoom( total );
+	for ( int i = 0; i < buffers.Num(); i++ ) {
+		if ( f->Seek( buffers[i].fileOffset, FS_SEEK_SET ) != 0 ) {
+			return false;
+		}
+		void * data = AllocBuffer( buffers[i].bufferSize, GetName() );
+		if ( f->Read( data, buffers[i].bufferSize ) != buffers[i].bufferSize ) {
+			FreeBuffer( data );
+			return false;
+		}
+		N3DS_SoundLock();
+		buffers[i].buffer = data;
+		sampleDataBytes += buffers[i].bufferSize;
+		N3DS_SoundUnlock();
+	}
+	dataLoaded = true;
+	return true;
+}
+
+/*
+========================
+idSoundSample_3DS::MakeRoom
+
+Drops the data of least recently played samples no voice is using until 'bytes'
+more fit in n3ds_soundMemoryKB.
+========================
+*/
+void idSoundSample_3DS::MakeRoom( int bytes ) {
+	const int budget = n3ds_soundMemoryKB.GetInteger() * 1024;
+	while ( sampleDataBytes + bytes > budget ) {
+		idSoundSample_3DS * oldest = NULL;
+		for ( int i = 0; i < allSamples.Num(); i++ ) {
+			idSoundSample_3DS * s = allSamples[i];
+			if ( s == this || !s->dataLoaded || s->activeVoices > 0 || s->generatedName.IsEmpty() ) {
+				continue;
+			}
+			if ( oldest == NULL || s->lastUse < oldest->lastUse ) {
+				oldest = s;
+			}
+		}
+		if ( oldest == NULL ) {
+			break;		// everything resident is playing: go over the budget
+		}
+		oldest->FreeBuffers();
+		sampleEvictions++;
+	}
+}
+
+/*
+========================
+idSoundSample_3DS::EnsureData
+
+Called when a voice is about to play the sample. False if the data cannot be read.
+========================
+*/
+bool idSoundSample_3DS::EnsureData() {
+	lastUse = ++sampleUseClock;
+	if ( dataLoaded ) {
+		return true;
+	}
+	if ( generatedName.IsEmpty() ) {
+		return false;
+	}
+	idFileLocal f( fileSystem->OpenFileRead( generatedName ) );
+	if ( f == NULL ) {
+		return false;
+	}
+	sampleLoadsOnDemand++;
+	if ( !ReadBuffers( f ) ) {
+		FreeBuffers();
+		return false;
+	}
+	return true;
 }
 
 /*
@@ -140,33 +277,45 @@ idSoundSample_3DS::LoadGeneratedSound
 ========================
 */
 bool idSoundSample_3DS::LoadGeneratedSample( const idStr &filename ) {
-	idFileLocal fileIn( fileSystem->OpenFileReadMemory( filename ) );
-	if ( fileIn != NULL ) {
-		uint32 magic;
-		fileIn->ReadBig( magic );
-		fileIn->ReadBig( timestamp );
-		fileIn->ReadBig( loaded );
-		fileIn->ReadBig( playBegin );
-		fileIn->ReadBig( playLength );
-		idWaveFile::ReadWaveFormatDirect( format, fileIn );
-		int num;
-		fileIn->ReadBig( num );
-		amplitude.Clear();
-		amplitude.SetNum( num );
-		fileIn->Read( amplitude.Ptr(), amplitude.Num() );
-		fileIn->ReadBig( totalBufferSize );
-		fileIn->ReadBig( num );
-		buffers.SetNum( num );
-		for ( int i = 0; i < num; i++ ) {
-			fileIn->ReadBig( buffers[ i ].numSamples );
-			fileIn->ReadBig( buffers[ i ].bufferSize );
-			buffers[ i ].buffer = AllocBuffer( buffers[ i ].bufferSize, GetName() );
-			fileIn->Read( buffers[ i ].buffer, buffers[ i ].bufferSize );
-			buffers[ i ].buffer = GPU_CONVERT_CPU_TO_CPU_CACHED_READONLY_ADDRESS( buffers[ i ].buffer );
-		}
-		return true;
+	// header only; the data is read now if the sample is small, else when first played
+	idFileLocal fileIn( fileSystem->OpenFileRead( filename ) );
+	if ( fileIn == NULL ) {
+		return false;
 	}
-	return false;
+	uint32 magic;
+	fileIn->ReadBig( magic );
+	fileIn->ReadBig( timestamp );
+	fileIn->ReadBig( loaded );
+	fileIn->ReadBig( playBegin );
+	fileIn->ReadBig( playLength );
+	idWaveFile::ReadWaveFormatDirect( format, fileIn );
+	int num;
+	fileIn->ReadBig( num );
+	amplitude.Clear();
+	amplitude.SetNum( num );
+	fileIn->Read( amplitude.Ptr(), amplitude.Num() );
+	fileIn->ReadBig( totalBufferSize );
+	fileIn->ReadBig( num );
+	buffers.SetNum( num );
+	int total = 0;
+	for ( int i = 0; i < num; i++ ) {
+		fileIn->ReadBig( buffers[ i ].numSamples );
+		fileIn->ReadBig( buffers[ i ].bufferSize );
+		buffers[ i ].buffer = NULL;
+		buffers[ i ].fileOffset = fileIn->Tell();
+		total += buffers[ i ].bufferSize;
+		if ( i + 1 < num ) {
+			fileIn->Seek( buffers[ i ].bufferSize, FS_SEEK_CUR );
+		}
+	}
+	generatedName = filename;
+	dataLoaded = false;
+	if ( total <= n3ds_soundPreloadKB.GetInteger() * 1024 ) {
+		if ( !ReadBuffers( fileIn ) ) {
+			FreeBuffers();
+		}
+	}
+	return true;
 }
 /*
 ========================
@@ -205,10 +354,16 @@ void idSoundSample_3DS::LoadResource() {
 			generatedName.Append( ".idwav" );
 		}
 		loaded = LoadGeneratedSample( generatedName ) || LoadWav( sampleName );
+		if ( loaded && generatedName != this->generatedName ) {
+			N3DS_MarkResident();		// read whole from a .wav
+		}
 
 		if ( !loaded && s_useCompression.GetBool() ) {
 			sampleName.SetFileExtension( "wav" );
 			loaded = LoadWav( sampleName );
+			if ( loaded ) {
+				N3DS_MarkResident();
+			}
 		}
 
 		if ( loaded ) {
@@ -424,6 +579,23 @@ void idSoundSample_3DS::MakeDefault() {
 
 	playBegin = 0;
 	playLength = DEFAULT_NUM_SAMPLES;
+	N3DS_MarkResident();
+}
+
+/*
+========================
+idSoundSample_3DS::N3DS_MarkResident
+
+Data read whole (a .wav or the default beep): resident, never dropped.
+========================
+*/
+void idSoundSample_3DS::N3DS_MarkResident() {
+	generatedName.Clear();
+	dataLoaded = true;
+	for ( int i = 0; i < buffers.Num(); i++ ) {
+		buffers[i].fileOffset = 0;
+		sampleDataBytes += buffers[i].bufferSize;
+	}
 }
 
 /*
@@ -436,11 +608,13 @@ Called before deleting the object and at the start of LoadResource()
 void idSoundSample_3DS::FreeData() {
 	if ( buffers.Num() > 0 ) {
 		soundSystemLocal.StopVoicesWithSample( (idSoundSample *)this );
-		for ( int i = 0; i < buffers.Num(); i++ ) {
-			FreeBuffer( buffers[i].buffer );
-		}
+		FreeBuffers();
+		N3DS_SoundLock();
 		buffers.Clear();
+		N3DS_SoundUnlock();
 	}
+	generatedName.Clear();
+	dataLoaded = false;
 	amplitude.Clear();
 
 	timestamp = FILE_NOT_FOUND_TIMESTAMP;

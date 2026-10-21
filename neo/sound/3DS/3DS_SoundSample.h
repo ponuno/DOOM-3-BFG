@@ -28,6 +28,13 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __3DS_SOUNDSAMPLE_H__
 #define __3DS_SOUNDSAMPLE_H__
 
+// mixer lock (3DS_SoundHardware.cpp) and sample data statistics
+void	N3DS_SoundLock();
+void	N3DS_SoundUnlock();
+int		N3DS_SoundDataKB();
+int		N3DS_SoundLoadsOnDemand();
+int		N3DS_SoundEvictions();
+
 /*
 ================================================
 idSoundSample_3DS
@@ -87,10 +94,22 @@ protected:
 	void			WriteGeneratedSample( idFile *fileOut );
 
 	struct sampleBuffer_t {
-		void * buffer;
+		void * buffer;			// NULL while the data is not loaded (New 3DS, see EnsureData)
 		int bufferSize;
 		int numSamples;
+		int fileOffset;			// where the data is in generatedName
 	};
+
+	// New 3DS: data on demand (3DS_SoundSample.cpp)
+	bool			EnsureData();
+	void			FreeBuffers();
+	bool			ReadBuffers( idFile * f );
+	void			MakeRoom( int bytes );
+	void			N3DS_MarkResident();
+	idStr			generatedName;		// empty: data read whole, never dropped
+	bool			dataLoaded;
+	int				activeVoices;		// voices created with this sample (data must stay)
+	int				lastUse;
 
 	idStr			name;
 

@@ -121,7 +121,7 @@ target_link_libraries(engine PUBLIC idlib external)
 if(NINTENDO_3DS)
 	# n3ds_gpu.c is the only file that includes <3ds.h>/<citro3d.h>: build it with the
 	# toolchain's default short enums so libctru/citro3d struct layouts match
-	set_source_files_properties(renderer/3DS/n3ds_gpu.c PROPERTIES COMPILE_OPTIONS "-fshort-enums")
+	set_source_files_properties(renderer/3DS/n3ds_gpu.c sound/3DS/n3ds_audio.c PROPERTIES COMPILE_OPTIONS "-fshort-enums")
 
 	# application heap cap (MB); the rest of the memory becomes the linear heap
 	set(DOOM3DS_APP_HEAP_MB 86 CACHE STRING "New 3DS application heap in MB (max 96); the rest is linear (GPU) memory")

@@ -119,6 +119,17 @@ radius (derived from the light projection planes); projected lights -> spot ligh
 from the projection frustum, range from the falloff plane); ambient lights -> surface ambient.
 Skinned models are skinned on the CPU (`r_useGPUSkinning` forced to 0 with citro3d).
 
+## Sound
+
+`sound/3DS/`: `n3ds_audio.c` (NDSP, the only sound file including `<3ds.h>`) plays one stereo
+PCM16 channel; a mixer thread on the system core (priority 0x18) fills 4 buffers of
+`n3ds_soundBufferFrames` through `idSoundHardware_3DS::MixBlock`. Voices are mixed in software:
+16-bit PCM and MS ADPCM (bit-exact with ffmpeg's decoder), mono/stereo, linear resampling to
+`n3ds_soundRate`, stereo levels from `CalculateSurround`. Sample data: the `.idwav` header is read at
+level load, data of samples up to `n3ds_soundPreloadKB` too, bigger ones on first play; all data
+shares `n3ds_soundMemoryKB` with least-recently-played eviction. Needs the DSP firmware dump
+`sdmc:/3ds/dspfirm.cdc` (DSP1); without it the game runs silent. `+set s_noSound 1` turns sound off.
+
 ## Runtime switches (cmdline.txt, e.g. `+set n3ds_animQuant 0`)
 
 | cvar | default | effect |
@@ -144,6 +155,10 @@ Skinned models are skinned on the CPU (`r_useGPUSkinning` forced to 0 with citro
 | `n3ds_lightProjective` | 1 | light projection divided per pixel; 0 = per vertex |
 | `n3ds_lightScissor` | 1 | light passes clipped to the light's screen rectangle |
 | `n3ds_c3dValidate` | 0 | check every draw's indexes against its buffers (bring-up) |
+| `n3ds_soundRate` | 22050 | mixing rate (Hz) |
+| `n3ds_soundMemoryKB` | 8192 | sound sample data budget |
+| `n3ds_soundPreloadKB` | 48 | samples up to this size are read at level load |
+| `n3ds_soundVolume` | 1 | mixer master volume |
 | `n3ds_debugPhysics` | 0 | heavy physics diagnostics: NaN checks per AF step, LCP dumps, trace counters, SLOW AF lines |
 | `n3ds_staticVertexKB` / `n3ds_staticIndexKB` | 0 | static vertex/index cache size; 0 = 6144/2048 with citro3d, 10240/6144 budget-only with null GL |
 | `n3ds_core1Percent` | 30 | `APT_SetAppCpuTimeLimit` for the system core |
