@@ -119,8 +119,16 @@ void idVertexCache::Init( bool restart ) {
 	mostUsedIndex = 0;
 	mostUsedJoint = 0;
 
+#if defined( ID_3DS )
+	// joints are only uploaded for GPU skinning, which the citro3d backend cannot do
+	// (r_useGPUSkinning is forced off before this): no linear memory for them
+	extern idCVar r_useGPUSkinning;
+	const int jointBytes = r_useGPUSkinning.GetBool() ? VERTCACHE_JOINT_MEMORY_PER_FRAME : 0;
+#else
+	const int jointBytes = VERTCACHE_JOINT_MEMORY_PER_FRAME;
+#endif
 	for ( int i = 0; i < VERTCACHE_NUM_FRAMES; i++ ) {
-		AllocGeoBufferSet( frameData[i], VERTCACHE_VERTEX_MEMORY_PER_FRAME, VERTCACHE_INDEX_MEMORY_PER_FRAME, VERTCACHE_JOINT_MEMORY_PER_FRAME );
+		AllocGeoBufferSet( frameData[i], VERTCACHE_VERTEX_MEMORY_PER_FRAME, VERTCACHE_INDEX_MEMORY_PER_FRAME, jointBytes );
 	}
 	AllocGeoBufferSet( staticData, STATIC_VERTEX_MEMORY, STATIC_INDEX_MEMORY, 0 );
 

@@ -845,8 +845,9 @@ void R_InitOpenGL() {
 	{
 		const int vkb = cvarSystem->GetCVarInteger( "n3ds_staticVertexKB" );
 		const int ikb = cvarSystem->GetCVarInteger( "n3ds_staticIndexKB" );
-		n3dsStaticVertexMemory = ( vkb > 0 ? vkb : ( r_n3dsC3D ? 6144 : 10240 ) ) * 1024;
-		n3dsStaticIndexMemory = ( ikb > 0 ? ikb : ( r_n3dsC3D ? 2048 : 6144 ) ) * 1024;
+		// citro3d: paid for by no joint buffers and a 1 MB frame index cache (VertexCache.h)
+		n3dsStaticVertexMemory = ( vkb > 0 ? vkb : ( r_n3dsC3D ? 8704 : 10240 ) ) * 1024;
+		n3dsStaticIndexMemory = ( ikb > 0 ? ikb : ( r_n3dsC3D ? 3584 : 6144 ) ) * 1024;
 		common->Printf( "renderer: %s, static vertex cache %d KB, index %d KB%s\n",
 			r_n3dsC3D ? "citro3d" : "null GL", n3dsStaticVertexMemory / 1024, n3dsStaticIndexMemory / 1024,
 			r_n3dsDiscardStaticGeo ? " (budget only)" : "" );

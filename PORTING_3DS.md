@@ -197,7 +197,7 @@ shares `n3ds_soundMemoryKB` with least-recently-played eviction. Needs the DSP f
 | `n3ds_uiScale` | 1.35 | same for menus, PDA, loading screen and dialogs; too large crops unanchored elements |
 | `n3ds_polygonOffset` | 4 | depth bias per material polygonOffset unit (decals) |
 | `n3ds_debugPhysics` | 0 | heavy physics diagnostics: NaN checks per AF step, LCP dumps, trace counters, SLOW AF lines |
-| `n3ds_staticVertexKB` / `n3ds_staticIndexKB` | 0 | static vertex/index cache size; 0 = 6144/2048 with citro3d, 10240/6144 budget-only with null GL |
+| `n3ds_staticVertexKB` / `n3ds_staticIndexKB` | 0 | static vertex/index cache size; 0 = 8704/3584 with citro3d (frame index cache 1 MB, no joint buffers), 10240/6144 budget-only with null GL |
 | `n3ds_core1Percent` | 30 | `APT_SetAppCpuTimeLimit` for the system core |
 
 Per-subsystem heap breakdown (`Mem_LogTags`): create an empty file `sdmc:/doom3/memtags`. It costs a 16-byte header per block (~4 MB on a loaded map), so it is off by default.

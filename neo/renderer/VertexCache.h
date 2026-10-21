@@ -31,7 +31,10 @@ If you have questions concerning this license or the applicable additional terms
 #if defined( ID_3DS )
 // New 3DS has ~178 MB for the whole application; PC sizes would need ~186 MB here alone.
 // First-pass budgets, to be tuned from measurements (r_showVertexCache / map load log).
-const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 2 * 1024 * 1024;	// 1 MB overflowed in mars_city1
+// index: 1 MB overflowed in mars_city1 only while interactions were built per frame
+// (n3ds_lazyInteractions 1); with static interactions the busiest delta4 fights peak at
+// 255 KB (PERF "frame cache peak idx"), and an overflow only drops a surface for a frame
+const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 1 * 1024 * 1024;
 const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 3 * 1024 * 1024;
 #else
 const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
@@ -47,7 +50,8 @@ const int VERTCACHE_NUM_FRAMES = 2;
 // mars_city1's whole .bproc is 8.6 MB; map load prints how much of these was used
 // Set at renderer init (n3ds_staticVertexKB / n3ds_staticIndexKB, or by renderer):
 // null GL with n3ds_discardStaticGeo: budgets only (10 / 6 MB, mars_city1 used 7.9 / 2.1);
-// citro3d: real linear memory (6 / 2 MB, delta4 uses 3.7 / 0.9).
+// citro3d: real linear memory (8.5 / 3.5 MB; delta4 uses 3.7 / 0.9, mars_city1 needs more than
+// 6 MB of vertexes, and static interactions put their index lists here too).
 extern int n3dsStaticIndexMemory;
 extern int n3dsStaticVertexMemory;
 #define STATIC_INDEX_MEMORY		n3dsStaticIndexMemory
