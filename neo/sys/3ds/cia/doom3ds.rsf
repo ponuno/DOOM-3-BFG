@@ -60,6 +60,13 @@ AccessControlInfo:
 
   MemoryType              : Application
 
+  # Virtual address mappings (as in devkitPro's template.rsf). Without the DSP
+  # memory mapping ndspInitialize faults writing to 0x1FF57FFE.
+  IORegisterMapping:
+   - 1ff00000-1ff7ffff   # DSP memory
+  MemoryMapping:
+   - 1f000000-1f5fffff:r # VRAM
+
   SystemCallAccess:
     ControlMemory: 1
     QueryMemory: 2
@@ -210,7 +217,6 @@ SystemControlInfo:
 
   Dependency:
     ac: 0x0004013000002402
-    act: 0x0004013000003802
     am: 0x0004013000001502
     boss: 0x0004013000003402
     camera: 0x0004013000001602
@@ -236,7 +242,6 @@ SystemControlInfo:
     pdn: 0x0004013000002102
     ps: 0x0004013000003102
     ptm: 0x0004013000002202
-    qtm: 0x0004013020004202
     ro: 0x0004013000003702
     socket: 0x0004013000002e02
     spi: 0x0004013000002302
