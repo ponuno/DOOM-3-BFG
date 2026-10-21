@@ -52,6 +52,60 @@ idCVar n3ds_afMaxMoveTime( "n3ds_afMaxMoveTime", "4", CVAR_GAME | CVAR_FLOAT, "a
 idCVar n3ds_afSlowMs( "n3ds_afSlowMs", "30", CVAR_GAME | CVAR_INTEGER, "log articulated figure evaluations slower than this, with a breakdown" );
 idCVar n3ds_afMaxEvalMs( "n3ds_afMaxEvalMs", "100", CVAR_GAME | CVAR_INTEGER, "an articulated figure whose evaluation takes longer than this is put to rest (0 = never)" );
 #endif
+
+#if defined( ID_3DS )
+static bool N3DS_BadF( float v ) {
+	return IEEE_FLT_IS_NAN( v ) || IEEE_FLT_IS_INF( v ) || idMath::Fabs( v ) > 1e15f;
+}
+static bool N3DS_BadVecX( const idVecX & v ) {
+	for ( int i = 0; i < v.GetSize(); i++ ) {
+		if ( N3DS_BadF( v[i] ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+static int n3dsAFPhaseReports = 0;
+static const char * n3dsAFBadPhase = NULL;
+
+// returns true (and logs once per evaluation) if a body state is non-finite after 'phase'
+static bool N3DS_AFCheckPhase( const char * phase, const char * afName, const idList<idAFBody *, TAG_IDLIB_LIST_PHYSICS> & bodies,
+		float timeStep, int numPrimaryRows, int numAuxRows ) {
+	if ( n3dsAFBadPhase != NULL || n3dsAFPhaseReports >= 20 ) {
+		return false;
+	}
+	for ( int k = 0; k < bodies.Num(); k++ ) {
+		const idAFBody * b = bodies[k];
+		const char * what = NULL;
+		const float * sv = &b->GetLinearVelocity().x;	// spatialVelocity: 6 contiguous floats
+		for ( int c = 0; c < 6; c++ ) {
+			if ( N3DS_BadF( sv[c] ) ) { what = "velocity"; }
+		}
+		const idVec3 & o = b->GetWorldOrigin();
+		if ( N3DS_BadF( o.x ) || N3DS_BadF( o.y ) || N3DS_BadF( o.z ) ) { what = "origin"; }
+		if ( what == NULL ) {
+			continue;
+		}
+		n3dsAFBadPhase = phase;
+		n3dsAFPhaseReports++;
+		common->Printf( "N3DS AF phase: '%s' body %d '%s' %s non-finite after %s (timeStep %g, %d primary rows, %d auxiliary rows)\n",
+			afName, k, b->GetName().c_str(), what, phase, timeStep, numPrimaryRows, numAuxRows );
+		return true;
+	}
+	return false;
+}
+#endif
+
+#if defined( ID_3DS )
+static bool N3DS_BadState( const AFBodyPState_t * st ) {
+	const float * o = &st->worldOrigin.x;
+	for ( int i = 0; i < 3; i++ ) { if ( N3DS_BadF( o[i] ) ) return true; }
+	for ( int r = 0; r < 3; r++ ) { for ( int c = 0; c < 3; c++ ) { if ( N3DS_BadF( st->worldAxis[r][c] ) ) return true; } }
+	const float * v = &st->spatialVelocity.SubVec3( 0 ).x;
+	for ( int i = 0; i < 6; i++ ) { if ( N3DS_BadF( v[i] ) ) return true; }
+	return false;
+}
+#endif
 const float IMPULSE_THRESHOLD				= 500.0f;
 const float SUSPEND_LINEAR_VELOCITY			= 10.0f;
 const float SUSPEND_ANGULAR_VELOCITY		= 15.0f;
@@ -5376,6 +5430,22 @@ void idPhysics_AF::Evolve( float timeStep ) {
 
 	// make absolutely sure all contact constraints are satisfied
 	VerifyContactConstraints();
+#if defined( ID_3DS )
+	{
+		static int reports = 0;
+		for ( i = 0; i < bodies.Num() && reports < 10; i++ ) {
+			if ( N3DS_BadState( bodies[i]->next ) ) {
+				reports++;
+				const idVec6 & sv = bodies[i]->current->spatialVelocity;
+				common->Printf( "N3DS AF evolve: '%s' body %d '%s' next velocity bad after the velocity update; current v (%g %g %g | %g %g %g), invMass %g, force (%g %g %g | %g %g %g), accel (%g %g %g | %g %g %g)\n",
+					self->name.c_str(), i, bodies[i]->GetName().c_str(), sv[0], sv[1], sv[2], sv[3], sv[4], sv[5], bodies[i]->invMass,
+					bodies[i]->totalForce[0], bodies[i]->totalForce[1], bodies[i]->totalForce[2], bodies[i]->totalForce[3], bodies[i]->totalForce[4], bodies[i]->totalForce[5],
+					bodies[i]->acceleration[0], bodies[i]->acceleration[1], bodies[i]->acceleration[2], bodies[i]->acceleration[3], bodies[i]->acceleration[4], bodies[i]->acceleration[5] );
+				break;
+			}
+		}
+	}
+#endif
 
 	// calculate the position of the bodies for the next physics state
 	for ( i = 0; i < bodies.Num(); i++ ) {
@@ -5586,6 +5656,18 @@ void idPhysics_AF::CheckForCollisions( float timeStep ) {
 				// set the next state to the state at the moment of impact
 				body->next->worldOrigin = collision.endpos;
 				body->next->worldAxis = collision.endAxis;
+#if defined( ID_3DS )
+				{
+					static int reports = 0;
+					if ( reports < 10 && N3DS_BadState( body->next ) ) {
+						reports++;
+						common->Printf( "N3DS AF collision: '%s' body '%s' bad state from clip.Motion: fraction %g endpos (%s) normal (%s) entity %d | start (%s) end (%s) rotation angle %g vec (%s)\n",
+							self->name.c_str(), body->GetName().c_str(), collision.fraction, collision.endpos.ToString( 2 ), collision.c.normal.ToString( 2 ),
+							collision.c.entityNum, body->current->worldOrigin.ToString( 2 ), body->next->worldOrigin.ToString( 2 ),
+							rotation.GetAngle(), rotation.GetVec().ToString( 3 ) );
+					}
+				}
+#endif
 
 				// add collision to the list
 				index = collisions.Num();
@@ -6229,48 +6311,7 @@ const idBounds &idPhysics_AF::GetAbsBounds( int id ) const {
 idPhysics_AF::Evaluate
 ================
 */
-#if defined( ID_3DS )
-static bool N3DS_BadF( float v ) {
-	return IEEE_FLT_IS_NAN( v ) || IEEE_FLT_IS_INF( v ) || idMath::Fabs( v ) > 1e15f;
-}
-static bool N3DS_BadVecX( const idVecX & v ) {
-	for ( int i = 0; i < v.GetSize(); i++ ) {
-		if ( N3DS_BadF( v[i] ) ) {
-			return true;
-		}
-	}
-	return false;
-}
-static int n3dsAFPhaseReports = 0;
-static const char * n3dsAFBadPhase = NULL;
 
-// returns true (and logs once per evaluation) if a body state is non-finite after 'phase'
-static bool N3DS_AFCheckPhase( const char * phase, const char * afName, const idList<idAFBody *, TAG_IDLIB_LIST_PHYSICS> & bodies,
-		float timeStep, int numPrimaryRows, int numAuxRows ) {
-	if ( n3dsAFBadPhase != NULL || n3dsAFPhaseReports >= 20 ) {
-		return false;
-	}
-	for ( int k = 0; k < bodies.Num(); k++ ) {
-		const idAFBody * b = bodies[k];
-		const char * what = NULL;
-		const float * sv = &b->GetLinearVelocity().x;	// spatialVelocity: 6 contiguous floats
-		for ( int c = 0; c < 6; c++ ) {
-			if ( N3DS_BadF( sv[c] ) ) { what = "velocity"; }
-		}
-		const idVec3 & o = b->GetWorldOrigin();
-		if ( N3DS_BadF( o.x ) || N3DS_BadF( o.y ) || N3DS_BadF( o.z ) ) { what = "origin"; }
-		if ( what == NULL ) {
-			continue;
-		}
-		n3dsAFBadPhase = phase;
-		n3dsAFPhaseReports++;
-		common->Printf( "N3DS AF phase: '%s' body %d '%s' %s non-finite after %s (timeStep %g, %d primary rows, %d auxiliary rows)\n",
-			afName, k, b->GetName().c_str(), what, phase, timeStep, numPrimaryRows, numAuxRows );
-		return true;
-	}
-	return false;
-}
-#endif
 
 bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 	float timeStep;
@@ -6412,6 +6453,21 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// evolve current state to next state
 	Evolve( timeStep );
+#if defined( ID_3DS )
+	{
+		static int reports = 0;
+		for ( int k = 0; k < bodies.Num() && reports < 10; k++ ) {
+			if ( N3DS_BadState( bodies[k]->next ) && !N3DS_BadState( bodies[k]->current ) ) {
+				reports++;
+				const idVec6 & nv = bodies[k]->next->spatialVelocity;
+				common->Printf( "N3DS AF evolve result: '%s' body %d '%s' next origin (%s) velocity (%g %g %g | %g %g %g) axis row0 (%s)\n",
+					self->name.c_str(), k, bodies[k]->GetName().c_str(), bodies[k]->next->worldOrigin.ToString( 2 ),
+					nv[0], nv[1], nv[2], nv[3], nv[4], nv[5], bodies[k]->next->worldAxis[0].ToString( 3 ) );
+				break;
+			}
+		}
+	}
+#endif
 #if defined( ID_3DS )
 	N3DS_AFCheckPhase( "Evolve", self->name.c_str(), bodies, timeStep, 0, 0 );
 #endif
