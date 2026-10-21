@@ -139,7 +139,9 @@ state from drawStateBits, stage colour x vertex colour, texture matrix, polygon 
 materials are filled black so their stages land on black. RC_DRAW_VIEW_GUI views (HUD, menus,
 loading screens) are drawn the same way without depth; SWF stages (GLS_OVERRIDE) add the colour2
 transform and premultiply alpha like gui.pixel. GUI/font images keep a level up to
-`n3ds_texGuiMaxSize` (512). Not yet: TG_SCREEN/cube texgens, cinematics, program stages, scissor.
+`n3ds_texGuiMaxSize` (512). SWF stages are laid out for 720 lines; fitted to the 240-line screen
+they shrink to a third, so `n3ds_hudScale`/`n3ds_uiScale` enlarge them (edge-anchored sprites such as
+`_bottomLeft` stay pinned to the screen edges); the log prints every SWF's stage size at load. Not yet: TG_SCREEN/cube texgens, cinematics, program stages, scissor.
 Skinned models are skinned on the CPU (`r_useGPUSkinning` forced to 0 with citro3d).
 
 ## Sound
@@ -185,6 +187,8 @@ shares `n3ds_soundMemoryKB` with least-recently-played eviction. Needs the DSP f
 | `n3ds_soundVolume` | 1 | mixer master volume |
 | `n3ds_ambientStages` | 1 | ambient/blended stages and fullscreen GUIs |
 | `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD / font texture |
+| `n3ds_hudScale` | 1.5 | HUD size relative to fitting the 720-line SWF stage to the 240-line screen; edge-anchored elements stay at the edges |
+| `n3ds_uiScale` | 1.35 | same for menus, PDA, loading screen and dialogs; too large crops unanchored elements |
 | `n3ds_polygonOffset` | 4 | depth bias per material polygonOffset unit (decals) |
 | `n3ds_debugPhysics` | 0 | heavy physics diagnostics: NaN checks per AF step, LCP dumps, trace counters, SLOW AF lines |
 | `n3ds_staticVertexKB` / `n3ds_staticIndexKB` | 0 | static vertex/index cache size; 0 = 6144/2048 with citro3d, 10240/6144 budget-only with null GL |

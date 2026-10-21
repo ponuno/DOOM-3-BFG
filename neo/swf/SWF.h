@@ -143,6 +143,9 @@ private:
 	uint16			frameRate;
 	float			renderBorder;
 	float			swfScale;
+	bool			isHud;			// swf/hud.swf: n3ds_hudScale instead of n3ds_uiScale
+
+	float			StageScale( float sysHeight ) const;
 
 	idVec2			scaleToVirtual;
 
