@@ -796,6 +796,7 @@ int N3DS_Main( int argc, char ** argv ) {
 	Sys_Printf( "cmdline: %s\n", sys_cmdline );
 
 	common->Init( 0, NULL, sys_cmdline );
+	Sys_LogMemory( "common->Init done" );
 
 	while ( aptMainLoop() && !n3ds.quitRequested ) {
 		common->Frame();

@@ -62,7 +62,19 @@ void * Mem_Alloc16( const int size, const memTag_t tag ) {
 		return NULL;
 	}
 	const int paddedSize = ( size + 15 ) & ~15;
+#if defined( ID_3DS )
+	// Running out of memory is the expected failure on 3DS: say so instead of
+	// letting the caller crash on a NULL pointer later.
+	void * ptr = _aligned_malloc( paddedSize, 16 );
+	if ( ptr == NULL ) {
+		struct mallinfo mi = mallinfo();
+		idLib::FatalError( "Mem_Alloc16: out of memory allocating %d KB (tag %d), %d KB in use",
+			paddedSize / 1024, (int)tag, (int)( mi.uordblks / 1024 ) );
+	}
+	return ptr;
+#else
 	return _aligned_malloc( paddedSize, 16 );
+#endif
 }
 
 /*
