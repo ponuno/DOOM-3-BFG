@@ -351,6 +351,19 @@ void * Mem_Alloc16( const int size, const memTag_t tag ) {
 		idLib::FatalError( "Mem_Alloc16: out of memory allocating %d KB for %s",
 			paddedSize / 1024, ( tag >= 0 && tag < TAG_NUM_TAGS ) ? memTagNames[tag] : "?" );
 	}
+	// diagnostic: sdmc:/doom3/memzero makes every allocation start zeroed (to test
+	// for reads of uninitialised memory that happen to be zero on the PC)
+	static int memZeroState = -1;
+	if ( memZeroState < 0 ) {
+		FILE * f = fopen( "sdmc:/doom3/memzero", "rb" );
+		memZeroState = ( f != NULL ) ? 1 : 0;
+		if ( f != NULL ) {
+			fclose( f );
+		}
+	}
+	if ( memZeroState == 1 ) {
+		memset( raw, 0, rawSize );
+	}
 	if ( !tracking ) {
 		return raw;
 	}

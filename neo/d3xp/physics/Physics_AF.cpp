@@ -65,6 +65,23 @@ static bool N3DS_BadVecX( const idVecX & v ) {
 	}
 	return false;
 }
+static bool N3DS_BadMatX( const idMatX & m ) {
+	for ( int r = 0; r < m.GetNumRows(); r++ ) {
+		for ( int c = 0; c < m.GetNumColumns(); c++ ) {
+			if ( N3DS_BadF( m[r][c] ) ) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+static int n3dsTreeReports = 0;
+static void N3DS_TreeReport( const char * what, const idAFBody * body ) {
+	if ( n3dsTreeReports < 12 ) {
+		n3dsTreeReports++;
+		common->Printf( "N3DS AF tree: first non-finite value: %s (body '%s')\n", what, body != NULL ? body->GetName().c_str() : "?" );
+	}
+}
 static int n3dsAFPhaseReports = 0;
 static const char * n3dsAFBadPhase = NULL;
 
@@ -4564,21 +4581,35 @@ void idAFTree::Factor() const {
 				child->body1->J.TransposeMultiply( child->body1->I ).Multiply( childI, child->body1->J );
 				childI.Negate();
 
+#if defined( ID_3DS )
+				if ( N3DS_BadMatX( child->body1->J ) ) { N3DS_TreeReport( "Factor: child body J", child->body1 ); }
+				if ( N3DS_BadMatX( child->body1->I ) ) { N3DS_TreeReport( "Factor: child body I", child->body1 ); }
+				if ( N3DS_BadMatX( childI ) ) { N3DS_TreeReport( "Factor: childI = -J^T I J", child->body1 ); }
+#endif
 				child->invI = childI;
 				if ( !child->invI.InverseFastSelf() ) {
 					gameLocal.Warning( "idAFTree::Factor: couldn't invert %dx%d matrix for constraint '%s'",
 									child->invI.GetNumRows(), child->invI.GetNumColumns(), child->GetName().c_str() );
 				}
+#if defined( ID_3DS )
+				if ( N3DS_BadMatX( child->invI ) ) { N3DS_TreeReport( "Factor: inverse of childI", child->body1 ); }
+#endif
 				child->J = child->invI * child->J;
 
 				body->I -= child->J.TransposeMultiply( childI ) * child->J;
 			}
 
+#if defined( ID_3DS )
+			if ( N3DS_BadMatX( body->I ) ) { N3DS_TreeReport( "Factor: body I after children", body ); }
+#endif
 			body->invI = body->I;
 			if ( !body->invI.InverseFastSelf() && child != NULL ) {
 				gameLocal.Warning( "idAFTree::Factor: couldn't invert %dx%d matrix for body %s",
 								child->invI.GetNumRows(), child->invI.GetNumColumns(), body->GetName().c_str() );
 			}
+#if defined( ID_3DS )
+			if ( N3DS_BadMatX( body->invI ) ) { N3DS_TreeReport( "Factor: body invI", body ); }
+#endif
 			if ( body->primaryConstraint ) {
 				body->J = body->invI * body->J;
 			}
@@ -4782,6 +4813,10 @@ void idAFTree::CalculateForces( float timeStep ) const {
 		body = sortedBodies[i];
 
 		body->totalForce.SubVec6(0) = body->current->externalForce + body->auxForce.SubVec6(0);
+#if defined( ID_3DS )
+		if ( N3DS_BadVecX( body->auxForce ) ) { N3DS_TreeReport( "CalculateForces: auxForce", body ); }
+		if ( N3DS_BadVecX( body->totalForce ) ) { N3DS_TreeReport( "CalculateForces: external + aux force", body ); }
+#endif
 	}
 
 	// if a single body don't waste time because there aren't any primary constraints
@@ -4803,6 +4838,12 @@ void idAFTree::CalculateForces( float timeStep ) const {
 			c = primaryConstraint;
 			c->s = c->J1 * c->body1->acceleration + c->J2 * c->body2->acceleration + invStep * ( c->c1 + c->c2 );
 			c->fl.isZero = false;
+#if defined( ID_3DS )
+			if ( N3DS_BadVecX( body->acceleration ) ) { N3DS_TreeReport( "CalculateForces: acceleration (invI * F + v/dt)", body ); }
+			if ( N3DS_BadMatX( c->J1 ) || N3DS_BadMatX( c->J2 ) ) { N3DS_TreeReport( "CalculateForces: constraint J1/J2", body ); }
+			if ( N3DS_BadVecX( c->c1 ) || N3DS_BadVecX( c->c2 ) ) { N3DS_TreeReport( "CalculateForces: constraint c1/c2 (error terms)", body ); }
+			if ( N3DS_BadVecX( c->s ) ) { N3DS_TreeReport( "CalculateForces: rhs s", body ); }
+#endif
 		}
 		body->s.Zero();
 		body->fl.isZero = true;
@@ -4810,6 +4851,14 @@ void idAFTree::CalculateForces( float timeStep ) const {
 
 	// solve for primary constraints
 	Solve();
+#if defined( ID_3DS )
+	for ( i = 0; i < sortedBodies.Num(); i++ ) {
+		if ( sortedBodies[i]->primaryConstraint && N3DS_BadVecX( sortedBodies[i]->primaryConstraint->lm ) ) {
+			N3DS_TreeReport( "CalculateForces: lm after Solve", sortedBodies[i] );
+			break;
+		}
+	}
+#endif
 
 	// calculate forces on bodies after applying primary constraints
 	for ( i = 0; i < sortedBodies.Num(); i++ ) {
