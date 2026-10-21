@@ -371,7 +371,7 @@ void R_AddSingleModel( viewEntity_t * vEntity ) {
 				// new code path, everything was done in AddLight
 				if ( vLight->entityInteractionState[entityIndex] == viewLight_t::INTERACTION_YES ) {
 					contactedLights[numContactedLights] = vLight;
-					staticInteractions[numContactedLights] = world->interactionTable[vLight->lightDef->index * world->interactionTableWidth + entityIndex];
+					staticInteractions[numContactedLights] = world->GetInteraction( vLight->lightDef->index, entityIndex );
 					if ( ++numContactedLights == MAX_CONTACTED_LIGHTS ) {
 						break;
 					}
@@ -418,7 +418,7 @@ void R_AddSingleModel( viewEntity_t * vEntity ) {
 				}
 			}
 			contactedLights[numContactedLights] = vLight;
-			staticInteractions[numContactedLights] = world->interactionTable[vLight->lightDef->index * world->interactionTableWidth + entityIndex];
+			staticInteractions[numContactedLights] = world->GetInteraction( vLight->lightDef->index, entityIndex );
 			if ( ++numContactedLights == MAX_CONTACTED_LIGHTS ) {
 				break;
 			}

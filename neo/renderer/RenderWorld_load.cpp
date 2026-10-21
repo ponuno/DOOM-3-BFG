@@ -678,10 +678,7 @@ dump all the interactions
 void idRenderWorldLocal::FreeDefs() {
 	generateAllInteractionsCalled = false;
 
-	if ( interactionTable ) {
-		R_StaticFree( interactionTable );
-		interactionTable = NULL;
-	}
+	FreeInteractionTable();
 
 	// free all lightDefs
 	for ( int i = 0; i < lightDefs.Num(); i++ ) {

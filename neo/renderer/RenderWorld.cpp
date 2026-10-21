@@ -139,7 +139,8 @@ idRenderWorldLocal::idRenderWorldLocal() {
 	doublePortals = NULL;
 	numInterAreaPortals = 0;
 
-	interactionTable = 0;
+	interactionRows = NULL;
+	interactionEmptyRow = NULL;
 	interactionTableWidth = 0;
 	interactionTableHeight = 0;
 
@@ -188,23 +189,77 @@ void idRenderWorldLocal::ResizeInteractionTable() {
 	// we overflowed the interaction table, so make it larger
 	common->Printf( "idRenderWorldLocal::ResizeInteractionTable: overflowed interactionTable, resizing\n" );
 
-	const int oldInteractionTableWidth = interactionTableWidth;
-	const int oldIinteractionTableHeight = interactionTableHeight;
-	idInteraction ** oldInteractionTable = interactionTable;
+	const int oldWidth = interactionTableWidth;
+	const int oldHeight = interactionTableHeight;
+	idInteraction *** oldRows = interactionRows;
 
-	// build the interaction table
 	// this will be dynamically resized if the entity / light counts grow too much
-	interactionTableWidth = entityDefs.Num() + 100;
-	interactionTableHeight = lightDefs.Num() + 100;
-	const int	size =  interactionTableWidth * interactionTableHeight * sizeof( *interactionTable );
-	interactionTable = (idInteraction **)R_ClearedStaticAlloc( size );
-	for ( int l = 0; l < oldIinteractionTableHeight; l++ ) {
-		for ( int e = 0; e < oldInteractionTableWidth; e++ ) {
-			interactionTable[ l * interactionTableWidth + e ] = oldInteractionTable[ l * oldInteractionTableWidth + e ];
+	const int newWidth = Max( oldWidth, entityDefs.Num() + 100 );
+	const int newHeight = Max( oldHeight, lightDefs.Num() + 100 );
+
+	interactionRows = (idInteraction ***)R_ClearedStaticAlloc( newHeight * sizeof( *interactionRows ) );
+	for ( int l = 0; l < oldHeight; l++ ) {
+		idInteraction ** row = oldRows[l];
+		if ( row == NULL ) {
+			continue;
 		}
+		if ( newWidth != oldWidth ) {
+			idInteraction ** newRow = (idInteraction **)R_ClearedStaticAlloc( newWidth * sizeof( *newRow ) );
+			memcpy( newRow, row, oldWidth * sizeof( *newRow ) );
+			R_StaticFree( row );
+			row = newRow;
+		}
+		interactionRows[l] = row;
+	}
+	R_StaticFree( oldRows );
+
+	if ( newWidth != oldWidth ) {
+		R_StaticFree( interactionEmptyRow );
+		interactionEmptyRow = (idInteraction **)R_ClearedStaticAlloc( newWidth * sizeof( *interactionEmptyRow ) );
 	}
 
-	R_StaticFree( oldInteractionTable );
+	interactionTableWidth = newWidth;
+	interactionTableHeight = newHeight;
+}
+
+/*
+===================
+AllocInteractionTable / FreeInteractionTable / InteractionSlot
+===================
+*/
+void idRenderWorldLocal::AllocInteractionTable() {
+	FreeInteractionTable();
+	interactionTableWidth = entityDefs.Num() + 100;
+	interactionTableHeight = lightDefs.Num() + 100;
+	interactionRows = (idInteraction ***)R_ClearedStaticAlloc( interactionTableHeight * sizeof( *interactionRows ) );
+	interactionEmptyRow = (idInteraction **)R_ClearedStaticAlloc( interactionTableWidth * sizeof( *interactionEmptyRow ) );
+}
+
+void idRenderWorldLocal::FreeInteractionTable() {
+	if ( interactionRows != NULL ) {
+		for ( int l = 0; l < interactionTableHeight; l++ ) {
+			if ( interactionRows[l] != NULL ) {
+				R_StaticFree( interactionRows[l] );
+			}
+		}
+		R_StaticFree( interactionRows );
+		interactionRows = NULL;
+	}
+	if ( interactionEmptyRow != NULL ) {
+		R_StaticFree( interactionEmptyRow );
+		interactionEmptyRow = NULL;
+	}
+	interactionTableWidth = 0;
+	interactionTableHeight = 0;
+}
+
+idInteraction * & idRenderWorldLocal::InteractionSlot( int lightIndex, int entityIndex ) {
+	assert( interactionRows != NULL && lightIndex < interactionTableHeight && entityIndex < interactionTableWidth );
+	idInteraction ** & row = interactionRows[lightIndex];
+	if ( row == NULL ) {
+		row = (idInteraction **)R_ClearedStaticAlloc( interactionTableWidth * sizeof( *row ) );
+	}
+	return row[entityIndex];
 }
 
 /*
@@ -218,7 +273,7 @@ qhandle_t idRenderWorldLocal::AddEntityDef( const renderEntity_t *re ){
 	if ( entityHandle == -1 ) {
 		entityHandle = entityDefs.Append( NULL );
 
-		if ( interactionTable && entityDefs.Num() > interactionTableWidth ) {
+		if ( HasInteractionTable() && entityDefs.Num() > interactionTableWidth ) {
 			ResizeInteractionTable();
 		}
 	}
@@ -401,7 +456,7 @@ qhandle_t idRenderWorldLocal::AddLightDef( const renderLight_t *rlight ) {
 
 	if ( lightHandle == -1 ) {
 		lightHandle = lightDefs.Append( NULL );
-		if ( interactionTable && lightDefs.Num() > interactionTableHeight ) {
+		if ( HasInteractionTable() && lightDefs.Num() > interactionTableHeight ) {
 			ResizeInteractionTable();
 		}
 	}
@@ -1542,16 +1597,14 @@ void idRenderWorldLocal::GenerateAllInteractions() {
 
 	// build the interaction table
 	// this will be dynamically resized if the entity / light counts grow too much
-	interactionTableWidth = entityDefs.Num() + 100;
-	interactionTableHeight = lightDefs.Num() + 100;
-	int	size =  interactionTableWidth * interactionTableHeight * sizeof( *interactionTable );
-	interactionTable = (idInteraction **)R_ClearedStaticAlloc( size );
+	AllocInteractionTable();
+	const int size = interactionTableWidth * interactionTableHeight * (int)sizeof( idInteraction * );	// if every row were used
 
 #if defined( ID_3DS )
 	// the table is still needed (UnlinkAndFree indexes it); the interactions are
 	// then created by the frontend the first time a light/entity pair is in view
 	if ( cvarSystem->GetCVarBool( "n3ds_lazyInteractions" ) ) {
-		common->Printf( "idRenderWorld::GenerateAllInteractions: skipped (n3ds_lazyInteractions), table %i KB for %i entities x %i lights\n",
+		common->Printf( "idRenderWorld::GenerateAllInteractions: skipped (n3ds_lazyInteractions), table up to %i KB (rows on demand) for %i entities x %i lights\n",
 			size / 1024, entityDefs.Num(), lightDefs.Num() );
 		return;
 	}
@@ -1607,7 +1660,11 @@ void idRenderWorldLocal::GenerateAllInteractions() {
 	int	msec = end - start;
 
 	common->Printf( "idRenderWorld::GenerateAllInteractions, msec = %i\n", msec );
-	common->Printf( "interactionTable size: %i bytes\n", size );
+	int rowsUsed = 0;
+	for ( int l = 0; l < interactionTableHeight; l++ ) {
+		rowsUsed += ( interactionRows[l] != NULL );
+	}
+	common->Printf( "interactionTable size: %i bytes max, %i / %i rows allocated\n", size, rowsUsed, interactionTableHeight );
 	common->Printf( "%i interactions take %i bytes\n", count, count * sizeof( idInteraction ) );
 
 	// entities flagged as noDynamicInteractions will no longer make any

@@ -187,9 +187,26 @@ public:
 	// cache access, because the table is accessed by light in idRenderWorldLocal::CreateLightDefInteractions()
 	// Growing this table is time consuming, so we add a pad value to the number
 	// of entityDefs and lightDefs
-	idInteraction **		interactionTable;
+	//
+	// Stored as one row per lightDef, each row allocated on its first write (the
+	// original single [lightDefs x entityDefs] block is ~3 MB on a big map, too
+	// large to find in a fragmented 3DS heap, and most lights never get a row
+	// when interactions are created lazily). Reads of a missing row see a
+	// shared all-NULL row.
+	idInteraction ***		interactionRows;
+	idInteraction **		interactionEmptyRow;
 	int						interactionTableWidth;		// entityDefs
 	int						interactionTableHeight;		// lightDefs
+
+	bool					HasInteractionTable() const { return interactionRows != NULL; }
+	idInteraction * const *	InteractionRow( int lightIndex ) const {
+		idInteraction ** row = interactionRows[lightIndex];
+		return ( row != NULL ) ? row : interactionEmptyRow;
+	}
+	idInteraction *			GetInteraction( int lightIndex, int entityIndex ) const { return InteractionRow( lightIndex )[entityIndex]; }
+	idInteraction * &		InteractionSlot( int lightIndex, int entityIndex );
+	void					AllocInteractionTable();
+	void					FreeInteractionTable();
 
 	bool					generateAllInteractionsCalled;
 
