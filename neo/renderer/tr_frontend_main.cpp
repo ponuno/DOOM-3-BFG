@@ -42,9 +42,10 @@ FRAME MEMORY ALLOCATION
 static const unsigned int NUM_FRAME_DATA = 2;
 static const unsigned int FRAME_ALLOC_ALIGNMENT = 128;
 #if defined( ID_3DS )
-// New 3DS: two of these live at once out of a 96 MB heap. R_FrameAlloc reports the
-// high-water mark when it runs out, so this can be tuned from the log.
-static const unsigned int MAX_FRAME_MEMORY = 2 * 1024 * 1024;
+// New 3DS: two of these live at once out of an 86 MB heap. Measured peak (PERF
+// "frame memory peak"): 208 KB in the busiest delta4 fights (362 draws, 20 lights).
+// R_FrameAlloc reports the high-water mark if it ever runs out.
+static const unsigned int MAX_FRAME_MEMORY = 768 * 1024;
 #else
 static const unsigned int MAX_FRAME_MEMORY = 64 * 1024 * 1024;	// larger so that we can noclip on PC for dev purposes
 #endif
