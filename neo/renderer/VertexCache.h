@@ -46,7 +46,7 @@ const int VERTCACHE_NUM_FRAMES = 2;
 #if defined( ID_3DS )
 // mars_city1's whole .bproc is 8.6 MB; map load prints how much of these was used
 const int STATIC_INDEX_MEMORY = 3 * 1024 * 1024;
-const int STATIC_VERTEX_MEMORY = 12 * 1024 * 1024;
+const int STATIC_VERTEX_MEMORY = 8 * 1024 * 1024;
 #else
 const int STATIC_INDEX_MEMORY = 31 * 1024 * 1024;
 const int STATIC_VERTEX_MEMORY = 31 * 1024 * 1024;	// make sure it fits in VERTCACHE_OFFSET_MASK!

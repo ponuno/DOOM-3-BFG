@@ -380,6 +380,13 @@ void idCommonLocal::LoadLoadingGui( const char *mapName, bool & hellMap ) {
 
 #if defined( ID_3DS )
 void Sys_LogMemory( const char * when );	// sys/3ds/3ds_main.cpp
+
+static void N3DS_LogLoad( const char * when ) {
+	Sys_LogMemory( when );
+	idLib::Printf( "static vertex cache: %d / %d KB, index %d / %d KB\n",
+		vertexCache.staticData.vertexMemUsed.GetValue() / 1024, STATIC_VERTEX_MEMORY / 1024,
+		vertexCache.staticData.indexMemUsed.GetValue() / 1024, STATIC_INDEX_MEMORY / 1024 );
+}
 #endif
 
 /*
@@ -521,7 +528,7 @@ void idCommonLocal::ExecuteMapChange() {
 
 	// let the renderSystem load all the geometry
 #if defined( ID_3DS )
-	Sys_LogMemory( "preload done" );
+	N3DS_LogLoad( "preload done" );
 #endif
 	if ( !renderWorld->InitFromMap( fullMapName ) ) {
 		common->Error( "couldn't load %s", fullMapName.c_str() );
@@ -546,11 +553,11 @@ void idCommonLocal::ExecuteMapChange() {
 		}
 		game->SetServerInfo( matchParameters.serverInfo );
 #if defined( ID_3DS )
-		Sys_LogMemory( "render world loaded" );
+		N3DS_LogLoad( "render world loaded" );
 #endif
 		game->InitFromNewMap( fullMapName, renderWorld, soundWorld, matchParameters.gameMode, Sys_Milliseconds() );
 #if defined( ID_3DS )
-		Sys_LogMemory( "game map loaded" );
+		N3DS_LogLoad( "game map loaded" );
 #endif
 	}
 
@@ -665,7 +672,7 @@ void idCommonLocal::ExecuteMapChange() {
 	int	msec = Sys_Milliseconds() - start;
 	common->Printf( "%6d msec to load %s\n", msec, currentMapName.c_str() );
 #if defined( ID_3DS )
-	Sys_LogMemory( "map load done" );
+	N3DS_LogLoad( "map load done" );
 #endif
 	//Sys_DumpMemory( false );	
 

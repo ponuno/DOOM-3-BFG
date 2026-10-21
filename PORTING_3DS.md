@@ -94,6 +94,8 @@ Sound: `sound/3DS` — sample loader from the XAudio2 version, null hardware/voi
 | `n3ds_lazySaveBuffer` | 1 | savegame buffers not preallocated (4.4 MB) |
 | `n3ds_core1Percent` | 30 | `APT_SetAppCpuTimeLimit` for the system core |
 
+Per-subsystem heap breakdown (`Mem_LogTags`): create an empty file `sdmc:/doom3/memtags`. It costs a 16-byte header per block (~4 MB on a loaded map), so it is off by default.
+
 Once a map runs, a `PERF` line is logged every 2 s: fps, game ms per tick, draw/frontend/backend ms.
 
 ## Known issues to revisit

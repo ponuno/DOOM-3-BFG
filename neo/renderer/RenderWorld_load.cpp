@@ -782,10 +782,8 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 				file->ReadString( type );
 				type.ToLower();
 #if defined( ID_3DS )
-				if ( type == "model" ) {
+				if ( type == "model" || type == "shadowmodel" ) {
 					numModelEntries++;
-				} else if ( type == "shadowmodel" ) {
-					numShadowEntries++;
 				}
 #endif
 				if ( type == "model" ) {
@@ -802,6 +800,16 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 						loaded = false;
 						break;
 					}
+#if defined( ID_3DS )
+					// NOTE: ParseModel writes ordinary models (the _area* world too) with
+					// type "shadowmodel", so only the dmap shadow volumes, which are
+					// named _prelight_<light>, can be dropped.
+					if ( r_n3dsNoShadows && idStr::Icmpn( lastModel->Name(), "_prelight_", 10 ) == 0 ) {
+						numShadowEntries++;
+						renderModelManager->FreeModel( lastModel );
+						continue;
+					}
+#endif
 					renderModelManager->AddModel( lastModel );
 					localModels.Append( lastModel );
 				} else if ( type == "interareaportals" ) {
@@ -813,7 +821,7 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 				}
 			}
 #if defined( ID_3DS )
-			common->Printf( "bproc: %d entries, %d models, %d shadow models, %d areas, loaded %d, file pos %d / %d\n",
+			common->Printf( "bproc: %d entries, %d models (%d prelight shadow models dropped), %d areas, loaded %d, file pos %d / %d\n",
 				numEntries, numModelEntries, numShadowEntries, numPortalAreas, loaded, file->Tell(), file->Length() );
 #endif
 		}

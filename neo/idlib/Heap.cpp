@@ -44,10 +44,12 @@ If you have questions concerning this license or the applicable additional terms
 
 	New 3DS heap accounting
 
-	Every Mem_Alloc16 block carries a 16-byte header (keeps 16-byte alignment) with
-	its size and memTag_t, so usage can be broken down by subsystem when memory runs
-	out or at checkpoints (Mem_LogTags). Blocks without a valid header (freed through
-	Mem_Free16 but not allocated by Mem_Alloc16) fall back to a plain free().
+	Per-tag accounting is optional because it costs a 16-byte header per block
+	(~4 MB with the ~250k blocks of a loaded map). It is enabled when the file
+	sdmc:/doom3/memtags exists; the choice is made once, at the first allocation,
+	and never changes, so every block is freed the way it was allocated.
+	With tracking on, each block carries its size and memTag_t and Mem_LogTags
+	prints a breakdown by subsystem at checkpoints and on out-of-memory.
 
 ================================================================================================
 */
@@ -66,6 +68,19 @@ static const char * memTagNames[] = {
 #define MEM_TAG( x )	#x,
 #include "sys/sys_alloc_tags.h"
 };
+
+static int		memTrackingState = -1;		// -1 undecided, 0 off, 1 on
+
+static bool Mem_TrackingEnabled() {
+	if ( memTrackingState < 0 ) {
+		FILE * f = fopen( "sdmc:/doom3/memtags", "rb" );
+		memTrackingState = ( f != NULL ) ? 1 : 0;
+		if ( f != NULL ) {
+			fclose( f );
+		}
+	}
+	return memTrackingState == 1;
+}
 
 static int32	memTagBytes[TAG_NUM_TAGS];
 static int32	memTagBlocks[TAG_NUM_TAGS];
@@ -92,6 +107,9 @@ Prints the biggest users of the engine heap.
 ==================
 */
 void Mem_LogTags( int maxLines ) {
+	if ( memTrackingState != 1 ) {
+		return;		// create sdmc:/doom3/memtags for the per-subsystem breakdown
+	}
 	int order[TAG_NUM_TAGS];
 	int n = 0;
 	for ( int i = 0; i < TAG_NUM_TAGS; i++ ) {
@@ -150,7 +168,8 @@ void * Mem_Alloc16( const int size, const memTag_t tag ) {
 		}
 	}
 	const int paddedSize = ( size + 15 ) & ~15;
-	byte * raw = (byte *)memalign( 16, paddedSize + sizeof( memHeader_t ) );
+	const bool tracking = Mem_TrackingEnabled();
+	byte * raw = (byte *)memalign( 16, paddedSize + ( tracking ? sizeof( memHeader_t ) : 0 ) );
 	if ( raw == NULL ) {
 		// give the error path (printing, log file, shutdown) room to work
 		if ( memEmergencyReserve != NULL ) {
@@ -169,6 +188,9 @@ void * Mem_Alloc16( const int size, const memTag_t tag ) {
 		idLib::FatalError( "Mem_Alloc16: out of memory allocating %d KB for %s",
 			paddedSize / 1024, ( tag >= 0 && tag < TAG_NUM_TAGS ) ? memTagNames[tag] : "?" );
 	}
+	if ( !tracking ) {
+		return raw;
+	}
 	memHeader_t * hdr = (memHeader_t *)raw;
 	hdr->size = paddedSize;
 	hdr->tag = (uint16)tag;
@@ -184,6 +206,10 @@ Mem_Free16
 */
 void Mem_Free16( void *ptr ) {
 	if ( ptr == NULL ) {
+		return;
+	}
+	if ( memTrackingState != 1 ) {
+		free( ptr );
 		return;
 	}
 	memHeader_t * hdr = (memHeader_t *)( (byte *)ptr - sizeof( memHeader_t ) );
