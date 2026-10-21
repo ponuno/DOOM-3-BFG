@@ -5335,10 +5335,31 @@ void idPhysics_AF::AuxiliaryForces( float timeStep ) {
 	timer_lcp.Start();
 #endif
 
+#if defined( ID_3DS )
+	{
+		// which LCP input is already bad?
+		const char * badIn = NULL;
+		for ( i = 0; i < numAuxConstraints && badIn == NULL; i++ ) {
+			for ( j = 0; j < numAuxConstraints; j++ ) {
+				if ( N3DS_BadF( jmk[i][j] ) ) { badIn = "matrix jmk"; break; }
+			}
+			if ( badIn == NULL && N3DS_BadF( rhs[i] ) ) { badIn = "rhs"; }
+			if ( badIn == NULL && ( IEEE_FLT_IS_NAN( lo[i] ) || IEEE_FLT_IS_NAN( hi[i] ) ) ) { badIn = "lo/hi"; }
+		}
+		if ( badIn != NULL ) {
+			N3DS_TreeReport( va( "AuxiliaryForces: LCP input %s (%d constraints)", badIn, numAuxConstraints ), bodies.Num() ? bodies[0] : NULL );
+		}
+	}
+#endif
 	// calculate lagrange multipliers for auxiliary constraints
 	if ( !lcp->Solve( jmk, lm, rhs, lo, hi, boxIndex ) ) {
 		return;		// bad monkey!
 	}
+#if defined( ID_3DS )
+	if ( N3DS_BadVecX( lm ) ) {
+		N3DS_TreeReport( va( "AuxiliaryForces: LCP output lm with finite inputs? (%d constraints)", numAuxConstraints ), bodies.Num() ? bodies[0] : NULL );
+	}
+#endif
 
 #ifdef AF_TIMINGS
 	timer_lcp.Stop();
