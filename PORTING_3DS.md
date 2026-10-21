@@ -23,16 +23,22 @@ Target: armv6k / MPCore, VFPv2, hard-float, C++14 (gnu), exceptions ON
 ## SD card layout
 
     sdmc:/3ds/doom3ds/doom3ds.3dsx
+    sdmc:/3ds/dspfirm.cdc            (DSP firmware dump; without it the game runs silent)
     sdmc:/doom3/base/default.cfg
     sdmc:/doom3/base/strings/english.lang
     sdmc:/doom3/base/_common.resources
     sdmc:/doom3/base/_ordered.resources
+    sdmc:/doom3/base/_sound_pc.resources
+    sdmc:/doom3/base/_sound_pc_<language>.resources   (e.g. _sound_pc_en.resources)
     sdmc:/doom3/base/maps/<map>.resources
     sdmc:/doom3/cmdline.txt          (optional: extra command line, e.g. "+map game/mars_city1")
     sdmc:/doom3/log.txt              (written by the game)
     sdmc:/doom3/save/                (fs_savepath)
 
-The `_sound_pc*.resources` are not needed while sound is null (`s_noSound 1` is a built-in default, as are `com_skipIntroVideos 1` and `com_disableAutoSaves 1`, `r_cullDynamicLightTriangles 0`).
+The `_sound_pc*.resources` hold the sample data: without them every sound is an empty
+placeholder and the game is silent (sound itself stays on; `+set s_noSound 1` turns it off).
+Built-in defaults (`Sys_BuildCommandLine`): `com_skipIntroVideos 1`, `com_disableAutoSaves 1`,
+`r_cullDynamicLightTriangles 0`.
 
 ## Structure
 
@@ -59,8 +65,7 @@ Mesa `gl.h` for declarations, generated stubs for every GL entry point the engin
 because the vertex cache writes through mapped pointers. The citro3d backend will replace
 `tr_backend_draw`/`gl_*` piece by piece.
 
-Sound: `sound/3DS` — sample loader from the XAudio2 version, null hardware/voices (voices
-"play" for the sample length so scripts waiting on sounds progress).
+Sound: `sound/3DS` — NDSP output with a software mixer, see "Sound" below.
 
 ## Platform conventions
 
@@ -75,11 +80,13 @@ Sound: `sound/3DS` — sample loader from the XAudio2 version, null hardware/voi
 ## Status
 
 - [x] idlib, external, engine, game, doomclassic compile for ARM11 (clang check + devkitARM for idlib)
-- [x] sys/3ds platform layer, null GL, null sound
-- [ ] first run on hardware: boot, map load, memory / tick numbers
+- [x] sys/3ds platform layer, null GL
+- [x] first run on hardware: boot, map load, memory / tick numbers
+- [x] citro3d renderer: diffuse textures, PICA fragment lighting, ambient stages, GUIs
+- [x] NDSP sound with a software mixer (PCM16, MS ADPCM)
+- [ ] normal/specular maps, shadows, cube/screen texgens, cinematics
 - [ ] offline asset pipeline (DXT → ETC1, downscaled textures)
-- [ ] citro3d renderer
-- [ ] ndsp sound, saves, menus on the touch screen
+- [ ] saves, menus on the touch screen
 
 ## Memory decisions (first pass, to be tuned from logs)
 
