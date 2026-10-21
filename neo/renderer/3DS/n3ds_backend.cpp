@@ -37,6 +37,7 @@ bool r_n3dsC3D = false;
 
 idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: draw at most this many surfaces per frame (0 = all), for bisecting GPU hangs" );
 idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
+idCVar n3ds_c3dTest( "n3ds_c3dTest", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d bring-up test: 1 = only a test triangle, 2 = engine surfaces copied to a private buffer first (first one per frame)" );
 idCVar n3ds_c3dTrace( "n3ds_c3dTrace", "3", CVAR_RENDERER | CVAR_INTEGER, "citro3d: log begin/end of the first N 3D frames" );
 
 static int		c3dSkippedNotLinear = 0;
@@ -170,7 +171,13 @@ static bool N3DS_ValidateDraw( const drawSurf_t * surf, const idMaterial * mater
 }
 
 static void N3DS_DrawView( const viewDef_t * viewDef ) {
-	const int maxDraws = n3ds_c3dMaxDraws.GetInteger();
+	const int test = n3ds_c3dTest.GetInteger();
+	if ( test == 1 ) {
+		N3DSGPU_DrawTestTriangle();
+		c3dStatDraws++;
+		return;
+	}
+	const int maxDraws = ( test == 2 ) ? 1 : n3ds_c3dMaxDraws.GetInteger();
 	const bool validate = n3ds_c3dValidate.GetBool();
 	int draws = 0;
 	const viewEntity_t * lastSpace = NULL;
@@ -238,8 +245,17 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 			lastSpace = surf->space;
 		}
 		N3DS_MaterialColor( material );
-		N3DSGPU_DrawIndexed( vbBase + vb.GetOffset(), sizeof( idDrawVert ),
-			(const unsigned short *)( ibBase + ib.GetOffset() ), surf->numIndexes );
+		if ( test == 2 ) {
+			N3DSGPU_DrawIndexedCopied( vbBase + vb.GetOffset(), sizeof( idDrawVert ), vb.GetSize() / (int)sizeof( idDrawVert ),
+				(const unsigned short *)( ibBase + ib.GetOffset() ), surf->numIndexes );
+		} else {
+			N3DSGPU_DrawIndexed( vbBase + vb.GetOffset(), sizeof( idDrawVert ),
+				(const unsigned short *)( ibBase + ib.GetOffset() ), surf->numIndexes );
+		}
+		if ( c3dFrame3D == 0 && draws <= 3 ) {
+			common->Printf( "citro3d: draw %d: %s, %d indexes, vb %p+%d, ib %p+%d\n", draws, material->GetName(),
+				surf->numIndexes, vbBase, vb.GetOffset(), ibBase, ib.GetOffset() );
+		}
 
 		backEnd.pc.c_drawElements++;
 		backEnd.pc.c_drawIndexes += surf->numIndexes;

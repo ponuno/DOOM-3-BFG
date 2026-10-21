@@ -32,6 +32,12 @@ void			N3DSGPU_SetColor( float r, float g, float b, float a );
 // indexes: 16-bit, linear memory
 void			N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short * indexes, int numIndexes );
 
+// diagnostics: a triangle from a private buffer (16-byte vertices, exact layout),
+// drawn with an identity matrix; isolates the engine's buffers from the GPU setup
+void			N3DSGPU_DrawTestTriangle( void );
+// copy a draw into a private linear buffer first (tests the engine buffer addresses)
+void			N3DSGPU_DrawIndexedCopied( const void * verts, int stride, int numVerts, const unsigned short * indexes, int numIndexes );
+
 // diagnostics: command buffer use 0..1, GPU time of the last frame (ms)
 float			N3DSGPU_CmdBufUsage( void );
 float			N3DSGPU_DrawingTimeMs( void );

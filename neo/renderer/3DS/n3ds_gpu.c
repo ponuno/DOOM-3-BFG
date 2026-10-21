@@ -142,9 +142,77 @@ void N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short *
 	}
 	C3D_BufInfo * bufInfo = C3D_GetBufInfo();
 	BufInfo_Init( bufInfo );
-	// position (attr 0, 12 bytes), skip st (4 bytes padding = 0xC), normal (attr 1)
-	BufInfo_Add( bufInfo, verts, stride, 3, 0x1C0 );
+	// idDrawVert, 32 bytes, described completely so the components add up to the stride:
+	// position (attr 0, 12) | st (pad 4 = 0xC) | normal (attr 1, 4) | tangent, color, color2 (pad 12 = 0xE)
+	BufInfo_Add( bufInfo, verts, stride, 4, 0xE1C0 );
 	C3D_DrawElements( GPU_TRIANGLES, numIndexes, C3D_UNSIGNED_SHORT, indexes );
+}
+
+typedef struct {
+	float			xyz[3];
+	unsigned char	normal[4];
+} testVert_t;
+
+static testVert_t *			testVerts = NULL;
+static unsigned short *		testIndexes = NULL;
+static unsigned char *		copyVerts = NULL;
+static unsigned short *		copyIndexes = NULL;
+static const int			COPY_VERTS_BYTES = 256 * 1024;
+static const int			COPY_INDEX_BYTES = 64 * 1024;
+
+void N3DSGPU_DrawTestTriangle( void ) {
+	if ( !inFrame ) {
+		return;
+	}
+	if ( testVerts == NULL ) {
+		testVerts = (testVert_t *)linearAlloc( 3 * sizeof( testVert_t ) );
+		testIndexes = (unsigned short *)linearAlloc( 16 );
+		if ( testVerts == NULL || testIndexes == NULL ) {
+			return;
+		}
+		// already in PICA clip space (z in -1..0); normals face +z
+		const float p[3][3] = { { -0.6f, -0.6f, -0.5f }, { 0.6f, -0.6f, -0.5f }, { 0.0f, 0.6f, -0.5f } };
+		for ( int i = 0; i < 3; i++ ) {
+			testVerts[i].xyz[0] = p[i][0];
+			testVerts[i].xyz[1] = p[i][1];
+			testVerts[i].xyz[2] = p[i][2];
+			testVerts[i].normal[0] = 128;
+			testVerts[i].normal[1] = 128;
+			testVerts[i].normal[2] = 255;
+			testVerts[i].normal[3] = 0;
+			testIndexes[i] = (unsigned short)i;
+		}
+		GSPGPU_FlushDataCache( testVerts, 3 * sizeof( testVert_t ) );
+		GSPGPU_FlushDataCache( testIndexes, 16 );
+	}
+	const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+	N3DSGPU_SetMatrix( identity );
+	N3DSGPU_SetColor( 1.0f, 0.2f, 0.2f, 1.0f );
+	C3D_BufInfo * bufInfo = C3D_GetBufInfo();
+	BufInfo_Init( bufInfo );
+	BufInfo_Add( bufInfo, testVerts, sizeof( testVert_t ), 2, 0x10 );
+	C3D_DrawElements( GPU_TRIANGLES, 3, C3D_UNSIGNED_SHORT, testIndexes );
+}
+
+void N3DSGPU_DrawIndexedCopied( const void * verts, int stride, int numVerts, const unsigned short * indexes, int numIndexes ) {
+	if ( !inFrame || numIndexes <= 0 ) {
+		return;
+	}
+	if ( copyVerts == NULL ) {
+		copyVerts = (unsigned char *)linearAlloc( COPY_VERTS_BYTES );
+		copyIndexes = (unsigned short *)linearAlloc( COPY_INDEX_BYTES );
+		if ( copyVerts == NULL || copyIndexes == NULL ) {
+			return;
+		}
+	}
+	if ( numVerts * stride > COPY_VERTS_BYTES || numIndexes * 2 > COPY_INDEX_BYTES ) {
+		return;
+	}
+	memcpy( copyVerts, verts, numVerts * stride );
+	memcpy( copyIndexes, indexes, numIndexes * 2 );
+	GSPGPU_FlushDataCache( copyVerts, numVerts * stride );
+	GSPGPU_FlushDataCache( copyIndexes, numIndexes * 2 );
+	N3DSGPU_DrawIndexed( copyVerts, stride, copyIndexes, numIndexes );
 }
 
 float N3DSGPU_CmdBufUsage( void ) {
