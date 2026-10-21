@@ -45,6 +45,9 @@ Platform layer `neo/sys/3ds`:
   events, logging (bottom screen + log.txt), libctru stack/heap sizes.
 - `3ds_input.cpp` — 3DS buttons as one Xbox-style pad (A/B/X/Y, L/R shoulders, ZL/ZR triggers,
   Circle Pad = left stick, C-Stick = right stick). START+SELECT quits.
+  Bindings are set in code after every config (PlayerProfile.cpp): Circle Pad move, C-Stick look,
+  ZR fire, ZL flashlight, A jump, B crouch, X reload, Y / D-pad up next weapon, L / D-pad down
+  previous weapon, R run, SELECT PDA.
 - `3ds_glimp.cpp` — "window" (400x240 top screen).
 - `3ds_net.cpp` — no networking (loopback only).
 - `3ds_session_local.cpp`, `3ds_savegame.cpp`, `3ds_localuser/signin/achievements` — from win32.

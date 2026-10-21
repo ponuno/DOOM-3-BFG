@@ -1331,7 +1331,12 @@ void idUsercmdGenLocal::BuildCurrentUsercmd( int deviceNum ) {
 	Keyboard();
 
 	// process the system joystick events
+#if defined( ID_3DS )
+	// the pad is the only input device
+	if ( deviceNum >= 0 ) {
+#else
 	if ( deviceNum >= 0 && in_useJoystick.GetBool() ) {
+#endif
 		Joystick( deviceNum );
 	}
 
