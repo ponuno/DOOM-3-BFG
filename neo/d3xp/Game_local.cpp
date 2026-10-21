@@ -2237,7 +2237,46 @@ void idGameLocal::RunTimeGroup2( idUserCmdMgr & userCmdMgr ) {
 idGameLocal::RunEntityThink
 ================
 */
+#if defined( ID_3DS )
+// New 3DS: find what makes a game frame slow (doors opening, cutscenes)
+idCVar n3ds_slowFrameMs( "n3ds_slowFrameMs", "80", CVAR_GAME | CVAR_INTEGER, "log game frames slower than this, with the slowest entity thinks" );
+static const int	N3DS_SLOW_LIST = 4;
+static uint64		n3dsThinkUs[N3DS_SLOW_LIST];
+static const idEntity *	n3dsThinkEnt[N3DS_SLOW_LIST];
+static idStr		n3dsThinkName[N3DS_SLOW_LIST];
+
+static void N3DS_RecordThink( const idEntity & ent, uint64 us ) {
+	for ( int i = 0; i < N3DS_SLOW_LIST; i++ ) {
+		if ( us > n3dsThinkUs[i] ) {
+			for ( int j = N3DS_SLOW_LIST - 1; j > i; j-- ) {
+				n3dsThinkUs[j] = n3dsThinkUs[j - 1];
+				n3dsThinkEnt[j] = n3dsThinkEnt[j - 1];
+				n3dsThinkName[j] = n3dsThinkName[j - 1];
+			}
+			n3dsThinkUs[i] = us;
+			n3dsThinkEnt[i] = &ent;
+			n3dsThinkName[i] = va( "%s (%s)", ent.name.c_str(), ent.GetClassname() );
+			return;
+		}
+	}
+}
+#endif
+
 void idGameLocal::RunEntityThink( idEntity & ent, idUserCmdMgr & userCmdMgr ) {
+#if defined( ID_3DS )
+	N3DS_STAGE( N3DS_STAGE_GAME, ent.GetClassname() );		// static string, safe for the watchdog
+	const uint64 thinkStart = Sys_Microseconds();
+	if ( ent.entityNumber < MAX_PLAYERS ) {
+		RunAllUserCmdsForPlayer( userCmdMgr, ent.entityNumber );
+	} else {
+		ent.Think();
+	}
+	const uint64 thinkUs = Sys_Microseconds() - thinkStart;
+	if ( thinkUs > n3dsThinkUs[N3DS_SLOW_LIST - 1] ) {
+		N3DS_RecordThink( ent, thinkUs );
+	}
+	return;
+#endif
 	if ( ent.entityNumber < MAX_PLAYERS ) {
 		// Players may run more than one think per frame in MP,
 		// if there is a large buffer of usercmds from the network.
@@ -2355,6 +2394,13 @@ void idGameLocal::RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 
 		timer_think.Clear();
 		timer_think.Start();
+#if defined( ID_3DS )
+		const uint64 n3dsFrameStart = Sys_Microseconds();
+		for ( int i = 0; i < N3DS_SLOW_LIST; i++ ) {
+			n3dsThinkUs[i] = 0;
+			n3dsThinkEnt[i] = NULL;
+		}
+#endif
 
 		// let entities think
 		if ( g_timeentities.GetFloat() ) {
@@ -2427,6 +2473,10 @@ void idGameLocal::RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 		timer_think.Stop();
 		timer_events.Clear();
 		timer_events.Start();
+#if defined( ID_3DS )
+		const uint64 n3dsEventsStart = Sys_Microseconds();
+		N3DS_STAGE( N3DS_STAGE_GAME, "events / scripts" );
+#endif
 
 		// service any pending events
 		idEvent::ServiceEvents();
@@ -2437,6 +2487,21 @@ void idGameLocal::RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 		SelectTimeGroup( false );
 
 		timer_events.Stop();
+#if defined( ID_3DS )
+		{
+			const uint64 end = Sys_Microseconds();
+			const float totalMs = ( end - n3dsFrameStart ) * 0.001f;
+			if ( totalMs >= n3ds_slowFrameMs.GetFloat() ) {
+				idStr slow;
+				for ( int i = 0; i < N3DS_SLOW_LIST && n3dsThinkEnt[i] != NULL; i++ ) {
+					slow += va( "%s%s %.1f ms", i ? ", " : "", n3dsThinkName[i].c_str(), n3dsThinkUs[i] * 0.001f );
+				}
+				Printf( "SLOW GAME FRAME %d: %.1f ms (think %.1f, events/scripts %.1f, %d ents) slowest: %s\n",
+					time, totalMs, ( n3dsEventsStart - n3dsFrameStart ) * 0.001f, ( end - n3dsEventsStart ) * 0.001f,
+					num, slow.c_str() );
+			}
+		}
+#endif
 
 		// free the player pvs
 		FreePlayerPVS();
