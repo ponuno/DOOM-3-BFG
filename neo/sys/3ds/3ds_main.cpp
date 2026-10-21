@@ -44,6 +44,8 @@ extern "C" {
 #include <3ds/os.h>
 #include <3ds/synchronization.h>
 #include <3ds/allocator/linear.h>
+#include <3ds/allocator/mappable.h>
+#include <3ds/result.h>
 #include <3ds/gfx.h>
 #include <3ds/console.h>
 #include <3ds/services/apt.h>
@@ -59,13 +61,70 @@ n3dsVars_t	n3ds;
 	__stacksize__: the main thread stack comes out of the heap; the 32 KB default is
 	far too small for idTech code (16-32 KB string buffers on the stack).
 
-	__ctru_linear_heap_size: by default libctru gives half of all memory to the linear
-	(GPU-visible) heap. The null-GL bring-up build needs almost none; the citro3d
-	renderer will need vertex buffers and command lists there, so revisit this then.
+	Heaps: libctru's default splits memory 50/50 between the application heap and the
+	linear (GPU-visible) heap. Asking for a small linear heap instead makes libctru put
+	everything else in the application heap, but that heap lives in a fixed 96 MB
+	virtual window (OS_HEAP_AREA_BEGIN..END), so with ~112 MB available the allocation
+	fails and libctru panics before main(). __system_allocateHeaps below gives the
+	application heap as much as fits in that window and the rest to the linear heap,
+	which the citro3d renderer will use for vertex buffers and textures.
 */
 extern "C" {
-	u32 __stacksize__ = 2 * 1024 * 1024;
-	u32 __ctru_linear_heap_size = 8 * 1024 * 1024;
+
+u32 __stacksize__ = 2 * 1024 * 1024;
+
+extern char *	fake_heap_start;
+extern char *	fake_heap_end;
+extern u32		__ctru_heap;
+extern u32		__ctru_heap_size;
+extern u32		__ctru_linear_heap;
+extern u32		__ctru_linear_heap_size;
+
+static const u32 N3DS_MIN_LINEAR_HEAP = 8 * 1024 * 1024;
+
+void __system_allocateHeaps( void ) {
+	Result rc;
+
+	// Remaining commit for our process (the 3dsx is already loaded)
+	Handle reslimit = 0;
+	rc = svcGetResourceLimit( &reslimit, CUR_PROCESS_HANDLE );
+	if ( R_FAILED( rc ) ) {
+		svcBreak( USERBREAK_PANIC );
+	}
+	s64 maxCommit = 0, currentCommit = 0;
+	ResourceLimitType reslimitType = RESLIMIT_COMMIT;
+	svcGetResourceLimitLimitValues( &maxCommit, reslimit, &reslimitType, 1 );
+	svcGetResourceLimitCurrentValues( &currentCommit, reslimit, &reslimitType, 1 );
+	svcCloseHandle( reslimit );
+
+	const u32 remaining = (u32)( maxCommit - currentCommit ) & ~0xFFF;
+	const u32 heapWindow = OS_HEAP_AREA_END - OS_HEAP_AREA_BEGIN;
+
+	u32 heapSize = ( remaining > N3DS_MIN_LINEAR_HEAP ) ? remaining - N3DS_MIN_LINEAR_HEAP : remaining / 2;
+	if ( heapSize > heapWindow ) {
+		heapSize = heapWindow;
+	}
+	heapSize &= ~0xFFF;
+	__ctru_heap_size = heapSize;
+	__ctru_linear_heap_size = ( remaining - heapSize ) & ~0xFFF;
+
+	rc = svcControlMemory( &__ctru_heap, OS_HEAP_AREA_BEGIN, 0x0, __ctru_heap_size, MEMOP_ALLOC, (MemPerm)( MEMPERM_READ | MEMPERM_WRITE ) );
+	if ( R_FAILED( rc ) ) {
+		svcBreak( USERBREAK_PANIC );
+	}
+
+	rc = svcControlMemory( &__ctru_linear_heap, 0x0, 0x0, __ctru_linear_heap_size, MEMOP_ALLOC_LINEAR, (MemPerm)( MEMPERM_READ | MEMPERM_WRITE ) );
+	if ( R_FAILED( rc ) ) {
+		svcBreak( USERBREAK_PANIC );
+	}
+
+	mappableInit( OS_MAP_AREA_BEGIN, OS_MAP_AREA_END );
+
+	// newlib's malloc lives in the application heap
+	fake_heap_start = (char *)__ctru_heap;
+	fake_heap_end = fake_heap_start + __ctru_heap_size;
+}
+
 }
 
 idCVar sys_logFlush( "sys_logFlush", "1", CVAR_SYSTEM | CVAR_BOOL, "flush sdmc:/doom3/log.txt after every line (slower, but survives crashes)" );
@@ -730,6 +789,7 @@ int N3DS_Main( int argc, char ** argv ) {
 	Sys_Printf( "DOOM 3 BFG for New 3DS (%s %s)\n", __DATE__, __TIME__ );
 	Sys_Printf( "%s, application region %d KB\n", n3ds.isNew3DS ? "New 3DS" : "Old 3DS",
 		(int)( osGetMemRegionSize( MEMREGION_APPLICATION ) / 1024 ) );
+	Sys_Printf( "heap %d KB, linear heap %d KB\n", (int)( __ctru_heap_size / 1024 ), (int)( __ctru_linear_heap_size / 1024 ) );
 	Sys_LogMemory( "start" );
 
 	Sys_BuildCommandLine();
