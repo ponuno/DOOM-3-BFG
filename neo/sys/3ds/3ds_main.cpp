@@ -257,6 +257,22 @@ void N3DS_SoundLogMemory();								// sound/3DS/3DS_SoundSample.cpp
 void N3DS_LogDeclMemory();								// framework/DeclManager.cpp
 void Mem_SlabStats( int & chunkBytes, int & usedBytes, int & emptyBytes );	// idlib/Heap.cpp
 
+/*
+==============
+Sys_N3DSMemSample
+
+Cheap numbers for the map tour (n3ds_mapTour): KB in malloc blocks, KB malloc has
+taken from the heap (its high-water footprint), the heap size, free linear memory.
+==============
+*/
+void Sys_N3DSMemSample( int & mallocUsedKB, int & mallocArenaKB, int & heapKB, int & linearFreeKB ) {
+	struct mallinfo mi = mallinfo();
+	mallocUsedKB = (int)( mi.uordblks / 1024 );
+	mallocArenaKB = (int)( mi.arena / 1024 );
+	heapKB = (int)( __ctru_heap_size / 1024 );
+	linearFreeKB = (int)( linearSpaceFree() / 1024 );
+}
+
 void Sys_LogMemory( const char * when ) {
 	const int appFree = (int)osGetMemRegionFree( MEMREGION_APPLICATION );
 	const int appSize = (int)osGetMemRegionSize( MEMREGION_APPLICATION );

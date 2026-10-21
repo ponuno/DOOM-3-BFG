@@ -384,6 +384,185 @@ void idCommonLocal::ProcessGameReturn( const gameReturn_t & ret ) {
 
 extern idCVar com_forceGenericSIMD;
 
+#if defined( ID_3DS )
+/*
+================================================================================================
+
+	New 3DS map tour: n3ds_mapTour [map ...]
+
+	Loads the maps one after another (default: the biggest .resources archives), lets
+	each run for a while, and logs one TOUR line per map: malloc peak and heap
+	footprint, least free linear memory, static vertex/index cache use, load time.
+	The summary at the end gives the worst map for each. Running out of memory ends
+	the tour like any other error; the log shows where.
+
+================================================================================================
+*/
+void Sys_N3DSMemSample( int & mallocUsedKB, int & mallocArenaKB, int & heapKB, int & linearFreeKB );
+extern int n3dsMapLoads;
+extern int n3dsLastLoadMsec;
+
+idCVar n3ds_tourFrames( "n3ds_tourFrames", "600", CVAR_INTEGER, "3DS map tour: frames each map runs before the next one is loaded" );
+
+enum { TOUR_IDLE, TOUR_NEXT, TOUR_LOADING, TOUR_RUNNING };
+
+struct n3dsTourMap_t {
+	idStr	name;
+	bool	loaded;
+	int		loadMsec;
+	int		mallocPeakKB;
+	int		arenaPeakKB;
+	int		linearMinKB;
+	int		staticVertexKB;
+	int		staticIndexKB;
+};
+
+static idList< n3dsTourMap_t >	tourMaps;
+static int						tourIndex = 0;
+static int						tourState = TOUR_IDLE;
+static int						tourFrames = 0;
+static int						tourLoadsAtStart = 0;
+static int						tourHeapKB = 0;
+
+static const char * n3dsTourDefault[] = {
+	// biggest maps/*.resources first (base game, Resurrection of Evil, The Lost Mission)
+	"game/phobos3", "game/phobos1", "game/le_exis2", "game/phobos2", "game/erebus3", "game/erebus4",
+	"game/le_enpro1", "game/deltax", "game/le_underground2", "game/mc_underground", "game/erebus5",
+	"game/le_enpro2", "game/enpro", "game/comm1", "game/erebus1", "game/mars_city1", "game/erebus2",
+	"game/le_exis1", "game/alphalabs2", "game/erebus6", "game/delta2b", "game/mars_city2", "game/alphalabs1",
+};
+
+/*
+========================
+N3DS_TourSample
+
+Called at the load checkpoints and every frame while a tour runs.
+========================
+*/
+void N3DS_TourSample() {
+	if ( tourState != TOUR_LOADING && tourState != TOUR_RUNNING ) {
+		return;
+	}
+	if ( tourIndex < 0 || tourIndex >= tourMaps.Num() ) {
+		return;
+	}
+	n3dsTourMap_t & m = tourMaps[tourIndex];
+	int used, arena, heap, linear;
+	Sys_N3DSMemSample( used, arena, heap, linear );
+	tourHeapKB = heap;
+	m.mallocPeakKB = Max( m.mallocPeakKB, used );
+	m.arenaPeakKB = Max( m.arenaPeakKB, arena );
+	m.linearMinKB = ( m.linearMinKB < 0 ) ? linear : Min( m.linearMinKB, linear );
+	m.staticVertexKB = Max( m.staticVertexKB, vertexCache.staticData.vertexMemUsed.GetValue() / 1024 );
+	m.staticIndexKB = Max( m.staticIndexKB, vertexCache.staticData.indexMemUsed.GetValue() / 1024 );
+}
+
+static void N3DS_TourPrintMap( const n3dsTourMap_t & m ) {
+	if ( !m.loaded ) {
+		common->Printf( "TOUR %-22s did not load\n", m.name.c_str() );
+		return;
+	}
+	common->Printf( "TOUR %-22s load %3d s | malloc peak %6d KB, heap footprint %6d / %d KB (%d KB left) | linear min free %5d KB | static vertex %5d / %d KB, index %5d / %d KB\n",
+		m.name.c_str(), m.loadMsec / 1000, m.mallocPeakKB, m.arenaPeakKB, tourHeapKB, tourHeapKB - m.arenaPeakKB, m.linearMinKB,
+		m.staticVertexKB, STATIC_VERTEX_MEMORY / 1024, m.staticIndexKB, STATIC_INDEX_MEMORY / 1024 );
+}
+
+static void N3DS_TourSummary() {
+	common->Printf( "TOUR ---- summary (%d maps) ----\n", tourMaps.Num() );
+	int worstArena = -1, worstLinear = -1, worstVertex = -1, worstIndex = -1;
+	for ( int i = 0; i < tourMaps.Num(); i++ ) {
+		const n3dsTourMap_t & m = tourMaps[i];
+		N3DS_TourPrintMap( m );
+		if ( !m.loaded ) {
+			continue;
+		}
+		if ( worstArena < 0 || m.arenaPeakKB > tourMaps[worstArena].arenaPeakKB ) { worstArena = i; }
+		if ( worstLinear < 0 || m.linearMinKB < tourMaps[worstLinear].linearMinKB ) { worstLinear = i; }
+		if ( worstVertex < 0 || m.staticVertexKB > tourMaps[worstVertex].staticVertexKB ) { worstVertex = i; }
+		if ( worstIndex < 0 || m.staticIndexKB > tourMaps[worstIndex].staticIndexKB ) { worstIndex = i; }
+	}
+	if ( worstArena >= 0 ) {
+		common->Printf( "TOUR worst heap: %s (%d KB of %d), worst linear: %s (%d KB free), worst static vertex: %s (%d KB), worst static index: %s (%d KB)\n",
+			tourMaps[worstArena].name.c_str(), tourMaps[worstArena].arenaPeakKB, tourHeapKB,
+			tourMaps[worstLinear].name.c_str(), tourMaps[worstLinear].linearMinKB,
+			tourMaps[worstVertex].name.c_str(), tourMaps[worstVertex].staticVertexKB,
+			tourMaps[worstIndex].name.c_str(), tourMaps[worstIndex].staticIndexKB );
+	}
+}
+
+CONSOLE_COMMAND_SHIP( n3ds_mapTour, "3DS: load the given maps (default: the heaviest ones) one after another and log their memory use", NULL ) {
+	tourMaps.Clear();
+	if ( args.Argc() > 1 ) {
+		for ( int i = 1; i < args.Argc(); i++ ) {
+			n3dsTourMap_t & m = tourMaps.Alloc();
+			m.name = args.Argv( i );
+		}
+	} else {
+		for ( int i = 0; i < (int)( sizeof( n3dsTourDefault ) / sizeof( n3dsTourDefault[0] ) ); i++ ) {
+			n3dsTourMap_t & m = tourMaps.Alloc();
+			m.name = n3dsTourDefault[i];
+		}
+	}
+	for ( int i = 0; i < tourMaps.Num(); i++ ) {
+		n3dsTourMap_t & m = tourMaps[i];
+		m.loaded = false;
+		m.loadMsec = m.mallocPeakKB = m.arenaPeakKB = m.staticVertexKB = m.staticIndexKB = 0;
+		m.linearMinKB = -1;
+	}
+	tourIndex = 0;
+	tourState = TOUR_NEXT;
+	common->Printf( "TOUR: %d maps, %d frames each\n", tourMaps.Num(), n3ds_tourFrames.GetInteger() );
+}
+
+/*
+========================
+N3DS_TourFrame
+
+Once per frame from idCommonLocal::Frame.
+========================
+*/
+static void N3DS_TourFrame( bool mapSpawned ) {
+	switch ( tourState ) {
+		case TOUR_NEXT:
+			if ( tourIndex >= tourMaps.Num() ) {
+				N3DS_TourSummary();
+				tourState = TOUR_IDLE;
+				return;
+			}
+			common->Printf( "TOUR: loading %s (%d of %d)\n", tourMaps[tourIndex].name.c_str(), tourIndex + 1, tourMaps.Num() );
+			tourLoadsAtStart = n3dsMapLoads;
+			tourFrames = 0;
+			tourState = TOUR_LOADING;
+			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "map %s\n", tourMaps[tourIndex].name.c_str() ) );
+			return;
+		case TOUR_LOADING:
+			N3DS_TourSample();
+			if ( n3dsMapLoads != tourLoadsAtStart && mapSpawned ) {
+				tourMaps[tourIndex].loaded = true;
+				tourMaps[tourIndex].loadMsec = n3dsLastLoadMsec;
+				tourFrames = 0;
+				tourState = TOUR_RUNNING;
+			} else if ( ++tourFrames > 1800 ) {
+				// the map never came up (wrong name, or an error dropped back to the menu)
+				N3DS_TourPrintMap( tourMaps[tourIndex] );
+				tourIndex++;
+				tourState = TOUR_NEXT;
+			}
+			return;
+		case TOUR_RUNNING:
+			N3DS_TourSample();
+			if ( ++tourFrames >= n3ds_tourFrames.GetInteger() ) {
+				N3DS_TourPrintMap( tourMaps[tourIndex] );
+				tourIndex++;
+				tourState = TOUR_NEXT;
+			}
+			return;
+		default:
+			return;
+	}
+}
+#endif
+
 /*
 =================
 idCommonLocal::Frame
@@ -710,6 +889,7 @@ void idCommonLocal::Frame() {
 		if ( mapSpawned ) {
 			Sys_N3DSFrameDone();
 		}
+		N3DS_TourFrame( mapSpawned );
 		// New 3DS: one line every 2 seconds once a map is running
 		{
 			static int perfStart = 0;

@@ -148,6 +148,17 @@ they shrink to a third, so `n3ds_hudScale`/`n3ds_uiScale` enlarge them (edge-anc
 `_bottomLeft` stay pinned to the screen edges); the log prints every SWF's stage size at load. Not yet: TG_SCREEN/cube texgens, cinematics, program stages, scissor.
 Skinned models are skinned on the CPU (`r_useGPUSkinning` forced to 0 with citro3d).
 
+## Map tour (memory budgets)
+
+`n3ds_mapTour [map ...]` loads maps one after another (default: the 23 biggest
+`maps/*.resources`, heaviest first), lets each run `n3ds_tourFrames` frames (600) and logs
+one `TOUR` line per map: malloc peak, heap footprint (what malloc took from the heap) and what
+is left, least free linear memory, static vertex/index cache use, load time. A summary with
+the worst map for each column ends the tour. Start it from `cmdline.txt`: `+n3ds_mapTour`.
+Between maps the game goes back to the main menu as on a real "new game", so fragmentation
+across level changes is part of the test. Running out of memory stops the tour with the
+usual MEM report.
+
 ## Sound
 
 `sound/3DS/`: `n3ds_audio.c` (NDSP, the only sound file including `<3ds.h>`) plays one stereo
@@ -193,6 +204,7 @@ shares `n3ds_soundMemoryKB` with least-recently-played eviction. Needs the DSP f
 | `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD / font texture |
 | `n3ds_texStream` | 1 | texture levels read from SD when first drawn instead of all kept in RAM (applies to images loaded afterwards) |
 | `n3ds_texRAMCacheKB` | 1024 | RAM for already uploaded streamed levels, so VRAM evictions come back without a read |
+| `n3ds_tourFrames` | 600 | map tour: frames each map runs before the next |
 | `n3ds_hudScale` | 1.5 | HUD size relative to fitting the 720-line SWF stage to the 240-line screen; edge-anchored elements stay at the edges |
 | `n3ds_uiScale` | 1.35 | same for menus, PDA, loading screen and dialogs; too large crops unanchored elements |
 | `n3ds_polygonOffset` | 4 | depth bias per material polygonOffset unit (decals) |

@@ -381,8 +381,13 @@ void idCommonLocal::LoadLoadingGui( const char *mapName, bool & hellMap ) {
 #if defined( ID_3DS )
 void Sys_LogMemory( const char * when );	// sys/3ds/3ds_main.cpp
 
+void N3DS_TourSample();		// framework/common_frame.cpp
+int n3dsMapLoads = 0;			// maps fully loaded so far
+int n3dsLastLoadMsec = 0;
+
 static void N3DS_LogLoad( const char * when ) {
 	Sys_LogMemory( when );
+	N3DS_TourSample();
 	idLib::Printf( "static vertex cache: %d / %d KB, index %d / %d KB\n",
 		vertexCache.staticData.vertexMemUsed.GetValue() / 1024, STATIC_VERTEX_MEMORY / 1024,
 		vertexCache.staticData.indexMemUsed.GetValue() / 1024, STATIC_INDEX_MEMORY / 1024 );
@@ -682,6 +687,8 @@ void idCommonLocal::ExecuteMapChange() {
 	common->Printf( "%6d msec to load %s\n", msec, currentMapName.c_str() );
 #if defined( ID_3DS )
 	N3DS_LogLoad( "map load done" );
+	n3dsLastLoadMsec = msec;
+	n3dsMapLoads++;
 #endif
 	//Sys_DumpMemory( false );	
 
