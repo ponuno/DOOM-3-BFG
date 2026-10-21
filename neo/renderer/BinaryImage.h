@@ -56,6 +56,13 @@ public:
 						// ... except for the largest level whose width and height are both at
 						// most this (0 = none); 2D images only
 	static int			keepLevelMaxSize;
+						// ... and if streamKeptLevel is set and the file can say where that level
+						// lives on disk, its data is skipped too: keptLevelIndex is the level,
+						// keptLevelPath / keptLevelOffset where to read it later (else -1 / empty)
+	static bool			streamKeptLevel;
+	static int			keptLevelIndex;
+	static idStr		keptLevelPath;
+	static int			keptLevelOffset;
 	ID_TIME_T			WriteGeneratedFile( ID_TIME_T sourceFileTime );
 
 	const bimageFile_t &	GetFileHeader() { return fileData; }

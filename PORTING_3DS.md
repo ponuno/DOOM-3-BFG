@@ -113,7 +113,11 @@ buffers, which the null GL layer keeps in linear memory. Build option `-DDOOM3DS
 heap: build with 96 and `+set n3ds_renderer 0` for it until the asset converter exists.
 
 Textures (`n3ds_textures.cpp`, `n3ds_texconv.cpp`): at image load one level no larger than
-`n3ds_texMaxSize` of every diffuse/default/coverage image is kept in RAM as stored (DXT etc.).
+`n3ds_texMaxSize` of every diffuse/default/coverage image is chosen. With `n3ds_texStream 1`
+(default) only its place in the `.resources` container is remembered; a loader thread reads it
+(own unbuffered FILE, ~10 KB) the first time the image is drawn, and the surface is untextured for
+those few frames. Uploaded levels stay in a RAM LRU cache of `n3ds_texRAMCacheKB`. Images without a
+file behind them (generated, tiny files read into memory) keep their level in RAM as stored.
 When a surface is drawn, that level is decoded, mipmapped, tiled (8x8 Morton tiles) and copied to
 VRAM as RGB565 / RGBA5551 / RGBA4 / A8, a few per frame; VRAM is an LRU cache. The shader decodes
 the half-float st itself (table of powers of two in a uniform array). Perforated materials use
@@ -187,6 +191,8 @@ shares `n3ds_soundMemoryKB` with least-recently-played eviction. Needs the DSP f
 | `n3ds_soundVolume` | 1 | mixer master volume |
 | `n3ds_ambientStages` | 1 | ambient/blended stages and fullscreen GUIs |
 | `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD / font texture |
+| `n3ds_texStream` | 1 | texture levels read from SD when first drawn instead of all kept in RAM (applies to images loaded afterwards) |
+| `n3ds_texRAMCacheKB` | 1024 | RAM for already uploaded streamed levels, so VRAM evictions come back without a read |
 | `n3ds_hudScale` | 1.5 | HUD size relative to fitting the 720-line SWF stage to the 240-line screen; edge-anchored elements stay at the edges |
 | `n3ds_uiScale` | 1.35 | same for menus, PDA, loading screen and dialogs; too large crops unanchored elements |
 | `n3ds_polygonOffset` | 4 | depth bias per material polygonOffset unit (decals) |

@@ -361,6 +361,10 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime ) {
 
 bool idBinaryImage::skipPixelData = false;
 int idBinaryImage::keepLevelMaxSize = 0;
+bool idBinaryImage::streamKeptLevel = false;
+int idBinaryImage::keptLevelIndex = -1;
+idStr idBinaryImage::keptLevelPath;
+int idBinaryImage::keptLevelOffset = 0;
 
 /*
 ==========================
@@ -397,6 +401,9 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileT
 
 	images.SetNum( numImages );
 	bool keptLevel = false;
+	keptLevelIndex = -1;
+	keptLevelPath.Clear();
+	keptLevelOffset = 0;
 
 	for ( int i = 0; i < numImages; i++ ) {
 		idBinaryImageData &img = images[ i ];
@@ -419,6 +426,16 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileT
 		if ( skipPixelData && keepLevelMaxSize > 0 && fileData.textureType == TT_2D && !keptLevel &&
 				img.width <= keepLevelMaxSize && img.height <= keepLevelMaxSize ) {
 			keptLevel = true;		// first (largest) small enough level: read it
+			keptLevelIndex = i;
+			if ( streamKeptLevel && bFile->GetDataLocation( keptLevelPath, keptLevelOffset ) ) {
+				// streamed: the texture cache reads it from there when it is drawn
+				img.data = NULL;
+				if ( i + 1 < numImages ) {
+					bFile->Seek( img.dataSize, FS_SEEK_CUR );
+				}
+				continue;
+			}
+			keptLevelPath.Clear();
 		} else if ( skipPixelData ) {
 			img.data = NULL;
 			if ( i + 1 < numImages ) {

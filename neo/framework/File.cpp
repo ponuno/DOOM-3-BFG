@@ -1325,6 +1325,20 @@ void idFile_Permanent::Flush() {
 idFile_Permanent::Tell
 =================
 */
+bool idFile_Permanent::GetDataLocation( idStr & osPath, int & osOffset ) const {
+	if ( o == NULL || fullPath.IsEmpty() ) {
+		return false;
+	}
+	osPath = fullPath;
+	osOffset = Tell();
+	return osOffset >= 0;
+}
+
+/*
+=================
+idFile_Permanent::Tell
+=================
+*/
 int idFile_Permanent::Tell() const {
 #if defined( ID_3DS )
 	return (int)ftell( o );
@@ -1696,6 +1710,26 @@ idFile_InnerResource::Tell
 */
 int idFile_InnerResource::Tell() const {
 	return internalFilePos;
+}
+
+/*
+=================
+idFile_InnerResource::GetDataLocation
+
+The container's OS file and the absolute offset of the current position in it.
+=================
+*/
+bool idFile_InnerResource::GetDataLocation( idStr & osPath, int & osOffset ) const {
+	if ( resourceFile == NULL ) {
+		return false;
+	}
+	const char * path = resourceFile->GetFullPath();
+	if ( path == NULL || path[0] == '\0' ) {
+		return false;
+	}
+	osPath = path;
+	osOffset = offset + internalFilePos;
+	return true;
 }
 
 

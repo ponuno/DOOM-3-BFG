@@ -72,6 +72,10 @@ public:
 	virtual int				Seek( long offset, fsOrigin_t origin );
 							// Go back to the beginning of the file.
 	virtual void			Rewind();
+							// Where the bytes at the current position live on disk, for readers
+							// that open the OS file themselves (3DS texture streaming thread).
+							// False for memory files and anything without a plain OS file behind it.
+	virtual bool			GetDataLocation( idStr & osPath, int & osOffset ) const { return false; }
 							// Like fprintf.
 	virtual int				Printf( VERIFY_FORMAT_STRING const char *fmt, ... );
 							// Like fprintf but with argument pointer
@@ -240,6 +244,7 @@ public:
 
 	virtual const char *	GetName() const { return name.c_str(); }
 	virtual const char *	GetFullPath() const { return fullPath.c_str(); }
+	virtual bool			GetDataLocation( idStr & osPath, int & osOffset ) const;
 	virtual int				Read( void *buffer, int len );
 	virtual int				Write( const void *buffer, int len );
 	virtual int				Length() const;
@@ -324,6 +329,7 @@ public:
 	virtual ID_TIME_T		Timestamp() const { return 0; }
 	virtual int				Tell() const;
 	virtual int				Seek( long offset, fsOrigin_t origin );
+	virtual bool			GetDataLocation( idStr & osPath, int & osOffset ) const;
 	void					SetResourceBuffer( byte * buf ) {
 		resourceBuffer = buf;
 		internalFilePos = 0;

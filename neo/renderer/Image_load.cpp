@@ -250,8 +250,22 @@ citro3d: hand one level to the texture cache, the largest with data that is not
 over keepSize, else the smallest with data.
 ========================
 */
-void idImage::N3DS_KeepLevel( idBinaryImage & im, int keepSize ) {
+void idImage::N3DS_KeepLevel( idBinaryImage & im, int keepSize, int streamIndex, const char * streamPath, int streamOffset ) {
 	if ( keepSize <= 0 || opts.textureType != TT_2D ) {
+		return;
+	}
+	int wrap = N3DS_WRAP_CLAMP;
+	if ( repeat == TR_REPEAT ) {
+		wrap = N3DS_WRAP_REPEAT;
+	} else if ( repeat == TR_CLAMP_TO_ZERO || repeat == TR_CLAMP_TO_ZERO_ALPHA ) {
+		wrap = N3DS_WRAP_ZERO;
+	}
+	// the level was left on disk (idBinaryImage::streamKeptLevel): the cache reads it when drawn
+	if ( streamIndex >= 0 && streamIndex < im.NumImages() && streamPath != NULL && streamPath[0] != '\0' &&
+			im.GetImageData( streamIndex ) == NULL ) {
+		const bimageImage_t & img = im.GetImageHeader( streamIndex );
+		RB_N3DS_ImageLevelStreamed( this, opts.format, opts.colorFormat, img.width, img.height, img.dataSize,
+			streamPath, streamOffset, wrap, usage == TD_COVERAGE, keepSize );
 		return;
 	}
 	int pick = -1;
@@ -269,12 +283,6 @@ void idImage::N3DS_KeepLevel( idBinaryImage & im, int keepSize ) {
 	}
 	if ( pick < 0 ) {
 		return;
-	}
-	int wrap = N3DS_WRAP_CLAMP;
-	if ( repeat == TR_REPEAT ) {
-		wrap = N3DS_WRAP_REPEAT;
-	} else if ( repeat == TR_CLAMP_TO_ZERO || repeat == TR_CLAMP_TO_ZERO_ALPHA ) {
-		wrap = N3DS_WRAP_ZERO;
 	}
 	const bimageImage_t & img = im.GetImageHeader( pick );
 	RB_N3DS_ImageLevel( this, opts.format, opts.colorFormat, img.width, img.height,
@@ -351,6 +359,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	// citro3d: keep one small level of colour images for the texture cache
 	const int n3dsKeepSize = ( cubeFiles == CF_2D ) ? RB_N3DS_TexKeepSize( usage, GetName() ) : 0;
 	idBinaryImage::keepLevelMaxSize = n3dsKeepSize;
+	idBinaryImage::streamKeptLevel = ( n3dsKeepSize > 0 ) && RB_N3DS_TexStreaming();
 #endif
 	binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );
 
@@ -479,7 +488,8 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 
 #if defined( ID_3DS )
 	idBinaryImage::keepLevelMaxSize = 0;
-	N3DS_KeepLevel( im, n3dsKeepSize );
+	idBinaryImage::streamKeptLevel = false;
+	N3DS_KeepLevel( im, n3dsKeepSize, idBinaryImage::keptLevelIndex, idBinaryImage::keptLevelPath.c_str(), idBinaryImage::keptLevelOffset );
 #endif
 }
 

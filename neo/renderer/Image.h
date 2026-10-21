@@ -186,7 +186,8 @@ private:
 public:
 	void *				n3dsTex;			// citro3d texture cache entry (renderer/3DS/n3ds_textures.cpp)
 private:
-	void				N3DS_KeepLevel( class idBinaryImage & im, int keepSize );
+	void				N3DS_KeepLevel( class idBinaryImage & im, int keepSize, int streamIndex = -1,
+										const char * streamPath = NULL, int streamOffset = 0 );
 #endif
 
 	// we could derive these in subImageUpload each time if necessary
