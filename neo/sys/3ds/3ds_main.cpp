@@ -791,7 +791,8 @@ void Sys_Init() {
 	Sys_Printf( "%s\n", Sys_GetProcessorString() );
 
 	// higher priority than the engine threads so it runs even if one of them spins
-	n3dsWatchdogThread = threadCreate( N3DS_WatchdogMain, NULL, 16 * 1024, 0x19, -2, true );
+	// 64 KB stack: Sys_Printf alone puts a MAX_PRINT_MSG (16 KB) buffer on it
+	n3dsWatchdogThread = threadCreate( N3DS_WatchdogMain, NULL, 64 * 1024, 0x19, -2, true );
 
 	// let threads placed on core 1 actually run (0 = none of its time is ours)
 	const int core1 = idMath::ClampInt( 0, 80, n3ds_core1Percent.GetInteger() );
