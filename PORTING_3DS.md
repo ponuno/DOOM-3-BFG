@@ -32,7 +32,7 @@ Target: armv6k / MPCore, VFPv2, hard-float, C++14 (gnu), exceptions ON
     sdmc:/doom3/log.txt              (written by the game)
     sdmc:/doom3/save/                (fs_savepath)
 
-The `_sound_pc*.resources` are not needed while sound is null (`s_noSound 1` is a built-in default).
+The `_sound_pc*.resources` are not needed while sound is null (`s_noSound 1` is a built-in default, as are `com_skipIntroVideos 1` and `com_disableAutoSaves 1`).
 
 ## Structure
 
@@ -93,6 +93,7 @@ Sound: `sound/3DS` — sample loader from the XAudio2 version, null hardware/voi
 | `n3ds_mapEntitiesOnly` | 1 | `.map` brushes/patches discarded while parsing (CRC kept; collision from `.bcmodel`) |
 | `n3ds_lazySaveBuffer` | 1 | savegame buffers not preallocated (4.4 MB) |
 | `n3ds_skipImageData` | 1 | `.bimage` pixel data is seeked over, not read (null GL); resources opened as streams are no longer buffered whole |
+| `n3ds_lazyInteractions` | 1 | light/entity interactions are not all pre-generated at map start (created when first in view) |
 | `n3ds_core1Percent` | 30 | `APT_SetAppCpuTimeLimit` for the system core |
 
 Per-subsystem heap breakdown (`Mem_LogTags`): create an empty file `sdmc:/doom3/memtags`. It costs a 16-byte header per block (~4 MB on a loaded map), so it is off by default.

@@ -1547,6 +1547,16 @@ void idRenderWorldLocal::GenerateAllInteractions() {
 	int	size =  interactionTableWidth * interactionTableHeight * sizeof( *interactionTable );
 	interactionTable = (idInteraction **)R_ClearedStaticAlloc( size );
 
+#if defined( ID_3DS )
+	// the table is still needed (UnlinkAndFree indexes it); the interactions are
+	// then created by the frontend the first time a light/entity pair is in view
+	if ( cvarSystem->GetCVarBool( "n3ds_lazyInteractions" ) ) {
+		common->Printf( "idRenderWorld::GenerateAllInteractions: skipped (n3ds_lazyInteractions), table %i KB for %i entities x %i lights\n",
+			size / 1024, entityDefs.Num(), lightDefs.Num() );
+		return;
+	}
+#endif
+
 	// itterate through all lights
 	int	count = 0;
 	for ( int i = 0; i < this->lightDefs.Num(); i++ ) {
