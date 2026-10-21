@@ -378,6 +378,10 @@ void idCommonLocal::LoadLoadingGui( const char *mapName, bool & hellMap ) {
 	}
 }
 
+#if defined( ID_3DS )
+void Sys_LogMemory( const char * when );	// sys/3ds/3ds_main.cpp
+#endif
+
 /*
 ===============
 idCommonLocal::ExecuteMapChange
@@ -516,6 +520,9 @@ void idCommonLocal::ExecuteMapChange() {
 	Sys_GrabMouseCursor( false );
 
 	// let the renderSystem load all the geometry
+#if defined( ID_3DS )
+	Sys_LogMemory( "preload done" );
+#endif
 	if ( !renderWorld->InitFromMap( fullMapName ) ) {
 		common->Error( "couldn't load %s", fullMapName.c_str() );
 	}
@@ -538,7 +545,13 @@ void idCommonLocal::ExecuteMapChange() {
 			game->SetPersistentPlayerInfo( 0, mapSpawnData.persistentPlayerInfo );
 		}
 		game->SetServerInfo( matchParameters.serverInfo );
+#if defined( ID_3DS )
+		Sys_LogMemory( "render world loaded" );
+#endif
 		game->InitFromNewMap( fullMapName, renderWorld, soundWorld, matchParameters.gameMode, Sys_Milliseconds() );
+#if defined( ID_3DS )
+		Sys_LogMemory( "game map loaded" );
+#endif
 	}
 
 	game->Shell_CreateMenu( true );
@@ -651,6 +664,9 @@ void idCommonLocal::ExecuteMapChange() {
 
 	int	msec = Sys_Milliseconds() - start;
 	common->Printf( "%6d msec to load %s\n", msec, currentMapName.c_str() );
+#if defined( ID_3DS )
+	Sys_LogMemory( "map load done" );
+#endif
 	//Sys_DumpMemory( false );	
 
 	// Issue a render at the very end of the load process to update soundTime before the first frame
