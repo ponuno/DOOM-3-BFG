@@ -481,6 +481,13 @@ void idCommonLocal::ExecuteMapChange() {
 	soundSystem->BeginLevelLoad();
 	declManager->BeginLevelLoad();
 	uiManager->BeginLevelLoad();
+#if defined( ID_3DS )
+	// New 3DS: the main menu (shell.swf, ~5 MB in memory) used to stay alive through the
+	// whole map load and was only replaced by the much smaller in-game pause menu after
+	// InitFromNewMap. Switch now, inside this level load, so the pause menu's assets are
+	// referenced by it and the main menu's are purged at its end.
+	game->Shell_CreateMenu( true );
+#endif
 	ms = Sys_Milliseconds() - sm;
 	common->Printf( "%6d msec to free assets\n", ms );
 
@@ -561,7 +568,9 @@ void idCommonLocal::ExecuteMapChange() {
 #endif
 	}
 
+#if !defined( ID_3DS )		// 3DS: done at the start of the load
 	game->Shell_CreateMenu( true );
+#endif
 
 	// Reset some values important to multiplayer
 	ResetNetworkingState();
