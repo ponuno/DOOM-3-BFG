@@ -11,6 +11,15 @@ Real build (devkitPro with devkitARM, libctru, citro3d installed), from the MSYS
 
 Output: `build/doom3ds.3dsx`.
 
+On Linux without access to the devkitPro package servers, `tools/n3ds/build-devkitarm-linux.sh`
+builds the same toolchain from GitHub sources into `/opt/devkitpro` (binutils 2.46, GCC 16.1.0 with
+the devkitARM patch, devkitPro newlib, libctru, citro3d, picasso, 3dsxtool; only the default and
+`armv6k/fpu` multilibs). Then:
+
+    . ~/devkitpro-env.sh
+    cmake -S neo -B build -G "Unix Makefiles" -DCMAKE_MAKE_PROGRAM=/usr/bin/make -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/3DS.cmake
+    cmake --build build -- -k -j3
+
 Compile check without devkitPro (host clang 18 + newlib/libctru/citro3d headers in ~/sdk;
 compiles everything, links nothing):
 
