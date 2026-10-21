@@ -124,6 +124,8 @@ If you have questions concerning this license or the applicable additional terms
 #define _aligned_free( ptr )			free( ptr )
 
 #define CALLBACK
+#define __cdecl
+#define __stdcall
 #define OutputDebugString( x )			Sys_DebugPrintf( "%s", ( x ) )
 #define _atoi64( x )					strtoll( x, NULL, 10 )
 #define __debugbreak()					__builtin_trap()
