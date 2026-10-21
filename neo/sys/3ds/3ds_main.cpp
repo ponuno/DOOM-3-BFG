@@ -241,8 +241,11 @@ void Sys_LogMemory( const char * when ) {
 	const int appSize = (int)osGetMemRegionSize( MEMREGION_APPLICATION );
 	const int linFree = (int)linearSpaceFree();
 	struct mallinfo mi = mallinfo();
-	Sys_Printf( "MEM [%s]: malloc used %d KB, region free %d / %d KB, linear free %d KB\n",
-		when, (int)( mi.uordblks / 1024 ), appFree / 1024, appSize / 1024, linFree / 1024 );
+	int arenaUsed, arenaPeak, arenaSize;
+	Mem_ArenaStats( arenaUsed, arenaPeak, arenaSize );
+	Sys_Printf( "MEM [%s]: malloc used %d KB, largest free %d KB, region free %d / %d KB, linear free %d KB, temp arena %d (peak %d) / %d KB\n",
+		when, (int)( mi.uordblks / 1024 ), Mem_LargestFreeBlock() / 1024, appFree / 1024, appSize / 1024, linFree / 1024,
+		arenaUsed / 1024, arenaPeak / 1024, arenaSize / 1024 );
 	Mem_LogTags( 16 );
 }
 

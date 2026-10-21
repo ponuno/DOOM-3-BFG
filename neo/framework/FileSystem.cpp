@@ -2801,6 +2801,9 @@ idFile * idFileSystemLocal::GetResourceFile( const char *fileName, bool memFile 
 		if ( !memFile && rc.length > N3DS_MAX_BUFFERED_STREAM ) {
 			return file;
 		}
+		if ( rc.length >= 256 * 1024 ) {
+			idLib::Printf( "RES: buffering %s (%d KB)\n", rc.filename.c_str(), rc.length / 1024 );
+		}
 #endif
 		if ( file != NULL && ( memFile || rc.length <= resourceBufferAvailable ) || rc.length < 8 * 1024 * 1024 ) {
 			byte *buf = NULL;

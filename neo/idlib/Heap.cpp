@@ -39,6 +39,159 @@ If you have questions concerning this license or the applicable additional terms
 
 #if defined( ID_3DS )
 
+extern "C" {
+#include <3ds/types.h>
+#include <3ds/synchronization.h>
+}
+
+/*
+================================================================================================
+
+	New 3DS temp arena
+
+	Transient TAG_TEMP blocks (whole-file reads of resources, decompression
+	buffers) are what fragments the 96 MB heap: a 1 MB buffer allocated between
+	two long-lived allocations leaves a 1 MB hole that later only fits smaller
+	blocks. After a map load the heap had ~8 MB free but not one 1 MB piece.
+	Large TEMP blocks therefore come from a separate block reserved at the
+	first allocation, with a first-fit, coalescing free list. When the arena
+	cannot satisfy a request it falls back to the normal heap.
+
+================================================================================================
+*/
+
+static const int	MEM_TEMP_ARENA_SIZE = 4 * 1024 * 1024;
+static const int	MEM_TEMP_ARENA_MIN_BLOCK = 32 * 1024;	// smaller TEMP blocks stay in the heap
+
+struct arenaBlock_t {
+	uint32			size;		// payload bytes (multiple of 16)
+	uint32			isFree;
+	arenaBlock_t *	prev;		// physically previous block, NULL for the first
+	uint32			pad;
+};
+static_assert( sizeof( arenaBlock_t ) == 16, "arena header must preserve 16-byte alignment" );
+
+static byte *		memArena = NULL;
+static byte *		memArenaEnd = NULL;
+static LightLock	memArenaLock;
+static int			memArenaUsed = 0;
+static int			memArenaPeak = 0;
+
+static arenaBlock_t * Arena_Next( arenaBlock_t * b ) {
+	byte * n = (byte *)b + sizeof( arenaBlock_t ) + b->size;
+	return ( n < memArenaEnd ) ? (arenaBlock_t *)n : NULL;
+}
+
+static void Arena_Init() {
+	memArena = (byte *)memalign( 16, MEM_TEMP_ARENA_SIZE );
+	if ( memArena == NULL ) {
+		return;
+	}
+	memArenaEnd = memArena + MEM_TEMP_ARENA_SIZE;
+	LightLock_Init( &memArenaLock );
+	arenaBlock_t * b = (arenaBlock_t *)memArena;
+	b->size = MEM_TEMP_ARENA_SIZE - sizeof( arenaBlock_t );
+	b->isFree = 1;
+	b->prev = NULL;
+	b->pad = 0;
+}
+
+static bool Arena_Owns( const void * p ) {
+	return memArena != NULL && (const byte *)p >= memArena && (const byte *)p < memArenaEnd;
+}
+
+static void * Arena_Alloc( int size ) {
+	if ( memArena == NULL ) {
+		return NULL;
+	}
+	const uint32 need = ( size + 15 ) & ~15;
+	void * result = NULL;
+	LightLock_Lock( &memArenaLock );
+	for ( arenaBlock_t * b = (arenaBlock_t *)memArena; b != NULL; b = Arena_Next( b ) ) {
+		if ( !b->isFree || b->size < need ) {
+			continue;
+		}
+		if ( b->size >= need + sizeof( arenaBlock_t ) + 256 ) {
+			// split, the rest stays free
+			arenaBlock_t * rest = (arenaBlock_t *)( (byte *)b + sizeof( arenaBlock_t ) + need );
+			rest->size = b->size - need - sizeof( arenaBlock_t );
+			rest->isFree = 1;
+			rest->prev = b;
+			rest->pad = 0;
+			arenaBlock_t * after = Arena_Next( rest );
+			if ( after != NULL ) {
+				after->prev = rest;
+			}
+			b->size = need;
+		}
+		b->isFree = 0;
+		memArenaUsed += b->size + sizeof( arenaBlock_t );
+		if ( memArenaUsed > memArenaPeak ) {
+			memArenaPeak = memArenaUsed;
+		}
+		result = (byte *)b + sizeof( arenaBlock_t );
+		break;
+	}
+	LightLock_Unlock( &memArenaLock );
+	return result;
+}
+
+static void Arena_Free( void * p ) {
+	LightLock_Lock( &memArenaLock );
+	arenaBlock_t * b = (arenaBlock_t *)( (byte *)p - sizeof( arenaBlock_t ) );
+	assert( !b->isFree );
+	b->isFree = 1;
+	memArenaUsed -= b->size + sizeof( arenaBlock_t );
+	// merge with the next block
+	arenaBlock_t * n = Arena_Next( b );
+	if ( n != NULL && n->isFree ) {
+		b->size += sizeof( arenaBlock_t ) + n->size;
+		arenaBlock_t * after = Arena_Next( b );
+		if ( after != NULL ) {
+			after->prev = b;
+		}
+	}
+	// merge into the previous block
+	arenaBlock_t * pr = b->prev;
+	if ( pr != NULL && pr->isFree ) {
+		pr->size += sizeof( arenaBlock_t ) + b->size;
+		arenaBlock_t * after = Arena_Next( pr );
+		if ( after != NULL ) {
+			after->prev = pr;
+		}
+	}
+	LightLock_Unlock( &memArenaLock );
+}
+
+void Mem_ArenaStats( int & used, int & peak, int & size ) {
+	used = memArenaUsed;
+	peak = memArenaPeak;
+	size = ( memArena != NULL ) ? MEM_TEMP_ARENA_SIZE : 0;
+}
+
+/*
+==================
+Mem_LargestFreeBlock
+
+Binary search with real allocations; only for diagnostics at checkpoints.
+==================
+*/
+int Mem_LargestFreeBlock() {
+	int lo = 0;
+	int hi = 64 * 1024 * 1024;
+	while ( hi - lo > 16 * 1024 ) {
+		const int mid = lo + ( hi - lo ) / 2;
+		void * p = malloc( mid );
+		if ( p != NULL ) {
+			free( p );
+			lo = mid;
+		} else {
+			hi = mid;
+		}
+	}
+	return lo;
+}
+
 /*
 ================================================================================================
 
@@ -165,11 +318,19 @@ void * Mem_Alloc16( const int size, const memTag_t tag ) {
 		if ( !reserved ) {
 			reserved = true;
 			memEmergencyReserve = malloc( MEM_EMERGENCY_RESERVE );
+			Arena_Init();
 		}
 	}
 	const int paddedSize = ( size + 15 ) & ~15;
 	const bool tracking = Mem_TrackingEnabled();
-	byte * raw = (byte *)memalign( 16, paddedSize + ( tracking ? sizeof( memHeader_t ) : 0 ) );
+	const int rawSize = paddedSize + ( tracking ? sizeof( memHeader_t ) : 0 );
+	byte * raw = NULL;
+	if ( tag == TAG_TEMP && size >= MEM_TEMP_ARENA_MIN_BLOCK ) {
+		raw = (byte *)Arena_Alloc( rawSize );
+	}
+	if ( raw == NULL ) {
+		raw = (byte *)memalign( 16, rawSize );
+	}
 	if ( raw == NULL ) {
 		// give the error path (printing, log file, shutdown) room to work
 		if ( memEmergencyReserve != NULL ) {
@@ -182,8 +343,9 @@ void * Mem_Alloc16( const int size, const memTag_t tag ) {
 		// Running out of memory is the expected failure on 3DS: say so, with the
 		// breakdown, instead of letting the caller crash on a NULL pointer later.
 		struct mallinfo mi = mallinfo();
-		idLib::Printf( "Mem_Alloc16: out of memory allocating %d KB for %s, malloc %d KB in use\n",
-			paddedSize / 1024, ( tag >= 0 && tag < TAG_NUM_TAGS ) ? memTagNames[tag] : "?", (int)( mi.uordblks / 1024 ) );
+		idLib::Printf( "Mem_Alloc16: out of memory allocating %d KB for %s, malloc %d KB in use, largest free block %d KB, temp arena %d / %d KB\n",
+			paddedSize / 1024, ( tag >= 0 && tag < TAG_NUM_TAGS ) ? memTagNames[tag] : "?", (int)( mi.uordblks / 1024 ),
+			Mem_LargestFreeBlock() / 1024, memArenaUsed / 1024, ( memArena != NULL ) ? MEM_TEMP_ARENA_SIZE / 1024 : 0 );
 		Mem_LogTags( 24 );
 		idLib::FatalError( "Mem_Alloc16: out of memory allocating %d KB for %s",
 			paddedSize / 1024, ( tag >= 0 && tag < TAG_NUM_TAGS ) ? memTagNames[tag] : "?" );
@@ -209,10 +371,20 @@ void Mem_Free16( void *ptr ) {
 		return;
 	}
 	if ( memTrackingState != 1 ) {
-		free( ptr );
+		if ( Arena_Owns( ptr ) ) {
+			Arena_Free( ptr );
+		} else {
+			free( ptr );
+		}
 		return;
 	}
 	memHeader_t * hdr = (memHeader_t *)( (byte *)ptr - sizeof( memHeader_t ) );
+	if ( Arena_Owns( hdr ) ) {
+		hdr->magic = 0;
+		Mem_Account( hdr->tag, -(int)hdr->size, -1 );
+		Arena_Free( hdr );
+		return;
+	}
 	if ( hdr->magic != MEM_HEADER_MAGIC ) {
 		// not ours: plain malloc block
 		free( ptr );
