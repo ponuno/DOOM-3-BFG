@@ -1279,6 +1279,11 @@ N3DS_LogWeaponSurfaces
 
 Diagnostics: the view weapon (weaponDepthHack spaces) and what happens to each of
 its surfaces, logged whenever that set changes (weapon switch, first frame).
+
+Runs in the backend, so it must only read backend data: drawSurfs, materials and
+spaces. viewEntity_t::entityDef belongs to the frontend, which may already be
+changing or freeing it (a weapon switch deletes the old view weapon entity while
+the backend still draws the previous frame); reading it here crashed.
 ========================
 */
 static int c3dWeaponSignature = 0;
@@ -1293,7 +1298,6 @@ static void N3DS_LogWeaponSurfaces( const viewDef_t * viewDef ) {
 	for ( const viewEntity_t * v = viewDef->viewEntitys; v != NULL; v = v->next ) {
 		if ( v->weaponDepthHack ) {
 			numSpaces++;
-			signature = signature * 31 + (int)(UINT_PTR)( v->entityDef != NULL ? v->entityDef->parms.hModel : NULL );
 		}
 	}
 	int numSurfs = 0;
@@ -1310,12 +1314,6 @@ static void N3DS_LogWeaponSurfaces( const viewDef_t * viewDef ) {
 	c3dWeaponSignature = signature;
 	c3dWeaponLogs++;
 	common->Printf( "citro3d weapon: %d weaponDepthHack entities, %d surfaces in the view\n", numSpaces, numSurfs );
-	for ( const viewEntity_t * v = viewDef->viewEntitys; v != NULL; v = v->next ) {
-		if ( v->weaponDepthHack && v->entityDef != NULL && v->entityDef->parms.hModel != NULL ) {
-			common->Printf( "  entity model %s, skin %s\n", v->entityDef->parms.hModel->Name(),
-				v->entityDef->parms.customSkin != NULL ? v->entityDef->parms.customSkin->GetName() : "-" );
-		}
-	}
 	for ( int i = 0; i < viewDef->numDrawSurfs; i++ ) {
 		const drawSurf_t * surf = viewDef->drawSurfs[i];
 		if ( surf->space == NULL || !surf->space->weaponDepthHack ) {
