@@ -280,12 +280,13 @@ void Sys_Error( const char *error, ... ) {
 	Sys_LogWrite( "\n********************\n" );
 	Sys_LogMemory( "error" );
 
-	Sys_WaitForStart();
-
+	// close the log now: the user may power off instead of pressing START
 	if ( logFile != NULL ) {
 		fclose( logFile );
 		logFile = NULL;
 	}
+
+	Sys_WaitForStart();
 	gfxExit();
 	exit( 1 );
 }

@@ -142,10 +142,14 @@ elseif(NINTENDO_3DS)
 	# N3DS_Main() lives in sys/3ds/3ds_main.cpp (engine library); 3ds_exe.cpp holds main().
 	add_executable(doom3ds sys/3ds/3ds_exe.cpp)
 
-	# engine <-> game <-> doomclassic reference each other: link them as a group
+	# Link the engine libraries whole: many objects (game entity classes, script
+	# events, decl types, cvars, console commands) only register themselves through
+	# static constructors, and nothing references them directly, so a normal
+	# static-library link silently drops them ("Unknown event ..." at startup).
+	# On Windows the game was a DLL, which keeps everything.
 	target_link_libraries(doom3ds PRIVATE
-		-Wl,--start-group game engine doomclassic idlib external -Wl,--end-group
-		ctru m)
+		-Wl,--whole-archive game engine doomclassic idlib -Wl,--no-whole-archive
+		external ctru m)
 
 	set_target_properties(doom3ds PROPERTIES OUTPUT_NAME doom3ds SUFFIX ".elf")
 
