@@ -39,8 +39,10 @@ static int					uLocPassParams = -1;
 static int					texEnvMode = -1;		// texture combiner setup of the current pass
 static int					alphaTestOn = -1;
 
-// staging buffers of texture copies queued in this frame: freed once the GPU is done
-#define MAX_PENDING_STAGING	64
+// staging buffers of texture copies queued in this frame: freed once the GPU is done.
+// citro3d's GX command queue holds 32 entries per frame; the frame itself needs a
+// few (clear, command list, display transfer), so at most this many copies per frame
+#define MAX_PENDING_STAGING	24
 static void *				pendingStaging[2][MAX_PENDING_STAGING];
 static int					numPendingStaging[2];
 static int					pendingSet = 0;
@@ -309,6 +311,10 @@ void N3DSGPU_FlushRange( const void * p, unsigned int size ) {
 ================================================================================================
 */
 
+int N3DSGPU_CanQueueTexture( void ) {
+	return !inFrame || numPendingStaging[pendingSet] < MAX_PENDING_STAGING;
+}
+
 unsigned int N3DSGPU_VRAMFree( void ) {
 	return vramSpaceFree();
 }
@@ -375,13 +381,16 @@ int N3DSGPU_TexUpload( void * handle, void * staging, unsigned int size ) {
 		return 0;
 	}
 	GSPGPU_FlushDataCache( staging, size );
-	// whole mip chain in one copy (the levels are contiguous in both buffers)
-	C3D_SyncTextureCopy( (u32 *)staging, 0, (u32 *)tex->data, 0, size, 8 );
 	if ( inFrame ) {
-		// queued behind this frame's commands: the staging buffer must live until
-		// the frame is done
+		// Queued without splitting the frame: this frame's draws are only submitted
+		// at C3D_FrameEnd, behind the copy, and no draw recorded so far uses this
+		// (new) texture. One queue entry per copy (a split would take another).
+		// The staging buffer must live until the frame is done.
+		GX_TextureCopy( (u32 *)staging, 0, (u32 *)tex->data, 0, size, 8 );
 		pendingStaging[pendingSet][numPendingStaging[pendingSet]++] = staging;
 	} else {
+		// whole mip chain in one copy (the levels are contiguous in both buffers)
+		C3D_SyncTextureCopy( (u32 *)staging, 0, (u32 *)tex->data, 0, size, 8 );
 		linearFree( staging );	// synchronous outside a frame
 	}
 	return 1;

@@ -128,7 +128,7 @@ No normal/specular maps and no shadows yet.
 | `n3ds_texUploadsPerFrame` | 4 | textures decoded and copied to VRAM per frame |
 | `n3ds_texFlip` | 1 | texture rows stored bottom-up; toggle if textures are upside down |
 | `n3ds_texMips` | 1 | mip maps |
-| `n3ds_texUploadsAfterLoad` | 256 | upload limit for the first 3 frames after a map load |
+| `n3ds_texUploadsAfterLoad` | 256 | upload limit for the first 20 frames after a map load (at most 24 copies fit in one frame) |
 | `n3ds_lighting` | 1 | light passes; 0 = everything at full brightness |
 | `n3ds_ambient` | 0.06 | brightness of lit surfaces no light reaches (Doom 3: 0) |
 | `n3ds_lightProjective` | 1 | light projection divided per pixel; 0 = per vertex |

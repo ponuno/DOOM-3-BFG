@@ -37,7 +37,7 @@ idCVar n3ds_textures( "n3ds_textures", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d:
 idCVar n3ds_texMaxSize( "n3ds_texMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d: largest texture size; the level kept at load is the largest one not over this", 8, 512 );
 idCVar n3ds_texMips( "n3ds_texMips", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: build mip maps" );
 idCVar n3ds_texUploadsPerFrame( "n3ds_texUploadsPerFrame", "4", CVAR_RENDERER | CVAR_INTEGER, "citro3d: textures decoded and copied to VRAM per frame at most", 1, 64 );
-idCVar n3ds_texUploadsAfterLoad( "n3ds_texUploadsAfterLoad", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d: texture upload limit for the first 3D frames after a map load" );
+idCVar n3ds_texUploadsAfterLoad( "n3ds_texUploadsAfterLoad", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d: texture upload limit for the first 20 3D frames after a map load (the GX queue caps it at 24)" );
 idCVar n3ds_texFlip( "n3ds_texFlip", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: store texture rows bottom-up (the PICA samples t = 0 at the last row); toggle if textures are upside down" );
 idCVar n3ds_texVRAMReserveKB( "n3ds_texVRAMReserveKB", "64", CVAR_RENDERER | CVAR_INTEGER, "citro3d: VRAM left free by the texture cache" );
 
@@ -201,7 +201,7 @@ N3DS_TexBeginFrame
 ========================
 */
 void RB_N3DS_TexLevelLoaded() {
-	boostFrames = 3;
+	boostFrames = 20;		// 3D frames; at most 24 copies fit in one frame
 }
 
 void N3DS_TexBeginFrame( bool has3D ) {
@@ -307,7 +307,8 @@ void * N3DS_TexForImage( idImage * image ) {
 		return NULL;
 	}
 	if ( t->gpu == NULL ) {
-		if ( uploadsThisFrame >= uploadLimit ) {
+		if ( uploadsThisFrame >= uploadLimit || !N3DSGPU_CanQueueTexture() ) {
+			statDeferred++;
 			return NULL;
 		}
 		uploadsThisFrame++;
