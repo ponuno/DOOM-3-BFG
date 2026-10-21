@@ -1,26 +1,37 @@
-; New 3DS bring-up vertex shader: world geometry without textures.
-;   v0 = position (float3), v1 = normal (ubyte4, 0..255 -> -1..1)
-;   colour = surfColor * (0.35 + 0.65 * |N . L|) with a fixed model-space L,
-;   so surfaces of different orientation stay distinguishable.
+; New 3DS vertex shader, stage 2: textured world, no lighting yet.
+;   v0 = position (float3)
+;   v1 = normal (ubyte4, 0..255 -> -1..1)
+;   v2 = st (the two raw half floats of idDrawVert, read as signed shorts)
+;   colour   = surfColor * (0.35 + 0.65 * |N . L|) with a fixed model-space L
+;   texcoord = st decoded from half float, to texture units 0 and 1
 
 ; Uniforms
 .fvec mvp[4], surfColor
+; half float exponent table, set once by n3ds_gpu.c:
+;   pow2[e] = ( 2^(e-15), 2^(e-25) ) so that value = x + mantissa * y
+;   pow2[0] = ( 0, 2^-24 ) (zero and denormals)
+.fvec pow2[32]
 
 ; Constants
 .constf consts(1.0, 0.0, 0.0078431373, -1.0)
 .constf lightDir(0.32, 0.53, 0.78, 0.0)
 .constf shadeK(0.35, 0.65, 0.0, 0.0)
+.constf halfK(32768.0, 0.0009765625, -1024.0, -2.0)
 .alias  ones   consts.xxxx
+.alias  zeros  consts.yyyy
 .alias  bscale consts.zzzz
 .alias  bbias  consts.wwww
 
 ; Outputs
 .out outpos position
 .out outclr color
+.out outtc0 texcoord0
+.out outtc1 texcoord1
 
 ; Inputs
 .alias inpos v0
 .alias innrm v1
+.alias inst  v2
 
 .proc main
 	; r0 = (xyz, 1)
@@ -33,6 +44,32 @@
 	dp4 outpos.z, mvp[2], r0
 	dp4 outpos.w, mvp[3], r0
 
+	; ---- st: half float bits -> float ----
+	; r5 = raw bits as signed integers (-32768..32767)
+	mov r5, inst
+	; r6 = 1 where the sign bit is set
+	slt r6, r5, zeros
+	; r7 = bits without the sign (0..32767)
+	mad r7, r6, halfK.xxxx, r5
+	; r8 = exponent = floor( bits / 1024 )
+	mul r8, halfK.yyyy, r7
+	flr r8, r8
+	; r9 = mantissa = bits - exponent * 1024
+	mad r9, r8, halfK.zzzz, r7
+	mova a0.xy, r8.xy
+	; r6 = sign factor 1 - 2 * negative (also keeps mova and its use apart)
+	mul r6, halfK.wwww, r6
+	add r6, ones, r6
+	mov r10, pow2[a0.x]
+	mad r11.x, r9.x, r10.y, r10.x
+	mov r10, pow2[a0.y]
+	mad r11.y, r9.y, r10.y, r10.x
+	mul r11.xy, r11.xy, r6.xy
+	mov r11.zw, zeros
+	mov outtc0, r11
+	mov outtc1, r11
+
+	; ---- shading ----
 	; r1 = normal in -1..1
 	mov r1, innrm
 	mul r1, bscale, r1
@@ -47,9 +84,9 @@
 	mul r2, shadeK.yyyy, r2.xxxx
 	add r2, shadeK.xxxx, r2
 
-	; outclr = surfColor * shade, alpha 1
+	; outclr = surfColor * shade, alpha from surfColor
 	mul r4, surfColor, r2.xxxx
-	mov r4.w, ones
+	mov r4.w, surfColor.w
 	mov outclr, r4
 
 	end

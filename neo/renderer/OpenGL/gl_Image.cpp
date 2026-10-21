@@ -460,6 +460,9 @@ idImage::PurgeImage
 ========================
 */
 void idImage::PurgeImage() {
+#if defined( ID_3DS )
+	RB_N3DS_ImagePurged( this );
+#endif
 	if ( texnum != TEXTURE_NOT_LOADED ) {
 		qglDeleteTextures( 1, (GLuint *)&texnum );	// this should be the ONLY place it is ever called!
 		texnum = TEXTURE_NOT_LOADED;

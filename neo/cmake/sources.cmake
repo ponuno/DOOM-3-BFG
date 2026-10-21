@@ -253,6 +253,8 @@ set(ENGINE_3DS_SOURCES
 	renderer/OpenGL/gl_null/gl_null.cpp
 	renderer/3DS/n3ds_backend.cpp
 	renderer/3DS/n3ds_gpu.c
+	renderer/3DS/n3ds_texconv.cpp
+	renderer/3DS/n3ds_textures.cpp
 	sound/3DS/3DS_SoundHardware.cpp
 	sound/3DS/3DS_SoundSample.cpp
 	sound/3DS/3DS_SoundVoice.cpp

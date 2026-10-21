@@ -300,6 +300,11 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	GetGeneratedName( generatedName, usage, cubeFiles );
 
 	idBinaryImage im( generatedName );
+#if defined( ID_3DS )
+	// citro3d: keep one small level of colour images for the texture cache
+	const int n3dsKeepSize = ( cubeFiles == CF_2D ) ? RB_N3DS_TexKeepSize( usage ) : 0;
+	idBinaryImage::keepLevelMaxSize = n3dsKeepSize;
+#endif
 	binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );
 
 	// BFHACK, do not want to tweak on buildgame so catch these images here
@@ -424,6 +429,31 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		const byte * data = im.GetImageData( i );
 		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
 	}
+
+#if defined( ID_3DS )
+	idBinaryImage::keepLevelMaxSize = 0;
+	if ( n3dsKeepSize > 0 && opts.textureType == TT_2D ) {
+		// the largest level with data that is not over the size, else the smallest with data
+		int pick = -1;
+		for ( int i = 0; i < im.NumImages(); i++ ) {
+			const bimageImage_t & img = im.GetImageHeader( i );
+			if ( im.GetImageData( i ) == NULL || img.destZ != 0 ) {
+				continue;
+			}
+			if ( pick < 0 || ( img.width <= n3dsKeepSize && img.height <= n3dsKeepSize ) ) {
+				pick = i;
+				if ( img.width <= n3dsKeepSize && img.height <= n3dsKeepSize ) {
+					break;
+				}
+			}
+		}
+		if ( pick >= 0 ) {
+			const bimageImage_t & img = im.GetImageHeader( pick );
+			RB_N3DS_ImageLevel( this, opts.format, opts.colorFormat, img.width, img.height,
+				im.GetImageData( pick ), img.dataSize, repeat == TR_REPEAT, usage == TD_COVERAGE );
+		}
+	}
+#endif
 }
 
 /*

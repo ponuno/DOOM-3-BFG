@@ -360,6 +360,7 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime ) {
 }
 
 bool idBinaryImage::skipPixelData = false;
+int idBinaryImage::keepLevelMaxSize = 0;
 
 /*
 ==========================
@@ -395,6 +396,7 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileT
 	}
 
 	images.SetNum( numImages );
+	bool keptLevel = false;
 
 	for ( int i = 0; i < numImages; i++ ) {
 		idBinaryImageData &img = images[ i ];
@@ -414,7 +416,10 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileT
 		// sizes are still retained, so the stored data size may be larger than
 		// just the multiplication of dimensions
 		assert( img.dataSize >= img.width * img.height * BitsForFormat( (textureFormat_t)fileData.format ) / 8 );
-		if ( skipPixelData ) {
+		if ( skipPixelData && keepLevelMaxSize > 0 && fileData.textureType == TT_2D && !keptLevel &&
+				img.width <= keepLevelMaxSize && img.height <= keepLevelMaxSize ) {
+			keptLevel = true;		// first (largest) small enough level: read it
+		} else if ( skipPixelData ) {
 			img.data = NULL;
 			if ( i + 1 < numImages ) {
 				bFile->Seek( img.dataSize, FS_SEEK_CUR );

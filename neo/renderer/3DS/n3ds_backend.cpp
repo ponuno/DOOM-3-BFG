@@ -12,15 +12,18 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 /*
 ================================================================================================
 
-	New 3DS backend, stage 1: the world without textures.
+	New 3DS backend, stage 2: the world with its diffuse textures.
 
 	Replaces RB_ExecuteBackEndCommands when n3ds_renderer is 1. The frontend runs
-	unchanged; here every opaque surface of the main 3D view is drawn with one
-	flat colour per material, shaded by its normal (see n3ds_vshader.v.pica).
+	unchanged; here every opaque or alpha-tested surface of the main 3D view is
+	drawn with its diffuse (or first ambient) texture, shaded by its normal (see
+	n3ds_vshader.v.pica); perforated materials use their coverage image for the
+	alpha test. Textures come from n3ds_textures.cpp. Surfaces whose texture is
+	not on the GPU (yet) get one flat colour per material.
 	Vertex and index data come straight from the vertex cache buffers, which the
 	null GL driver keeps in linear (GPU-visible) memory.
 
-	Not yet: textures, lighting, translucent surfaces, GUIs/HUD, skinning
+	Not yet: lighting, translucent surfaces, GUIs/HUD, texture matrices, skinning
 	(GPU-skinned models are drawn in their bind pose), subviews.
 
 ================================================================================================
@@ -30,6 +33,7 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 #include "../../idlib/precompiled.h"
 #include "../tr_local.h"
 #include "n3ds_gpu.h"
+#include "n3ds_textures.h"
 
 void * NullGL_BufferStorage( GLuint name, bool * linear );	// gl_null.cpp
 
@@ -53,6 +57,7 @@ static float	c3dStatCmdMax = 0.0f;
 static float	c3dStatGpuMs = 0.0f;
 static int		c3dStatStart = 0;
 static int		c3dBadMatrix = 0;
+static int		c3dStatTextured = 0;
 
 // the previous frame's draws, dumped if the GPU does not finish it
 struct c3dDrawRecord_t {
@@ -91,7 +96,8 @@ bool RB_N3DS_Init() {
 		return false;
 	}
 	N3DSGPU_SetHangCallback( N3DS_GPUHang );
-	common->Printf( "citro3d: initialized (stage 1: untextured world)\n" );
+	common->Printf( "citro3d: initialized (stage 2: textured world, VRAM free %u KB, linear free %u KB)\n",
+		N3DSGPU_VRAMFree() / 1024, N3DSGPU_LinearFree() / 1024 );
 	r_n3dsC3D = true;
 	return true;
 }
@@ -165,6 +171,49 @@ static void N3DS_MaterialColor( const idMaterial * material ) {
 	const float g = 0.35f + 0.65f * ( ( h >> 8 ) & 255 ) / 255.0f;
 	const float b = 0.35f + 0.65f * ( ( h >> 16 ) & 255 ) / 255.0f;
 	N3DSGPU_SetColor( r, g, b, 1.0f );
+}
+
+/*
+========================
+N3DS_SurfaceImages
+
+The colour image of a material (its diffuse map, else its first ambient stage
+with a plain 2D texture) and, for perforated materials, the image of the
+alpha-tested stage.
+========================
+*/
+static void N3DS_SurfaceImages( const idMaterial * material, idImage ** colorImage, idImage ** maskImage ) {
+	*colorImage = NULL;
+	*maskImage = NULL;
+	idImage * ambient = NULL;
+	idImage * ambientAlphaTest = NULL;
+	for ( int i = 0; i < material->GetNumStages(); i++ ) {
+		const shaderStage_t * stage = material->GetStage( i );
+		idImage * image = stage->texture.image;
+		if ( image == NULL || stage->texture.cinematic != NULL || stage->texture.texgen != TG_EXPLICIT ) {
+			continue;
+		}
+		if ( stage->lighting == SL_DIFFUSE ) {
+			if ( *colorImage == NULL ) {
+				*colorImage = image;
+			}
+		} else if ( stage->lighting == SL_COVERAGE ) {
+			if ( *maskImage == NULL ) {
+				*maskImage = image;
+			}
+		} else if ( stage->lighting == SL_AMBIENT && ambient == NULL ) {
+			ambient = image;
+			if ( stage->hasAlphaTest ) {
+				ambientAlphaTest = image;
+			}
+		}
+	}
+	if ( *colorImage == NULL ) {
+		*colorImage = ambient;
+		if ( *maskImage == NULL ) {
+			*maskImage = ambientAlphaTest;
+		}
+	}
 }
 
 /*
@@ -296,7 +345,30 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 			r.vbName = vbName;
 			r.ibName = ibName;
 		}
-		N3DS_MaterialColor( material );
+		// texture: colour image, alpha-test mask for perforated materials
+		void * tex0 = NULL;
+		void * tex1 = NULL;
+		bool alphaTest = false;
+		{
+			idImage * colorImage, * maskImage;
+			N3DS_SurfaceImages( material, &colorImage, &maskImage );
+			tex0 = N3DS_TexForImage( colorImage );
+			if ( tex0 != NULL && maskImage != NULL ) {
+				if ( maskImage == colorImage ) {
+					alphaTest = true;
+				} else {
+					tex1 = N3DS_TexForImage( maskImage );
+					alphaTest = ( tex1 != NULL );
+				}
+			}
+		}
+		if ( tex0 != NULL ) {
+			N3DSGPU_SetColor( 1.0f, 1.0f, 1.0f, 1.0f );
+			c3dStatTextured++;
+		} else {
+			N3DS_MaterialColor( material );
+		}
+		N3DSGPU_SetTextures( tex0, tex1, alphaTest ? 1 : 0 );
 		if ( test == 2 ) {
 			N3DSGPU_DrawIndexedCopied( vbBase + vb.GetOffset(), sizeof( idDrawVert ), vb.GetSize() / (int)sizeof( idDrawVert ),
 				(const unsigned short *)( ibBase + ib.GetOffset() ), surf->numIndexes );
@@ -345,6 +417,7 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: waiting for GPU" );
 	N3DSGPU_BeginFrame( 0x182030FF );
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: drawing" );
+	N3DS_TexBeginFrame();
 	c3dRecordSet ^= 1;
 	c3dNumRecords[c3dRecordSet] = 0;
 	if ( trace ) {
@@ -386,8 +459,12 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 	if ( now - c3dStatStart >= 2000 && c3dFrame3D > 0 ) {
 		const float f = (float)Max( c3dStatFrames, 1 );
-		common->Printf( "PERF   citro3d: %.0f draws %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d\n",
-			c3dStatDraws / f, c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad );
+		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured) %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d\n",
+			c3dStatDraws / f, c3dStatTextured / f, c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad );
+		idStr texLine;
+		N3DS_TexStatsLine( texLine );
+		common->Printf( "PERF   citro3d: %s\n", texLine.c_str() );
+		c3dStatTextured = 0;
 		c3dStatStart = now;
 		c3dStatFrames = c3dStatDraws = c3dStatTris = c3dStatBad = 0;
 		c3dStatCmdMax = c3dStatGpuMs = 0.0f;

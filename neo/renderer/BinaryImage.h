@@ -53,6 +53,9 @@ public:
 						// New 3DS bring-up: read the headers only and leave every level's
 						// data NULL (the null GL driver ignores pixels)
 	static bool			skipPixelData;
+						// ... except for the largest level whose width and height are both at
+						// most this (0 = none); 2D images only
+	static int			keepLevelMaxSize;
 	ID_TIME_T			WriteGeneratedFile( ID_TIME_T sourceFileTime );
 
 	const bimageFile_t &	GetFileHeader() { return fileData; }

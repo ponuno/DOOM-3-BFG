@@ -96,6 +96,13 @@ buffers, which the null GL layer keeps in linear memory. Build option `-DDOOM3DS
 (default) caps the application heap; the rest becomes linear memory. mars_city1 needs ~90 MB of
 heap: build with 96 and `+set n3ds_renderer 0` for it until the asset converter exists.
 
+Textures (`n3ds_textures.cpp`, `n3ds_texconv.cpp`): at image load one level no larger than
+`n3ds_texMaxSize` of every diffuse/default/coverage image is kept in RAM as stored (DXT etc.).
+When a surface is drawn, that level is decoded, mipmapped, tiled (8x8 Morton tiles) and copied to
+VRAM as RGB565 / RGBA5551 / RGBA4 / A8, a few per frame; VRAM is an LRU cache. The shader decodes
+the half-float st itself (table of powers of two in a uniform array). Perforated materials use
+their coverage image as an alpha-test mask on texture unit 1. Lighting is not done yet.
+
 ## Runtime switches (cmdline.txt, e.g. `+set n3ds_animQuant 0`)
 
 | cvar | default | effect |
@@ -107,7 +114,13 @@ heap: build with 96 and `+set n3ds_renderer 0` for it until the asset converter 
 | `n3ds_skipImageData` | 1 | `.bimage` pixel data is seeked over, not read (null GL); resources opened as streams are no longer buffered whole |
 | `n3ds_lazyInteractions` | 0 | light/entity interactions are not all pre-generated at map start (created when first in view) |
 | `n3ds_discardStaticGeo` | 1 | null GL: static vertex/index cache uploads dropped, their buffers never get storage (-8 MB heap, -3 MB linear) |
-| `n3ds_renderer` | 1 | 0 = null GL (nothing drawn), 1 = citro3d (stage 1: untextured world, one colour per material) |
+| `n3ds_renderer` | 1 | 0 = null GL (nothing drawn), 1 = citro3d (stage 2: diffuse textures, no lighting yet) |
+| `n3ds_textures` | 1 | citro3d: 0 = flat colour per material |
+| `n3ds_texMaxSize` | 128 | largest texture side; set at startup (the kept level is chosen at load) |
+| `n3ds_texUploadsPerFrame` | 4 | textures decoded and copied to VRAM per frame |
+| `n3ds_texFlip` | 1 | texture rows stored bottom-up; toggle if textures are upside down |
+| `n3ds_texMips` | 1 | mip maps |
+| `n3ds_debugPhysics` | 0 | heavy physics diagnostics: NaN checks per AF step, LCP dumps, trace counters, SLOW AF lines |
 | `n3ds_staticVertexKB` / `n3ds_staticIndexKB` | 0 | static vertex/index cache size; 0 = 6144/2048 with citro3d, 10240/6144 budget-only with null GL |
 | `n3ds_core1Percent` | 30 | `APT_SetAppCpuTimeLimit` for the system core |
 

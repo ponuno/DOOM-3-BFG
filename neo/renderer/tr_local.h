@@ -167,6 +167,11 @@ bool RB_N3DS_Init();
 void RB_N3DS_Shutdown();
 void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds );
 void RB_N3DS_FlushForGPU( const void * p, int size );
+// textures (renderer/3DS/n3ds_textures.cpp): one small level per colour image is kept at load
+int RB_N3DS_TexKeepSize( textureUsage_t usage );		// 0 = keep nothing
+void RB_N3DS_ImageLevel( idImage * image, int format, int colorFormat, int width, int height,
+						 const byte * data, int dataSize, bool repeat, bool alphaOnly );
+void RB_N3DS_ImagePurged( idImage * image );
 #endif
 
 class idRenderLightLocal : public idRenderLight {

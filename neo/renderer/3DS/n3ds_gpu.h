@@ -48,6 +48,23 @@ float			N3DSGPU_DrawingTimeMs( void );
 // make CPU writes in linear memory visible to the GPU
 void			N3DSGPU_FlushRange( const void * p, unsigned int size );
 
+// textures: 16-bit formats in VRAM, PICA tiled layout, mip levels contiguous
+enum {
+	N3DS_TEX_RGB565		= 0,
+	N3DS_TEX_RGBA5551	= 1,
+	N3DS_TEX_RGBA4		= 2
+};
+unsigned int	N3DSGPU_VRAMFree( void );
+unsigned int	N3DSGPU_LinearFree( void );
+void *			N3DSGPU_LinearAlloc( unsigned int size );
+// NULL when VRAM has no room; maxLevel = number of mip levels - 1
+void *			N3DSGPU_TexCreate( int width, int height, int format, int maxLevel, int repeat );
+// copies the whole chain from staging (linear memory, takes ownership) to VRAM
+int				N3DSGPU_TexUpload( void * tex, void * staging, unsigned int size );
+void			N3DSGPU_TexFree( void * tex );
+// tex0 colour (and alpha), tex1 alpha mask or NULL; alphaTest: discard alpha <= 0.5
+void			N3DSGPU_SetTextures( void * tex0, void * tex1, int alphaTest );
+
 #ifdef __cplusplus
 }
 #endif

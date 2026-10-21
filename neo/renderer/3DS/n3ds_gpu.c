@@ -9,6 +9,7 @@
 #include <3ds.h>
 #include <citro3d.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "n3ds_gpu.h"
 
@@ -28,6 +29,15 @@ static DVLB_s *				vshDvlb = NULL;
 static shaderProgram_s		program;
 static int					uLocMvp = -1;
 static int					uLocColor = -1;
+static int					uLocPow2 = -1;
+static int					texEnvMode = -1;		// N3DSGPU_SetTextures state
+static int					alphaTestOn = -1;
+
+// staging buffers of texture copies queued in this frame: freed once the GPU is done
+#define MAX_PENDING_STAGING	64
+static void *				pendingStaging[2][MAX_PENDING_STAGING];
+static int					numPendingStaging[2];
+static int					pendingSet = 0;
 static C3D_RenderTarget *	topTarget = NULL;
 static void					( *hangCallback )( unsigned int ) = NULL;
 
@@ -68,20 +78,36 @@ int N3DSGPU_Init( void ) {
 	C3D_BindProgram( &program );
 	uLocMvp = shaderInstanceGetUniformLocation( program.vertexShader, "mvp" );
 	uLocColor = shaderInstanceGetUniformLocation( program.vertexShader, "surfColor" );
-	if ( uLocMvp < 0 || uLocColor < 0 ) {
+	uLocPow2 = shaderInstanceGetUniformLocation( program.vertexShader, "pow2" );
+	if ( uLocMvp < 0 || uLocColor < 0 || uLocPow2 < 0 ) {
 		lastError = "shader uniforms not found";
 		return 0;
+	}
+	// half float exponent table for the st decode (see n3ds_vshader.v.pica)
+	for ( int e = 0; e < 32; e++ ) {
+		float x, y;
+		if ( e == 0 ) {
+			x = 0.0f;
+			y = 1.0f / 16777216.0f;			// 2^-24: denormals
+		} else if ( e == 31 ) {
+			x = 65504.0f;					// inf / nan: largest half
+			y = 0.0f;
+		} else {
+			x = ( e >= 15 ) ? (float)( 1 << ( e - 15 ) ) : 1.0f / (float)( 1 << ( 15 - e ) );
+			y = x / 1024.0f;
+		}
+		C3D_FVUnifSet( GPU_VERTEX_SHADER, uLocPow2 + e, x, y, 0.0f, 0.0f );
 	}
 
 	C3D_AttrInfo * attrInfo = C3D_GetAttrInfo();
 	AttrInfo_Init( attrInfo );
 	AttrInfo_AddLoader( attrInfo, 0, GPU_FLOAT, 3 );			// v0 = position
 	AttrInfo_AddLoader( attrInfo, 1, GPU_UNSIGNED_BYTE, 4 );	// v1 = normal
+	AttrInfo_AddLoader( attrInfo, 2, GPU_SHORT, 2 );			// v2 = st (raw half floats)
 
-	C3D_TexEnv * env = C3D_GetTexEnv( 0 );
-	C3D_TexEnvInit( env );
-	C3D_TexEnvSrc( env, C3D_Both, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
-	C3D_TexEnvFunc( env, C3D_Both, GPU_REPLACE );
+	texEnvMode = -1;
+	alphaTestOn = -1;
+	N3DSGPU_SetTextures( NULL, NULL, 0 );
 
 	// depth: near = 1, far = 0 (cleared to 0), as citro3d's own projections
 	C3D_DepthMap( true, -1.0f, 0.0f );
@@ -125,6 +151,12 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 		}
 		svcSleepThread( 1000LL * 1000 );
 	}
+	// the previous frame (and its texture copies) is finished: free its staging buffers
+	pendingSet ^= 1;
+	for ( int i = 0; i < numPendingStaging[pendingSet]; i++ ) {
+		linearFree( pendingStaging[pendingSet][i] );
+	}
+	numPendingStaging[pendingSet] = 0;
 	C3D_RenderTargetClear( topTarget, C3D_CLEAR_ALL, clearRGBA, 0 );
 	C3D_FrameDrawOn( topTarget );
 	inFrame = 1;
@@ -160,13 +192,14 @@ void N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short *
 	C3D_BufInfo * bufInfo = C3D_GetBufInfo();
 	BufInfo_Init( bufInfo );
 	// idDrawVert, 32 bytes, described completely so the components add up to the stride:
-	// position (attr 0, 12) | st (pad 4 = 0xC) | normal (attr 1, 4) | tangent, color, color2 (pad 12 = 0xE)
-	BufInfo_Add( bufInfo, verts, stride, 4, 0xE1C0 );
+	// position (attr 0, 12) | st (attr 2, 4) | normal (attr 1, 4) | tangent, color, color2 (pad 12 = 0xE)
+	BufInfo_Add( bufInfo, verts, stride, 4, 0xE120 );
 	C3D_DrawElements( GPU_TRIANGLES, numIndexes, C3D_UNSIGNED_SHORT, indexes );
 }
 
 typedef struct {
 	float			xyz[3];
+	short			st[2];
 	unsigned char	normal[4];
 } testVert_t;
 
@@ -193,6 +226,8 @@ void N3DSGPU_DrawTestTriangle( void ) {
 			testVerts[i].xyz[0] = p[i][0];
 			testVerts[i].xyz[1] = p[i][1];
 			testVerts[i].xyz[2] = p[i][2];
+			testVerts[i].st[0] = 0;
+			testVerts[i].st[1] = 0;
 			testVerts[i].normal[0] = 128;
 			testVerts[i].normal[1] = 128;
 			testVerts[i].normal[2] = 255;
@@ -205,9 +240,10 @@ void N3DSGPU_DrawTestTriangle( void ) {
 	const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 	N3DSGPU_SetMatrix( identity );
 	N3DSGPU_SetColor( 1.0f, 0.2f, 0.2f, 1.0f );
+	N3DSGPU_SetTextures( NULL, NULL, 0 );
 	C3D_BufInfo * bufInfo = C3D_GetBufInfo();
 	BufInfo_Init( bufInfo );
-	BufInfo_Add( bufInfo, testVerts, sizeof( testVert_t ), 2, 0x10 );
+	BufInfo_Add( bufInfo, testVerts, sizeof( testVert_t ), 3, 0x120 );
 	C3D_DrawElements( GPU_TRIANGLES, 3, C3D_UNSIGNED_SHORT, testIndexes );
 }
 
@@ -243,5 +279,134 @@ float N3DSGPU_DrawingTimeMs( void ) {
 void N3DSGPU_FlushRange( const void * p, unsigned int size ) {
 	if ( p != NULL && size > 0 ) {
 		GSPGPU_FlushDataCache( p, size );
+	}
+}
+
+/*
+================================================================================================
+
+	Textures
+
+================================================================================================
+*/
+
+unsigned int N3DSGPU_VRAMFree( void ) {
+	return vramSpaceFree();
+}
+
+unsigned int N3DSGPU_LinearFree( void ) {
+	return linearSpaceFree();
+}
+
+void * N3DSGPU_LinearAlloc( unsigned int size ) {
+	return linearAlloc( size );
+}
+
+void * N3DSGPU_TexCreate( int width, int height, int format, int maxLevel, int repeat ) {
+	if ( !initialized ) {
+		return NULL;
+	}
+	C3D_Tex * tex = (C3D_Tex *)malloc( sizeof( C3D_Tex ) );
+	if ( tex == NULL ) {
+		return NULL;
+	}
+	GPU_TEXCOLOR fmt = GPU_RGB565;
+	if ( format == N3DS_TEX_RGBA5551 ) {
+		fmt = GPU_RGBA5551;
+	} else if ( format == N3DS_TEX_RGBA4 ) {
+		fmt = GPU_RGBA4;
+	}
+	C3D_TexInitParams params;
+	memset( &params, 0, sizeof( params ) );
+	params.width = (u16)width;
+	params.height = (u16)height;
+	params.maxLevel = (u8)maxLevel;
+	params.format = fmt;
+	params.type = GPU_TEX_2D;
+	params.onVram = true;
+	if ( !C3D_TexInitWithParams( tex, NULL, params ) ) {
+		free( tex );
+		return NULL;
+	}
+	C3D_TexSetFilter( tex, GPU_LINEAR, GPU_LINEAR );
+	C3D_TexSetFilterMipmap( tex, GPU_LINEAR );
+	if ( repeat ) {
+		C3D_TexSetWrap( tex, GPU_REPEAT, GPU_REPEAT );
+	} else {
+		C3D_TexSetWrap( tex, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE );
+	}
+	return tex;
+}
+
+int N3DSGPU_TexUpload( void * handle, void * staging, unsigned int size ) {
+	C3D_Tex * tex = (C3D_Tex *)handle;
+	if ( tex == NULL || staging == NULL ) {
+		return 0;
+	}
+	const u32 total = C3D_TexCalcTotalSize( tex->size, tex->maxLevel );
+	if ( size != total ) {
+		linearFree( staging );
+		return 0;
+	}
+	if ( inFrame && numPendingStaging[pendingSet] >= MAX_PENDING_STAGING ) {
+		linearFree( staging );		// too many copies in one frame: try again next frame
+		return 0;
+	}
+	GSPGPU_FlushDataCache( staging, size );
+	// whole mip chain in one copy (the levels are contiguous in both buffers)
+	C3D_SyncTextureCopy( (u32 *)staging, 0, (u32 *)tex->data, 0, size, 8 );
+	if ( inFrame ) {
+		// queued behind this frame's commands: the staging buffer must live until
+		// the frame is done
+		pendingStaging[pendingSet][numPendingStaging[pendingSet]++] = staging;
+	} else {
+		linearFree( staging );	// synchronous outside a frame
+	}
+	return 1;
+}
+
+void N3DSGPU_TexFree( void * handle ) {
+	C3D_Tex * tex = (C3D_Tex *)handle;
+	if ( tex == NULL ) {
+		return;
+	}
+	C3D_TexDelete( tex );
+	free( tex );
+}
+
+void N3DSGPU_SetTextures( void * tex0, void * tex1, int alphaTest ) {
+	int mode = 0;
+	if ( tex0 != NULL ) {
+		mode = ( tex1 != NULL ) ? 2 : 1;
+	}
+	if ( mode >= 1 ) {
+		C3D_TexBind( 0, (C3D_Tex *)tex0 );
+	}
+	if ( mode == 2 ) {
+		C3D_TexBind( 1, (C3D_Tex *)tex1 );
+	}
+	if ( mode != texEnvMode ) {
+		texEnvMode = mode;
+		C3D_TexEnv * env = C3D_GetTexEnv( 0 );
+		C3D_TexEnvInit( env );
+		if ( mode == 0 ) {
+			C3D_TexEnvSrc( env, C3D_Both, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_Both, GPU_REPLACE );
+		} else {
+			C3D_TexEnvSrc( env, C3D_RGB, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_RGB, GPU_MODULATE );
+			if ( mode == 1 ) {
+				C3D_TexEnvSrc( env, C3D_Alpha, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+				C3D_TexEnvFunc( env, C3D_Alpha, GPU_MODULATE );
+			} else {
+				C3D_TexEnvSrc( env, C3D_Alpha, GPU_TEXTURE1, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+				C3D_TexEnvFunc( env, C3D_Alpha, GPU_REPLACE );
+			}
+		}
+	}
+	const int at = ( alphaTest && mode != 0 ) ? 1 : 0;
+	if ( at != alphaTestOn ) {
+		alphaTestOn = at;
+		C3D_AlphaTest( at != 0, GPU_GREATER, 127 );
 	}
 }
