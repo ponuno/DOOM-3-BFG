@@ -5336,6 +5336,15 @@ void idPhysics_AF::AuxiliaryForces( float timeStep ) {
 #endif
 
 #if defined( ID_3DS )
+	// keep a copy of the LCP problem: if the solver returns NaN from finite inputs, dump it
+	float * n3dsJmk = (float *)_alloca16( jmk.GetNumRows() * jmk.GetNumColumns() * sizeof( float ) );
+	float * n3dsRhs = (float *)_alloca16( numAuxConstraints * 3 * sizeof( float ) );
+	memcpy( n3dsJmk, jmk.ToFloatPtr(), jmk.GetNumRows() * jmk.GetNumColumns() * sizeof( float ) );
+	for ( i = 0; i < numAuxConstraints; i++ ) {
+		n3dsRhs[i * 3 + 0] = rhs[i];
+		n3dsRhs[i * 3 + 1] = lo[i];
+		n3dsRhs[i * 3 + 2] = hi[i];
+	}
 	{
 		// which LCP input is already bad?
 		const char * badIn = NULL;
@@ -5358,6 +5367,26 @@ void idPhysics_AF::AuxiliaryForces( float timeStep ) {
 #if defined( ID_3DS )
 	if ( N3DS_BadVecX( lm ) ) {
 		N3DS_TreeReport( va( "AuxiliaryForces: LCP output lm with finite inputs? (%d constraints)", numAuxConstraints ), bodies.Num() ? bodies[0] : NULL );
+		static int dumps = 0;
+		if ( dumps < 3 ) {
+			dumps++;
+			// exact bit patterns, for replaying the problem off-line
+			const int rows = jmk.GetNumRows(), cols = jmk.GetNumColumns();
+			common->Printf( "LCPDUMP begin %d %d %s symmetry %d\n", rows, cols, self->name.c_str(), af_useSymmetry.GetBool() );
+			for ( i = 0; i < rows; i++ ) {
+				idStr line = "LCPDUMP m";
+				for ( j = 0; j < cols; j++ ) {
+					line += va( " %08x", *(const unsigned int *)&n3dsJmk[i * cols + j] );
+				}
+				common->Printf( "%s\n", line.c_str() );
+			}
+			for ( i = 0; i < rows; i++ ) {
+				common->Printf( "LCPDUMP v %08x %08x %08x %d | lm %08x\n", *(const unsigned int *)&n3dsRhs[i * 3 + 0],
+					*(const unsigned int *)&n3dsRhs[i * 3 + 1], *(const unsigned int *)&n3dsRhs[i * 3 + 2], boxIndex[i],
+					*(const unsigned int *)&lm[i] );
+			}
+			common->Printf( "LCPDUMP end\n" );
+		}
 	}
 #endif
 
