@@ -170,6 +170,264 @@ void Mem_ArenaStats( int & used, int & peak, int & size ) {
 }
 
 /*
+================================================================================================
+
+	New 3DS block allocator
+
+	Mem_Alloc16 used memalign( 16, n ). newlib's malloc aligns to 8 on ARM, so memalign
+	asks malloc for n + 32 bytes and gives the unaligned leader and the spare tail
+	back as free chunks of 16-32 bytes. No later memalign can use them (each asks for
+	at least 48 bytes), so with ~250k engine blocks per map the heap filled with
+	dead holes: mars_city1 failed a 4 KB allocation with 5.9 MB "free" in malloc.
+
+	Now:
+	- blocks up to SLAB_MAX bytes come from 16 KB pages, one size class (multiple of
+	  16) per page, free slots chained inside the page. A page that empties goes to a
+	  shared pool for any class; a 512 KB chunk whose pages are all empty goes back to
+	  malloc, so level changes do not strand memory in the wrong size class.
+	- bigger blocks are malloc( n + 16 ), aligned by hand inside; the 8 bytes before
+	  the block hold a magic and the malloc pointer. One malloc chunk, nothing given
+	  back in pieces.
+	Both are 16-byte aligned like before and need no per-block malloc header for the
+	small blocks. Pointers from anywhere else (plain malloc) are still freed with free().
+
+================================================================================================
+*/
+
+static const int		SLAB_PAGE = 16 * 1024;
+static const int		SLAB_MAX = 512;						// largest block from pages
+static const int		SLAB_CLASSES = SLAB_MAX / 16;		// class c holds ( c + 1 ) * 16 byte blocks
+static const int		SLAB_CHUNK = 512 * 1024;			// pages are taken from malloc this many at a time
+static const int		SLAB_PAGES_PER_CHUNK = SLAB_CHUNK / SLAB_PAGE;
+static const int		SLAB_MAX_CHUNKS = 255;
+static const uintptr_t	SLAB_ADDR_BASE = 0x08000000;		// application heap address range
+static const uintptr_t	SLAB_ADDR_END = 0x10000000;
+static const int		SLAB_MAP_PAGES = ( SLAB_ADDR_END - SLAB_ADDR_BASE ) / SLAB_PAGE;
+
+struct slabPage_t {
+	uint16			objSize;		// 0 while in the empty pool
+	uint16			used;
+	uint16			capacity;
+	uint16			bumped;			// slots handed out at least once (the rest were never touched)
+	void *			freeList;
+	slabPage_t *	prev;			// partial list of its class, or the empty pool (next only)
+	slabPage_t *	next;
+};
+// blocks start after the header, rounded up to keep them 16-byte aligned
+static const int		SLAB_HEADER = ( sizeof( slabPage_t ) + 15 ) & ~15;
+
+struct slabChunk_t {
+	void *			raw;			// malloc pointer, NULL when the slot is unused
+	int				usedPages;		// pages not in the empty pool
+};
+
+static LightLock		slabLock;
+static uint8			slabPageChunk[SLAB_MAP_PAGES];		// chunk index + 1 for slab pages, 0 otherwise
+static slabChunk_t		slabChunks[SLAB_MAX_CHUNKS];
+static slabPage_t *		slabPartial[SLAB_CLASSES];			// pages of each class with a free slot
+static slabPage_t *		slabEmpty = NULL;					// pages of no class
+static int				slabChunkCount = 0;
+static int				slabUsedBytes = 0;					// in blocks handed out (their class size)
+static int				slabEmptyPages = 0;
+
+static inline int Slab_MapIndex( const void * p ) {
+	const uintptr_t a = (uintptr_t)p;
+	if ( a < SLAB_ADDR_BASE || a >= SLAB_ADDR_END ) {
+		return -1;
+	}
+	return (int)( ( a - SLAB_ADDR_BASE ) / SLAB_PAGE );
+}
+
+static bool Slab_Owns( const void * p ) {
+	const int i = Slab_MapIndex( p );
+	return i >= 0 && slabPageChunk[i] != 0;
+}
+
+static void Slab_Unlink( slabPage_t ** list, slabPage_t * page ) {
+	if ( page->prev != NULL ) {
+		page->prev->next = page->next;
+	} else {
+		*list = page->next;
+	}
+	if ( page->next != NULL ) {
+		page->next->prev = page->prev;
+	}
+	page->prev = page->next = NULL;
+}
+
+static void Slab_PushFront( slabPage_t ** list, slabPage_t * page ) {
+	page->prev = NULL;
+	page->next = *list;
+	if ( *list != NULL ) {
+		( *list )->prev = page;
+	}
+	*list = page;
+}
+
+// a new 512 KB chunk: all its pages go to the empty pool
+static bool Slab_AddChunk() {
+	int slot = -1;
+	for ( int i = 0; i < SLAB_MAX_CHUNKS; i++ ) {
+		if ( slabChunks[i].raw == NULL ) {
+			slot = i;
+			break;
+		}
+	}
+	if ( slot < 0 ) {
+		return false;
+	}
+	void * raw = malloc( SLAB_CHUNK + SLAB_PAGE );
+	if ( raw == NULL ) {
+		return false;
+	}
+	byte * base = (byte *)( ( (uintptr_t)raw + SLAB_PAGE - 1 ) & ~(uintptr_t)( SLAB_PAGE - 1 ) );
+	if ( Slab_MapIndex( base ) < 0 || Slab_MapIndex( base + SLAB_CHUNK - 1 ) < 0 ) {
+		free( raw );		// outside the expected heap range: not ours to map
+		return false;
+	}
+	slabChunks[slot].raw = raw;
+	slabChunks[slot].usedPages = 0;
+	slabChunkCount++;
+	for ( int i = 0; i < SLAB_PAGES_PER_CHUNK; i++ ) {
+		slabPage_t * page = (slabPage_t *)( base + i * SLAB_PAGE );
+		memset( page, 0, sizeof( *page ) );
+		slabPageChunk[Slab_MapIndex( page )] = (uint8)( slot + 1 );
+		Slab_PushFront( &slabEmpty, page );
+		slabEmptyPages++;
+	}
+	return true;
+}
+
+// every page of the chunk is in the empty pool: give it back to malloc
+static void Slab_ReleaseChunk( int slot ) {
+	byte * base = (byte *)( ( (uintptr_t)slabChunks[slot].raw + SLAB_PAGE - 1 ) & ~(uintptr_t)( SLAB_PAGE - 1 ) );
+	for ( int i = 0; i < SLAB_PAGES_PER_CHUNK; i++ ) {
+		slabPage_t * page = (slabPage_t *)( base + i * SLAB_PAGE );
+		Slab_Unlink( &slabEmpty, page );
+		slabEmptyPages--;
+		slabPageChunk[Slab_MapIndex( page )] = 0;
+	}
+	free( slabChunks[slot].raw );
+	slabChunks[slot].raw = NULL;
+	slabChunkCount--;
+}
+
+static void * Slab_Alloc( int size ) {
+	const int cls = ( size + 15 ) / 16 - 1;
+	LightLock_Lock( &slabLock );
+	slabPage_t * page = slabPartial[cls];
+	if ( page == NULL ) {
+		if ( slabEmpty == NULL && !Slab_AddChunk() ) {
+			LightLock_Unlock( &slabLock );
+			return NULL;
+		}
+		page = slabEmpty;
+		Slab_Unlink( &slabEmpty, page );
+		slabEmptyPages--;
+		slabChunks[slabPageChunk[Slab_MapIndex( page )] - 1].usedPages++;
+		page->objSize = (uint16)( ( cls + 1 ) * 16 );
+		page->used = 0;
+		page->capacity = (uint16)( ( SLAB_PAGE - SLAB_HEADER ) / page->objSize );
+		page->bumped = 0;
+		page->freeList = NULL;
+		Slab_PushFront( &slabPartial[cls], page );
+	}
+	void * p;
+	if ( page->freeList != NULL ) {
+		p = page->freeList;
+		page->freeList = *(void **)p;
+	} else {
+		p = (byte *)page + SLAB_HEADER + page->bumped * page->objSize;
+		page->bumped++;
+	}
+	page->used++;
+	slabUsedBytes += page->objSize;
+	if ( page->freeList == NULL && page->bumped == page->capacity ) {
+		Slab_Unlink( &slabPartial[cls], page );		// full
+	}
+	LightLock_Unlock( &slabLock );
+	return p;
+}
+
+static void Slab_Free( void * p ) {
+	LightLock_Lock( &slabLock );
+	slabPage_t * page = (slabPage_t *)( (uintptr_t)p & ~(uintptr_t)( SLAB_PAGE - 1 ) );
+	const int cls = page->objSize / 16 - 1;
+	assert( page->objSize != 0 && page->used > 0 );
+	const bool wasFull = ( page->freeList == NULL && page->bumped == page->capacity );
+	*(void **)p = page->freeList;
+	page->freeList = p;
+	page->used--;
+	slabUsedBytes -= page->objSize;
+	if ( page->used == 0 ) {
+		if ( !wasFull ) {
+			Slab_Unlink( &slabPartial[cls], page );
+		}
+		page->objSize = 0;
+		Slab_PushFront( &slabEmpty, page );
+		slabEmptyPages++;
+		const int slot = slabPageChunk[Slab_MapIndex( page )] - 1;
+		if ( --slabChunks[slot].usedPages == 0 ) {
+			Slab_ReleaseChunk( slot );
+		}
+	} else if ( wasFull ) {
+		Slab_PushFront( &slabPartial[cls], page );
+	}
+	LightLock_Unlock( &slabLock );
+}
+
+void Mem_SlabStats( int & chunkBytes, int & usedBytes, int & emptyBytes ) {
+	chunkBytes = slabChunkCount * SLAB_CHUNK;
+	usedBytes = slabUsedBytes;
+	emptyBytes = slabEmptyPages * SLAB_PAGE;
+}
+
+// bigger blocks: one malloc chunk, aligned inside; just before the block: magic, malloc pointer
+static const uint32 BIG_BLOCK_MAGIC = 0xB16B10C5;
+static const int BIG_INFO = ( sizeof( uint32 ) + sizeof( void * ) + 7 ) & ~7;	// 8 bytes on the 3DS
+
+static void * Big_Alloc( int size ) {
+	byte * raw = (byte *)malloc( size + BIG_INFO + 8 );		// malloc aligns to 8: lead is BIG_INFO or +8
+	if ( raw == NULL ) {
+		return NULL;
+	}
+	byte * p = (byte *)( ( (uintptr_t)raw + BIG_INFO + 15 ) & ~(uintptr_t)15 );
+	*(void **)( p - sizeof( void * ) ) = raw;
+	*(uint32 *)( p - sizeof( void * ) - sizeof( uint32 ) ) = BIG_BLOCK_MAGIC;
+	return p;
+}
+
+static bool Big_Owns( const void * p ) {
+	const byte * b = (const byte *)p;
+	if ( ( (uintptr_t)b & 15 ) != 0 || *(const uint32 *)( b - sizeof( void * ) - sizeof( uint32 ) ) != BIG_BLOCK_MAGIC ) {
+		return false;
+	}
+	const byte * raw = *(const byte * const *)( b - sizeof( void * ) );
+	const uintptr_t lead = (uintptr_t)b - (uintptr_t)raw;
+	return lead >= (uintptr_t)BIG_INFO && lead <= (uintptr_t)BIG_INFO + 8;
+}
+
+static void Big_Free( void * p ) {
+	byte * b = (byte *)p;
+	void * raw = *(void **)( b - sizeof( void * ) );
+	*(uint32 *)( b - sizeof( void * ) - sizeof( uint32 ) ) = 0;	// a stale pointer freed twice is not taken for a block again
+	free( raw );
+}
+
+// any engine block: slab, temp arena, big block, or foreign malloc memory
+static void Block_Free( void * p ) {
+	if ( Slab_Owns( p ) ) {
+		Slab_Free( p );
+	} else if ( Arena_Owns( p ) ) {
+		Arena_Free( p );
+	} else if ( Big_Owns( p ) ) {
+		Big_Free( p );
+	} else {
+		free( p );
+	}
+}
+
+/*
 ==================
 Mem_LargestFreeBlock
 
@@ -318,6 +576,7 @@ void * Mem_Alloc16( const int size, const memTag_t tag ) {
 		static bool reserved = false;
 		if ( !reserved ) {
 			reserved = true;
+			LightLock_Init( &slabLock );
 			memEmergencyReserve = malloc( MEM_EMERGENCY_RESERVE );
 			Arena_Init();
 		}
@@ -330,7 +589,10 @@ void * Mem_Alloc16( const int size, const memTag_t tag ) {
 		raw = (byte *)Arena_Alloc( rawSize );
 	}
 	if ( raw == NULL ) {
-		raw = (byte *)memalign( 16, rawSize );
+		raw = (byte *)( ( rawSize <= SLAB_MAX ) ? Slab_Alloc( rawSize ) : NULL );
+	}
+	if ( raw == NULL ) {
+		raw = (byte *)Big_Alloc( rawSize );		// also when no new slab chunk could be had
 	}
 	if ( raw == NULL ) {
 		// give the error path (printing, log file, shutdown) room to work
@@ -385,28 +647,19 @@ void Mem_Free16( void *ptr ) {
 		return;
 	}
 	if ( memTrackingState != 1 ) {
-		if ( Arena_Owns( ptr ) ) {
-			Arena_Free( ptr );
-		} else {
-			free( ptr );
-		}
+		Block_Free( ptr );
 		return;
 	}
 	memHeader_t * hdr = (memHeader_t *)( (byte *)ptr - sizeof( memHeader_t ) );
-	if ( Arena_Owns( hdr ) ) {
-		hdr->magic = 0;
-		Mem_Account( hdr->tag, -(int)hdr->size, -1 );
-		Arena_Free( hdr );
-		return;
-	}
-	if ( hdr->magic != MEM_HEADER_MAGIC ) {
+	const bool ours = Slab_Owns( hdr ) || Arena_Owns( hdr ) || Big_Owns( hdr );
+	if ( !ours || hdr->magic != MEM_HEADER_MAGIC ) {
 		// not ours: plain malloc block
 		free( ptr );
 		return;
 	}
 	hdr->magic = 0;
 	Mem_Account( hdr->tag, -(int)hdr->size, -1 );
-	free( hdr );
+	Block_Free( hdr );
 }
 
 #else // !ID_3DS

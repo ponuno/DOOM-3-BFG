@@ -255,6 +255,7 @@ void N3DS_TexLogMemory();								// renderer/3DS/n3ds_textures.cpp
 void R_FrameMemoryStats( int & highWater, int & size );	// renderer/tr_frontend_main.cpp
 void N3DS_SoundLogMemory();								// sound/3DS/3DS_SoundSample.cpp
 void N3DS_LogDeclMemory();								// framework/DeclManager.cpp
+void Mem_SlabStats( int & chunkBytes, int & usedBytes, int & emptyBytes );	// idlib/Heap.cpp
 
 void Sys_LogMemory( const char * when ) {
 	const int appFree = (int)osGetMemRegionFree( MEMREGION_APPLICATION );
@@ -267,6 +268,9 @@ void Sys_LogMemory( const char * when ) {
 		when, (int)( mi.uordblks / 1024 ), (int)( mi.fordblks / 1024 ), Mem_LargestFreeBlock() / 1024, appFree / 1024, appSize / 1024, linFree / 1024,
 		arenaUsed / 1024, arenaPeak / 1024, arenaSize / 1024 );
 	Mem_LogTags( 16 );
+	int slabChunk, slabUsed, slabEmpty;
+	Mem_SlabStats( slabChunk, slabUsed, slabEmpty );
+	Sys_Printf( "  small blocks: %d KB in pages, %d KB in use, %d KB in empty pages\n", slabChunk / 1024, slabUsed / 1024, slabEmpty / 1024 );
 
 	// what is inside the big tags (no allocations: safe on the out-of-memory path)
 	N3DS_TexLogMemory();
