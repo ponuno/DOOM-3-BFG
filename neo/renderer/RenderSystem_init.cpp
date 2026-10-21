@@ -845,9 +845,13 @@ void R_InitOpenGL() {
 	{
 		const int vkb = cvarSystem->GetCVarInteger( "n3ds_staticVertexKB" );
 		const int ikb = cvarSystem->GetCVarInteger( "n3ds_staticIndexKB" );
-		// citro3d: paid for by no joint buffers and a 1 MB frame index cache (VertexCache.h)
-		n3dsStaticVertexMemory = ( vkb > 0 ? vkb : ( r_n3dsC3D ? 8704 : 10240 ) ) * 1024;
-		n3dsStaticIndexMemory = ( ikb > 0 ? ikb : ( r_n3dsC3D ? 3584 : 6144 ) ) * 1024;
+		// citro3d: paid for by no joint buffers and a 1 MB frame index cache (VertexCache.h).
+		// Extended memory (CIA, 178 MB): the linear heap is ~70 MB and what the GPU does
+		// not take becomes the second heap later, so the big maps (phobos3: 21.7 MB .bproc)
+		// get room; 32 MB is the most a vertCacheHandle_t offset can address.
+		const bool ext = Sys_N3DSExtendedMemory();
+		n3dsStaticVertexMemory = ( vkb > 0 ? vkb : ( r_n3dsC3D ? ( ext ? 20480 : 8704 ) : 10240 ) ) * 1024;
+		n3dsStaticIndexMemory = ( ikb > 0 ? ikb : ( r_n3dsC3D ? ( ext ? 6144 : 3584 ) : 6144 ) ) * 1024;
 		common->Printf( "renderer: %s, static vertex cache %d KB, index %d KB%s\n",
 			r_n3dsC3D ? "citro3d" : "null GL", n3dsStaticVertexMemory / 1024, n3dsStaticIndexMemory / 1024,
 			r_n3dsDiscardStaticGeo ? " (budget only)" : "" );

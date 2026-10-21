@@ -177,7 +177,7 @@ void Mem_ArenaStats( int & used, int & peak, int & size ) {
 
 	The application heap window is 96 MB in every memory mode. With the 178 MB New 3DS
 	mode (the CIA build) the rest of the application's memory can only be linear
-	memory. N3DS_Main gives the part the GPU does not need to Mem_InitSecondHeap; when
+	memory. N3DS_Main (after common->Init) gives the part the GPU does not need to Mem_InitSecondHeap; when
 	malloc cannot satisfy a big block or a slab chunk, it comes from there. A TLSF
 	allocator (O(1), immediate coalescing) manages it under its own lock: libctru's
 	linear allocator is not thread safe and is only used by the main thread.
@@ -202,11 +202,14 @@ void Mem_InitSecondHeap( void * mem, int bytes ) {
 	bytes -= (int)( start - (uintptr_t)mem );
 	bytes &= ~7;
 	mem = (void *)start;
+	// other threads are running by now: publish the heap only once it is complete
 	LightLock_Init( &heap2Lock );
-	heap2 = tlsf_create_with_pool( mem, bytes );
+	tlsf_t h = tlsf_create_with_pool( mem, bytes );
 	heap2Begin = (uintptr_t)mem;
 	heap2End = heap2Begin + bytes;
 	heap2Size = bytes;
+	__sync_synchronize();
+	heap2 = h;
 }
 
 static bool Heap2_Owns( const void * p ) {

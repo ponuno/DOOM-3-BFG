@@ -53,6 +53,8 @@ static void ClearGeoBufferSet( geoBufferSet_t &gbs ) {
 extern int n3dsCacheOverflows;
 int n3dsStaticIndexMemory = 6 * 1024 * 1024;
 int n3dsStaticVertexMemory = 10 * 1024 * 1024;
+int n3dsStaticVertexOverflow = 0;
+int n3dsStaticIndexOverflow = 0;
 #endif
 
 /*
@@ -167,6 +169,10 @@ call on loading a new map
 */
 void idVertexCache::FreeStaticData() {
 	ClearGeoBufferSet( staticData );
+#if defined( ID_3DS )
+	n3dsStaticVertexOverflow = 0;
+	n3dsStaticIndexOverflow = 0;
+#endif
 	mostUsedVertex = 0;
 	mostUsedIndex = 0;
 	mostUsedJoint = 0;

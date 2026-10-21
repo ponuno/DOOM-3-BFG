@@ -54,6 +54,10 @@ const int VERTCACHE_NUM_FRAMES = 2;
 // 6 MB of vertexes, and static interactions put their index lists here too).
 extern int n3dsStaticIndexMemory;
 extern int n3dsStaticVertexMemory;
+// bytes that did not fit since the last static cache reset: a map that overflows still
+// loads to the end, then N3DS_CheckStaticCache stops it with the size it really needs
+extern int n3dsStaticVertexOverflow;
+extern int n3dsStaticIndexOverflow;
 #define STATIC_INDEX_MEMORY		n3dsStaticIndexMemory
 #define STATIC_VERTEX_MEMORY	n3dsStaticVertexMemory
 #else
@@ -117,12 +121,20 @@ public:
 	// this data is valid until the next map load
 	vertCacheHandle_t	AllocStaticVertex( const void * data, int bytes ) {
 		if ( staticData.vertexMemUsed.GetValue() + bytes > STATIC_VERTEX_MEMORY ) {
+#if defined( ID_3DS )
+			n3dsStaticVertexOverflow += bytes;	// no handle: the surface would use frame memory
+			return (vertCacheHandle_t)0;
+#endif
 			idLib::FatalError( "AllocStaticVertex failed, increase STATIC_VERTEX_MEMORY" );
 		}
 		return ActuallyAlloc( staticData, data, bytes, CACHE_VERTEX );
 	}
 	vertCacheHandle_t	AllocStaticIndex( const void * data, int bytes ) {
 		if ( staticData.indexMemUsed.GetValue() + bytes > STATIC_INDEX_MEMORY ) {
+#if defined( ID_3DS )
+			n3dsStaticIndexOverflow += bytes;
+			return (vertCacheHandle_t)0;
+#endif
 			idLib::FatalError( "AllocStaticIndex failed, increase STATIC_INDEX_MEMORY" );
 		}
 		return ActuallyAlloc( staticData, data, bytes, CACHE_INDEX );

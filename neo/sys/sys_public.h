@@ -537,6 +537,8 @@ void			Sys_ShowConsole( int visLevel, bool quitOnClose );
 enum { N3DS_STAGE_MAIN, N3DS_STAGE_GAME, N3DS_STAGE_RENDER, N3DS_STAGE_COUNT };
 void			Sys_N3DSStage( int slot, const char * what );
 void			Sys_N3DSFrameDone();
+// true in the 178 MB New 3DS memory mode (the CIA): big linear heap, second heap
+bool			Sys_N3DSExtendedMemory();
 #define N3DS_STAGE( slot, what )	Sys_N3DSStage( slot, what )
 // logs "SLOW <label>: x ms" when the enclosing scope takes longer than limitMs
 class idN3DSSlowScope {

@@ -161,16 +161,24 @@ Skinned models are skinned on the CPU (`r_useGPUSkinning` forced to 0 with citro
 | | .3dsx (124 MB) | CIA (178 MB) |
 |---|---|---|
 | application heap (malloc) | 86 MB | 96 MB (the whole heap window) |
-| linear heap | ~25 MB, all GPU | ~70 MB: 30 MB GPU (`N3DS_GPU_LINEAR_MB`) + second heap |
-| engine memory | 86 MB | ~126 MB |
+| linear heap | ~25 MB, all GPU | ~70 MB: GPU (~36 MB) + second heap (~28 MB) |
+| static vertex / index cache | 8.5 / 3.5 MB | 20 / 6 MB |
+| engine memory | 86 MB | ~124 MB |
 
 The heap's virtual window is 96 MB in every mode (0x08000000-0x0E000000), so the extra
-memory of the 178 MB mode can only be linear memory. `Sys_N3DSInitSecondHeap` (start of
-`N3DS_Main`, before citro3d) takes linear memory beyond the GPU share with one `linearAlloc`
+memory of the 178 MB mode can only be linear memory. `Sys_N3DSExtendedMemory()` tells the
+renderer to size the static caches for it. `Sys_N3DSInitSecondHeap` (right after
+`common->Init`, when every long-lived GPU buffer exists) keeps `N3DS_GPU_HEADROOM_MB` (6) of
+linear memory for citro3d, takes the rest with one `linearAlloc`
 and gives it to `Mem_InitSecondHeap` (idlib/Heap.cpp): a TLSF heap (idlib/tlsf, BSD) that
 takes over when malloc fails. Slab chunks and big blocks may live there; the slab page map
 covers it. The MEM report shows `second heap: used (peak) of size`; the tour counts it as
 part of malloc and the heap.
+
+A map whose static geometry does not fit the static caches still loads to the end (the
+surfaces that do not fit get no static handle) and then stops with
+`static vertex/index cache too small for this map: needs N KB of vertexes (have M KB), ...`,
+so one run gives the size it needs (`n3ds_staticVertexKB` / `n3ds_staticIndexKB`).
 
 ## Map tour (memory budgets)
 

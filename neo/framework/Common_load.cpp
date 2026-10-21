@@ -391,6 +391,14 @@ static void N3DS_LogLoad( const char * when ) {
 	idLib::Printf( "static vertex cache: %d / %d KB, index %d / %d KB\n",
 		vertexCache.staticData.vertexMemUsed.GetValue() / 1024, STATIC_VERTEX_MEMORY / 1024,
 		vertexCache.staticData.indexMemUsed.GetValue() / 1024, STATIC_INDEX_MEMORY / 1024 );
+	// the map did not fit: it was loaded to the end only to measure what it needs
+	if ( ( n3dsStaticVertexOverflow > 0 || n3dsStaticIndexOverflow > 0 ) && idStr::Cmp( when, "map load done" ) == 0 ) {
+		const int needV = ( vertexCache.staticData.vertexMemUsed.GetValue() + n3dsStaticVertexOverflow + 1023 ) / 1024;
+		const int needI = ( vertexCache.staticData.indexMemUsed.GetValue() + n3dsStaticIndexOverflow + 1023 ) / 1024;
+		idLib::Error( "static vertex/index cache too small for this map: needs %d KB of vertexes (have %d KB), %d KB of indexes (have %d KB); "
+			"n3ds_staticVertexKB / n3ds_staticIndexKB set the sizes",
+			needV, STATIC_VERTEX_MEMORY / 1024, needI, STATIC_INDEX_MEMORY / 1024 );
+	}
 }
 #endif
 

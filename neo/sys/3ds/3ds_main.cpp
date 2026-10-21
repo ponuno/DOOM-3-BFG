@@ -71,11 +71,13 @@ n3dsVars_t	n3ds;
 	which the citro3d renderer will use for vertex buffers and textures.
 
 	Extended memory (the CIA, SystemModeExt 178MB): the heap window stays 96 MB, so
-	the heap takes all of it and everything else goes to the linear heap. main() then
-	keeps N3DS_GPU_LINEAR_MB of linear memory for citro3d and hands the rest to the
-	engine allocator as its second heap (Mem_InitSecondHeap): linear memory is ordinary
-	cached RAM, only its physical layout is special. In the 124 MB mode (.3dsx) nothing
-	changes: 86 MB heap, the rest linear, no second heap.
+	the heap takes all of it and everything else goes to the linear heap. The renderer
+	sizes its static vertex/index caches for that (Sys_N3DSExtendedMemory), and once
+	common->Init has allocated every long-lived GPU buffer, main() keeps
+	N3DS_GPU_HEADROOM_MB of linear memory for citro3d's run-time needs and hands the rest
+	to the engine allocator as its second heap (Mem_InitSecondHeap): linear memory is
+	ordinary cached RAM, only its physical layout is special. In the 124 MB mode (.3dsx)
+	nothing changes: 86 MB heap, the rest linear, no second heap.
 */
 extern "C" {
 
@@ -93,12 +95,15 @@ static const u32 N3DS_MIN_LINEAR_HEAP = 8 * 1024 * 1024;
 #define N3DS_APP_HEAP_MB 86
 #endif
 static const u32 N3DS_APP_HEAP_MAX = (u32)N3DS_APP_HEAP_MB * 1024 * 1024;
-// linear memory citro3d keeps in extended memory mode: the 124 MB mode gives it ~24 MB
-// and its tightest maps leave ~1.6 MB of that free, so 30 MB leaves real headroom
-#if !defined( N3DS_GPU_LINEAR_MB )
-#define N3DS_GPU_LINEAR_MB 30
+// extended memory mode: the linear heap must hold the GPU buffers (frame caches 8 MB,
+// static caches 26 MB, citro3d ~1.5 MB) plus a second heap worth having
+static const u32 N3DS_EXT_MIN_LINEAR = 48 * 1024 * 1024;
+// linear memory left to citro3d after common->Init: every long-lived GPU buffer is
+// allocated by then, and in game the 124 MB mode never took more than ~1.5 MB on top
+#if !defined( N3DS_GPU_HEADROOM_MB )
+#define N3DS_GPU_HEADROOM_MB 6
 #endif
-static const u32 N3DS_GPU_LINEAR = (u32)N3DS_GPU_LINEAR_MB * 1024 * 1024;
+static const u32 N3DS_GPU_HEADROOM = (u32)N3DS_GPU_HEADROOM_MB * 1024 * 1024;
 // less than this beyond the GPU share is not worth a second heap
 static const u32 N3DS_MIN_SECOND_HEAP = 4 * 1024 * 1024;
 
@@ -130,7 +135,7 @@ void __system_allocateHeaps( void ) {
 		heapSize = N3DS_APP_HEAP_MAX;
 	}
 	// extended memory: the whole heap window, the rest is linear (GPU + second heap)
-	if ( remaining >= heapWindow + N3DS_GPU_LINEAR + N3DS_MIN_SECOND_HEAP ) {
+	if ( remaining >= heapWindow + N3DS_EXT_MIN_LINEAR ) {
 		heapSize = heapWindow;
 	}
 	heapSize &= ~0xFFF;
@@ -278,20 +283,25 @@ void Mem_SlabStats( int & chunkBytes, int & usedBytes, int & emptyBytes );	// id
 void Mem_InitSecondHeap( void * mem, int bytes );						// idlib/Heap.cpp
 void Mem_SecondHeapStats( int & size, int & used, int & peak );			// idlib/Heap.cpp
 
+bool Sys_N3DSExtendedMemory() {
+	return __ctru_linear_heap_size >= N3DS_EXT_MIN_LINEAR;
+}
+
 /*
 ==============
 Sys_N3DSInitSecondHeap
 
 Extended memory mode: linear memory beyond what citro3d needs becomes the engine's
-second heap. Runs before anything else allocates linear memory.
+second heap. Runs after common->Init, when the long-lived GPU buffers (frame and static
+vertex caches, citro3d) are allocated; until then malloc alone has plenty.
 ==============
 */
 static void Sys_N3DSInitSecondHeap() {
 	const u32 linearFree = linearSpaceFree();
-	if ( linearFree < N3DS_GPU_LINEAR + N3DS_MIN_SECOND_HEAP ) {
+	if ( !Sys_N3DSExtendedMemory() || linearFree < N3DS_GPU_HEADROOM + N3DS_MIN_SECOND_HEAP ) {
 		return;
 	}
-	const u32 bytes = ( linearFree - N3DS_GPU_LINEAR ) & ~0xFFF;
+	const u32 bytes = ( linearFree - N3DS_GPU_HEADROOM ) & ~0xFFF;
 	void * mem = linearAlloc( bytes );
 	if ( mem == NULL ) {
 		Sys_Printf( "second heap: linearAlloc( %d KB ) failed\n", (int)( bytes / 1024 ) );
@@ -983,14 +993,15 @@ int N3DS_Main( int argc, char ** argv ) {
 	Sys_Printf( "DOOM 3 BFG for New 3DS (%s %s)\n", __DATE__, __TIME__ );
 	Sys_Printf( "%s, application region %d KB\n", n3ds.isNew3DS ? "New 3DS" : "Old 3DS",
 		(int)( osGetMemRegionSize( MEMREGION_APPLICATION ) / 1024 ) );
-	Sys_Printf( "heap %d KB, linear heap %d KB\n", (int)( __ctru_heap_size / 1024 ), (int)( __ctru_linear_heap_size / 1024 ) );
-	Sys_N3DSInitSecondHeap();
+	Sys_Printf( "heap %d KB, linear heap %d KB%s\n", (int)( __ctru_heap_size / 1024 ), (int)( __ctru_linear_heap_size / 1024 ),
+		Sys_N3DSExtendedMemory() ? " (extended memory mode)" : "" );
 	Sys_LogMemory( "start" );
 
 	Sys_BuildCommandLine();
 	Sys_Printf( "cmdline: %s\n", sys_cmdline );
 
 	common->Init( 0, NULL, sys_cmdline );
+	Sys_N3DSInitSecondHeap();
 	Sys_LogMemory( "common->Init done" );
 
 	while ( aptMainLoop() && !n3ds.quitRequested ) {
