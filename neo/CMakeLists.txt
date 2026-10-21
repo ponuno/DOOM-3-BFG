@@ -18,6 +18,10 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 add_compile_options(
+	# arm-none-eabi GCC defaults to variable-size ("short") enums. idTech's binary
+	# formats (.bswf, .bmodel, .bimage, .bcmodel, AAS, ...) read enum fields with
+	# sizeof(field), written by MSVC as 4 bytes, so every load would desync.
+	-fno-short-enums
 	-fno-strict-aliasing		# idTech code type-puns freely
 	-Wno-unused-parameter
 	-Wno-invalid-offsetof
@@ -149,7 +153,10 @@ elseif(NINTENDO_3DS)
 	# On Windows the game was a DLL, which keeps everything.
 	target_link_libraries(doom3ds PRIVATE
 		-Wl,--whole-archive game engine doomclassic idlib -Wl,--no-whole-archive
-		external ctru m)
+		external ctru m
+		# our objects use 32-bit enums, libctru/newlib variable-size ones; enums only
+		# cross that boundary by value, so the ABI attribute mismatch is harmless
+		-Wl,--no-enum-size-warning)
 
 	set_target_properties(doom3ds PROPERTIES OUTPUT_NAME doom3ds SUFFIX ".elf")
 
