@@ -3516,7 +3516,43 @@ cmHandle_t idCollisionModelManagerLocal::FindModel( const char *name ) {
 idCollisionModelManagerLocal::PrintModelInfo
 ==================
 */
+#if defined( ID_3DS )
+static void CM_N3DSTreeStats_r( const cm_node_t * node, int depth, int & leaves, int & maxDepth, int & maxPolys, int & rootPolys, int & nodes ) {
+	if ( node == NULL ) {
+		return;
+	}
+	nodes++;
+	int polys = 0;
+	for ( const cm_polygonRef_t * p = node->polygons; p != NULL; p = p->next ) {
+		polys++;
+	}
+	if ( depth == 0 ) {
+		rootPolys = polys;
+	}
+	if ( polys > maxPolys ) {
+		maxPolys = polys;
+	}
+	if ( depth > maxDepth ) {
+		maxDepth = depth;
+	}
+	if ( node->planeType == -1 ) {
+		leaves++;
+		return;
+	}
+	CM_N3DSTreeStats_r( node->children[0], depth + 1, leaves, maxDepth, maxPolys, rootPolys, nodes );
+	CM_N3DSTreeStats_r( node->children[1], depth + 1, leaves, maxDepth, maxPolys, rootPolys, nodes );
+}
+#endif
+
 void idCollisionModelManagerLocal::PrintModelInfo( const cm_model_t *model ) {
+#if defined( ID_3DS )
+	{
+		int leaves = 0, maxDepth = 0, maxPolys = 0, rootPolys = 0, nodes = 0;
+		CM_N3DSTreeStats_r( model->node, 0, leaves, maxDepth, maxPolys, rootPolys, nodes );
+		common->Printf( "cm tree: %d nodes reachable, %d leaves, depth %d, max %d polygon refs in one node, %d in the root\n",
+			nodes, leaves, maxDepth, maxPolys, rootPolys );
+	}
+#endif
 	common->Printf( "%6i vertices (%i KB)\n", model->numVertices, (model->numVertices * sizeof(cm_vertex_t))>>10 );
 	common->Printf( "%6i edges (%i KB)\n", model->numEdges, (model->numEdges * sizeof(cm_edge_t))>>10 );
 	common->Printf( "%6i polygons (%i KB)\n", model->numPolygons, model->polygonMemory>>10 );

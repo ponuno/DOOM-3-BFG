@@ -6278,7 +6278,13 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 	timer_collision.Start();
 #endif
 #if defined( ID_3DS )
+	extern int n3dsCMStats[4];
 	const uint64 n3dsT0 = Sys_Microseconds();
+	int n3dsCM0[4];
+	memcpy( n3dsCM0, n3dsCMStats, sizeof( n3dsCM0 ) );
+	extern uint64 n3dsClipStats[4];
+	uint64 n3dsCL0[4];
+	memcpy( n3dsCL0, n3dsClipStats, sizeof( n3dsCL0 ) );
 #endif
 
 	// evaluate contacts
@@ -6414,10 +6420,14 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 				rowsA += auxiliaryConstraints[k]->J1.GetNumRows();
 			}
 			const bool stop = n3ds_afMaxEvalMs.GetInteger() > 0 && totalMs >= n3ds_afMaxEvalMs.GetFloat();
-			gameLocal.Printf( "SLOW AF %s: %.1f ms = contacts %.1f + primary %.1f + auxiliary/LCP %.1f + collisions %.1f | %d bodies, %d contacts, %d primary rows, %d auxiliary rows, active %.1f s%s\n",
+			gameLocal.Printf( "SLOW AF %s: %.1f ms = contacts %.1f + primary %.1f + auxiliary/LCP %.1f + collisions %.1f | %d bodies, %d contacts, %d primary rows, %d auxiliary rows, active %.1f s%s | cm: %d nodes, %d node tests, %d polygon refs, %d brush refs\n",
 				self->name.c_str(), totalMs, ( n3dsT1 - n3dsT0 ) * 0.001f, ( n3dsT2 - n3dsT1 ) * 0.001f,
 				( n3dsT3 - n3dsT2 ) * 0.001f, ( n3dsT4 - n3dsT3 ) * 0.001f,
-				bodies.Num(), contacts.Num(), rowsP, rowsA, current.activateTime, stop ? " -> put to rest" : "" );
+				bodies.Num(), contacts.Num(), rowsP, rowsA, current.activateTime, stop ? " -> put to rest" : "",
+				n3dsCMStats[0] - n3dsCM0[0], n3dsCMStats[3] - n3dsCM0[3], n3dsCMStats[1] - n3dsCM0[1], n3dsCMStats[2] - n3dsCM0[2] );
+			gameLocal.Printf( "    contacts: %d queries, world %.1f ms, entities %.1f ms (%d entity models tested)\n",
+				(int)( n3dsClipStats[3] - n3dsCL0[3] ), ( n3dsClipStats[0] - n3dsCL0[0] ) * 0.001f,
+				( n3dsClipStats[1] - n3dsCL0[1] ) * 0.001f, (int)( n3dsClipStats[2] - n3dsCL0[2] ) );
 			if ( stop ) {
 				Rest();
 			}

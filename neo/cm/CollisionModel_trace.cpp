@@ -53,9 +53,23 @@ Trace through the spatial subdivision
 idCollisionModelManagerLocal::TraceTrmThroughNode
 ================
 */
+#if defined( ID_3DS )
+// New 3DS: collision query statistics (read by the game's slow-frame logs)
+int n3dsCMStats[4];		// 0 BSP nodes visited, 1 polygon refs walked, 2 brush refs walked, 3 leaf/node tests
+#endif
+
 void idCollisionModelManagerLocal::TraceTrmThroughNode( cm_traceWork_t *tw, cm_node_t *node ) {
 	cm_polygonRef_t *pref;
 	cm_brushRef_t *bref;
+#if defined( ID_3DS )
+	n3dsCMStats[3]++;
+	for ( pref = node->polygons; pref; pref = pref->next ) {
+		n3dsCMStats[1]++;
+	}
+	for ( bref = node->brushes; bref; bref = bref->next ) {
+		n3dsCMStats[2]++;
+	}
+#endif
 
 	// position test
 	if ( tw->positionTest ) {
@@ -116,6 +130,9 @@ void idCollisionModelManagerLocal::TraceThroughAxialBSPTree_r( cm_traceWork_t *t
 	if ( !node ) {
 		return;
 	}
+#if defined( ID_3DS )
+	n3dsCMStats[0]++;
+#endif
 
 	if ( tw->quickExit ) {
 		return;		// stop immediately
