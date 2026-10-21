@@ -52,7 +52,8 @@ void			N3DSGPU_FlushRange( const void * p, unsigned int size );
 enum {
 	N3DS_TEX_RGB565		= 0,
 	N3DS_TEX_RGBA5551	= 1,
-	N3DS_TEX_RGBA4		= 2
+	N3DS_TEX_RGBA4		= 2,
+	N3DS_TEX_A8			= 3
 };
 unsigned int	N3DSGPU_VRAMFree( void );
 unsigned int	N3DSGPU_LinearFree( void );

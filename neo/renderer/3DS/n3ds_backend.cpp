@@ -69,9 +69,10 @@ static int		c3dStatLightDraws = 0;
 static int		c3dStatScissorPixels = 0;	// light rectangles, summed
 
 idCVar n3ds_lighting( "n3ds_lighting", "2", CVAR_RENDERER | CVAR_INTEGER, "citro3d: 0 = everything at full brightness, 1 = a pass per light (projected light images, per-vertex N.L), 2 = PICA fragment lighting, one pass, up to 8 lights per surface" );
+idCVar n3ds_hwLightRadius( "n3ds_hwLightRadius", "1", CVAR_RENDERER | CVAR_FLOAT, "citro3d n3ds_lighting 2: point light reach as a fraction of the smallest half-size of the light box" );
 idCVar n3ds_hwSpotFlip( "n3ds_hwSpotFlip", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d n3ds_lighting 2: reverse the spot light direction (if the flashlight lights everything but its cone)" );
 idCVar n3ds_hwLightScale( "n3ds_hwLightScale", "4", CVAR_RENDERER | CVAR_INTEGER, "citro3d n3ds_lighting 2: overbright range, 2 or 4 (light colours are divided by it, the combiner multiplies)" );
-idCVar n3ds_ambient( "n3ds_ambient", "0.06", CVAR_RENDERER | CVAR_FLOAT, "citro3d: brightness of lit surfaces where no light reaches (Doom 3 itself: 0)" );
+idCVar n3ds_ambient( "n3ds_ambient", "0.1", CVAR_RENDERER | CVAR_FLOAT, "citro3d: brightness of lit surfaces where no light reaches (Doom 3 itself: 0)" );
 idCVar n3ds_lightScissor( "n3ds_lightScissor", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: clip each light's passes to its screen rectangle" );
 idCVar n3ds_lightProjective( "n3ds_lightProjective", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: divide the light projection per pixel (texture unit 0 projection mode); 0 = per vertex" );
 
@@ -784,19 +785,31 @@ static bool N3DS_SetupHWLight( const viewDef_t * viewDef, const viewLight_t * vL
 	const idPlane * proj = vLight->lightProject;
 	const float qLen = proj[2].Normal().Length();
 	if ( qLen < 1e-6f ) {
-		// point light: s, t and falloff are 0.5 + 0.5 * x / radius along the light axes
-		float r = 0.0f;
-		int n = 0;
+		// point light: s, t and falloff are 0.5 + 0.5 * x / radius along the light's
+		// box axes. The PICA attenuation is a sphere: it has to reach 0 inside the box
+		// (the frontend only gives the light to surfaces that touch the box, so light
+		// left at the box faces shows as hard edges between surfaces), so its radius is
+		// the smallest half-extent, and it is centred on the box.
+		float r = 1e9f;
 		const int planes[3] = { 0, 1, 3 };
 		for ( int k = 0; k < 3; k++ ) {
 			const float len = proj[ planes[k] ].Normal().Length();
 			if ( len > 1e-6f ) {
-				r += 0.5f / len;
-				n++;
+				r = Min( r, 0.5f / len );
 			}
 		}
-		r = ( n > 0 ) ? r / n : 300.0f;
+		if ( r > 1e8f ) {
+			r = 300.0f;
+		}
+		r *= n3ds_hwLightRadius.GetFloat();
 		out.invRadius = 1.0f / Max( r, 1.0f );
+		// box centre: s = t = falloff = 0.5
+		idMat3 m( proj[0].Normal(), proj[1].Normal(), proj[3].Normal() );
+		if ( m.InverseSelf() ) {
+			const idVec3 rhs( 0.5f - proj[0][3], 0.5f - proj[1][3], 0.5f - proj[3][3] );
+			const idVec3 centre( m[0] * rhs, m[1] * rhs, m[2] * rhs );		// rows of the inverse (idMat3 * vec is the transpose)
+			N3DS_EyePoint( worldToEye, centre, out.eyePos );
+		}
 		out.spot = false;
 		out.cosOuter = 2.0f;
 		return true;

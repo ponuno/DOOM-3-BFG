@@ -151,7 +151,8 @@ shares `n3ds_soundMemoryKB` with least-recently-played eviction. Needs the DSP f
 | `n3ds_lighting` | 2 | 0 = full brightness, 1 = a pass per light (light images, per-vertex N.L), 2 = PICA fragment lighting: one pass, per pixel, up to 8 lights per surface |
 | `n3ds_hwLightScale` | 4 | lighting 2: overbright range (2 or 4) |
 | `n3ds_hwSpotFlip` | 0 | lighting 2: reverse spot light directions |
-| `n3ds_ambient` | 0.06 | brightness of lit surfaces no light reaches (Doom 3: 0) |
+| `n3ds_hwLightRadius` | 1 | lighting 2: point light reach as a fraction of the smallest half-size of its box |
+| `n3ds_ambient` | 0.1 | brightness of lit surfaces no light reaches (Doom 3: 0) |
 | `n3ds_lightProjective` | 1 | light projection divided per pixel; 0 = per vertex |
 | `n3ds_lightScissor` | 1 | light passes clipped to the light's screen rectangle |
 | `n3ds_c3dValidate` | 0 | check every draw's indexes against its buffers (bring-up) |

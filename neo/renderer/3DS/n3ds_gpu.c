@@ -378,6 +378,8 @@ void * N3DSGPU_TexCreate( int width, int height, int format, int maxLevel, int r
 		fmt = GPU_RGBA5551;
 	} else if ( format == N3DS_TEX_RGBA4 ) {
 		fmt = GPU_RGBA4;
+	} else if ( format == N3DS_TEX_A8 ) {
+		fmt = GPU_A8;		// alpha-test masks (coverage images)
 	}
 	C3D_TexInitParams params;
 	memset( &params, 0, sizeof( params ) );
