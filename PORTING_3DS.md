@@ -84,6 +84,15 @@ Sound: `sound/3DS` — sample loader from the XAudio2 version, null hardware/voi
 - libctru: main stack 2 MB (default 32 KB is too small), linear heap 8 MB (default: half of RAM).
 - Threads: 2 job workers, Game/Draw (core 2 on New 3DS), AutoRender, savegame workers.
 
+## citro3d backend
+
+`renderer/3DS/`: `n3ds_gpu.c` (the only file including `<3ds.h>`/`<citro3d.h>`, built with short enums),
+`n3ds_backend.cpp` (walks the frontend's draw surfaces), `n3ds_vshader.v.pica` (built with picasso
+into a C array by `cmake/bin2c.cmake`). Vertex/index data are read straight from the vertex cache
+buffers, which the null GL layer keeps in linear memory. Build option `-DDOOM3DS_APP_HEAP_MB=86`
+(default) caps the application heap; the rest becomes linear memory. mars_city1 needs ~90 MB of
+heap: build with 96 and `+set n3ds_renderer 0` for it until the asset converter exists.
+
 ## Runtime switches (cmdline.txt, e.g. `+set n3ds_animQuant 0`)
 
 | cvar | default | effect |
@@ -95,6 +104,8 @@ Sound: `sound/3DS` — sample loader from the XAudio2 version, null hardware/voi
 | `n3ds_skipImageData` | 1 | `.bimage` pixel data is seeked over, not read (null GL); resources opened as streams are no longer buffered whole |
 | `n3ds_lazyInteractions` | 0 | light/entity interactions are not all pre-generated at map start (created when first in view) |
 | `n3ds_discardStaticGeo` | 1 | null GL: static vertex/index cache uploads dropped, their buffers never get storage (-8 MB heap, -3 MB linear) |
+| `n3ds_renderer` | 1 | 0 = null GL (nothing drawn), 1 = citro3d (stage 1: untextured world, one colour per material) |
+| `n3ds_staticVertexKB` / `n3ds_staticIndexKB` | 0 | static vertex/index cache size; 0 = 6144/2048 with citro3d, 10240/6144 budget-only with null GL |
 | `n3ds_core1Percent` | 30 | `APT_SetAppCpuTimeLimit` for the system core |
 
 Per-subsystem heap breakdown (`Mem_LogTags`): create an empty file `sdmc:/doom3/memtags`. It costs a 16-byte header per block (~4 MB on a loaded map), so it is off by default.

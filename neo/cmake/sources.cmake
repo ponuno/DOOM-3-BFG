@@ -251,6 +251,8 @@ set(ENGINE_3DS_SOURCES
 	sys/3ds/3ds_session_local.cpp
 	sys/3ds/3ds_signin.cpp
 	renderer/OpenGL/gl_null/gl_null.cpp
+	renderer/3DS/n3ds_backend.cpp
+	renderer/3DS/n3ds_gpu.c
 	sound/3DS/3DS_SoundHardware.cpp
 	sound/3DS/3DS_SoundSample.cpp
 	sound/3DS/3DS_SoundVoice.cpp

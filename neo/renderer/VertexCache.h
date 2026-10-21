@@ -45,9 +45,13 @@ const int VERTCACHE_NUM_FRAMES = 2;
 // index lists that reference existing vertexes
 #if defined( ID_3DS )
 // mars_city1's whole .bproc is 8.6 MB; map load prints how much of these was used
-// (with n3ds_discardStaticGeo these are only budgets: no storage behind them)
-const int STATIC_INDEX_MEMORY = 6 * 1024 * 1024;	// static interactions (light tris) live here too
-const int STATIC_VERTEX_MEMORY = 10 * 1024 * 1024;	// mars_city1 used 7917 KB
+// Set at renderer init (n3ds_staticVertexKB / n3ds_staticIndexKB, or by renderer):
+// null GL with n3ds_discardStaticGeo: budgets only (10 / 6 MB, mars_city1 used 7.9 / 2.1);
+// citro3d: real linear memory (6 / 2 MB, delta4 uses 3.7 / 0.9).
+extern int n3dsStaticIndexMemory;
+extern int n3dsStaticVertexMemory;
+#define STATIC_INDEX_MEMORY		n3dsStaticIndexMemory
+#define STATIC_VERTEX_MEMORY	n3dsStaticVertexMemory
 #else
 const int STATIC_INDEX_MEMORY = 31 * 1024 * 1024;
 const int STATIC_VERTEX_MEMORY = 31 * 1024 * 1024;	// make sure it fits in VERTCACHE_OFFSET_MASK!

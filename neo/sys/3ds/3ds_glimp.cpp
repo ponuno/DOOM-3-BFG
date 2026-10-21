@@ -76,7 +76,11 @@ bool GLimp_Init( glimpParms_t parms ) {
 	glConfig.depthBits = 24;
 	glConfig.stencilBits = 8;
 
-	idLib::Printf( "GLimp_Init: %dx%d (null GL)\n", glConfig.nativeScreenWidth, glConfig.nativeScreenHeight );
+	if ( cvarSystem->GetCVarInteger( "n3ds_renderer" ) == 1 ) {
+		RB_N3DS_Init();
+	}
+	idLib::Printf( "GLimp_Init: %dx%d (%s)\n", glConfig.nativeScreenWidth, glConfig.nativeScreenHeight,
+		r_n3dsC3D ? "citro3d" : "null GL" );
 	return true;
 }
 
@@ -97,6 +101,7 @@ GLimp_Shutdown
 ========================
 */
 void GLimp_Shutdown() {
+	RB_N3DS_Shutdown();
 }
 
 /*

@@ -840,7 +840,17 @@ void R_InitOpenGL() {
 
 #if defined( ID_3DS )
 	r_n3dsNoShadows = cvarSystem->GetCVarBool( "n3ds_noShadows" );
-	r_n3dsDiscardStaticGeo = cvarSystem->GetCVarBool( "n3ds_discardStaticGeo" );
+	// the citro3d backend draws from the static buffers, so they need real storage
+	r_n3dsDiscardStaticGeo = cvarSystem->GetCVarBool( "n3ds_discardStaticGeo" ) && !r_n3dsC3D;
+	{
+		const int vkb = cvarSystem->GetCVarInteger( "n3ds_staticVertexKB" );
+		const int ikb = cvarSystem->GetCVarInteger( "n3ds_staticIndexKB" );
+		n3dsStaticVertexMemory = ( vkb > 0 ? vkb : ( r_n3dsC3D ? 6144 : 10240 ) ) * 1024;
+		n3dsStaticIndexMemory = ( ikb > 0 ? ikb : ( r_n3dsC3D ? 2048 : 6144 ) ) * 1024;
+		common->Printf( "renderer: %s, static vertex cache %d KB, index %d KB%s\n",
+			r_n3dsC3D ? "citro3d" : "null GL", n3dsStaticVertexMemory / 1024, n3dsStaticIndexMemory / 1024,
+			r_n3dsDiscardStaticGeo ? " (budget only)" : "" );
+	}
 	idBinaryImage::skipPixelData = cvarSystem->GetCVarBool( "n3ds_skipImageData" );
 	common->Printf( "shadows: %s\n", r_n3dsNoShadows ? "disabled (n3ds_noShadows)" : "enabled" );
 #endif

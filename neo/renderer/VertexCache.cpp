@@ -51,6 +51,8 @@ static void ClearGeoBufferSet( geoBufferSet_t &gbs ) {
 
 #if defined( ID_3DS )
 extern int n3dsCacheOverflows;
+int n3dsStaticIndexMemory = 6 * 1024 * 1024;
+int n3dsStaticVertexMemory = 10 * 1024 * 1024;
 #endif
 
 /*
@@ -227,6 +229,12 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t & vcs, const void
 #endif
 		MapGeoBufferSet( vcs );
 		CopyBuffer( *base + offset, (const byte *)data, bytes );
+#if defined( ID_3DS )
+		if ( &vcs == &staticData ) {
+			// static data is written once (level load); frame data is flushed per frame
+			RB_N3DS_FlushForGPU( *base + offset, bytes );
+		}
+#endif
 	}
 
 	vertCacheHandle_t handle =	( (uint64)(currentFrame & VERTCACHE_FRAME_MASK ) << VERTCACHE_FRAME_SHIFT ) |
@@ -334,6 +342,12 @@ void idVertexCache::BeginBackEnd() {
 			mostUsedIndex / 1024,
 			mostUsedJoint / 1024 );
 	}
+
+#if defined( ID_3DS )
+	// the GPU reads physical memory: push this frame's writes out of the CPU cache
+	RB_N3DS_FlushForGPU( frameData[listNum].mappedVertexBase, frameData[listNum].vertexMemUsed.GetValue() );
+	RB_N3DS_FlushForGPU( frameData[listNum].mappedIndexBase, frameData[listNum].indexMemUsed.GetValue() );
+#endif
 
 	// unmap the current frame so the GPU can read it
 	const int startUnmap = Sys_Milliseconds();

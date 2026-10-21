@@ -1,0 +1,56 @@
+; New 3DS bring-up vertex shader: world geometry without textures.
+;   v0 = position (float3), v1 = normal (ubyte4, 0..255 -> -1..1)
+;   colour = surfColor * (0.35 + 0.65 * |N . L|) with a fixed model-space L,
+;   so surfaces of different orientation stay distinguishable.
+
+; Uniforms
+.fvec mvp[4], surfColor
+
+; Constants
+.constf consts(1.0, 0.0, 0.0078431373, -1.0)
+.constf lightDir(0.32, 0.53, 0.78, 0.0)
+.constf shadeK(0.35, 0.65, 0.0, 0.0)
+.alias  ones   consts.xxxx
+.alias  bscale consts.zzzz
+.alias  bbias  consts.wwww
+
+; Outputs
+.out outpos position
+.out outclr color
+
+; Inputs
+.alias inpos v0
+.alias innrm v1
+
+.proc main
+	; r0 = (xyz, 1)
+	mov r0.xyz, inpos
+	mov r0.w,   ones
+
+	; outpos = mvp * r0
+	dp4 outpos.x, mvp[0], r0
+	dp4 outpos.y, mvp[1], r0
+	dp4 outpos.z, mvp[2], r0
+	dp4 outpos.w, mvp[3], r0
+
+	; r1 = normal in -1..1
+	mov r1, innrm
+	mul r1, bscale, r1
+	add r1, bbias, r1
+
+	; r2.x = |dot( L, N )|
+	dp3 r2, lightDir, r1
+	mov r3, -r2
+	max r2, r2, r3
+
+	; r2 = 0.35 + 0.65 * r2.x
+	mul r2, shadeK.yyyy, r2.xxxx
+	add r2, shadeK.xxxx, r2
+
+	; outclr = surfColor * shade, alpha 1
+	mul r4, surfColor, r2.xxxx
+	mov r4.w, ones
+	mov outclr, r4
+
+	end
+.end

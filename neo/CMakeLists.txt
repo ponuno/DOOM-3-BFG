@@ -118,6 +118,34 @@ target_compile_definitions(engine PRIVATE __DOOM__)
 target_include_directories(engine PRIVATE . ..)
 target_link_libraries(engine PUBLIC idlib external)
 
+if(NINTENDO_3DS)
+	# n3ds_gpu.c is the only file that includes <3ds.h>/<citro3d.h>: build it with the
+	# toolchain's default short enums so libctru/citro3d struct layouts match
+	set_source_files_properties(renderer/3DS/n3ds_gpu.c PROPERTIES COMPILE_OPTIONS "-fshort-enums")
+
+	# application heap cap (MB); the rest of the memory becomes the linear heap
+	set(DOOM3DS_APP_HEAP_MB 86 CACHE STRING "New 3DS application heap in MB (max 96); the rest is linear (GPU) memory")
+	target_compile_definitions(engine PRIVATE N3DS_APP_HEAP_MB=${DOOM3DS_APP_HEAP_MB})
+
+	# vertex shader: picasso -> .shbin -> C array
+	set(N3DS_SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/renderer/3DS/n3ds_vshader.v.pica)
+	set(N3DS_SHADER_BIN ${CMAKE_CURRENT_BINARY_DIR}/n3ds_vshader.shbin)
+	set(N3DS_SHADER_C   ${CMAKE_CURRENT_BINARY_DIR}/n3ds_vshader_shbin.c)
+	if(DOOM3DS_COMPILE_CHECK)
+		file(WRITE ${N3DS_SHADER_C} "#include <stdint.h>\nconst uint8_t n3ds_vshader_shbin[4] = {0};\nconst uint32_t n3ds_vshader_shbin_size = 0;\n")
+	else()
+		find_program(TOOL_PICASSO picasso HINTS $ENV{DEVKITPRO}/tools/bin REQUIRED)
+		add_custom_command(OUTPUT ${N3DS_SHADER_BIN}
+			COMMAND ${TOOL_PICASSO} -o ${N3DS_SHADER_BIN} ${N3DS_SHADER_SRC}
+			DEPENDS ${N3DS_SHADER_SRC}
+			COMMENT "picasso n3ds_vshader.v.pica")
+		add_custom_command(OUTPUT ${N3DS_SHADER_C}
+			COMMAND ${CMAKE_COMMAND} -DIN=${N3DS_SHADER_BIN} -DOUT=${N3DS_SHADER_C} -DNAME=n3ds_vshader_shbin -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2c.cmake
+			DEPENDS ${N3DS_SHADER_BIN} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2c.cmake)
+	endif()
+	target_sources(engine PRIVATE ${N3DS_SHADER_C})
+endif()
+
 #--------------------------------------------------------------------------
 # game (d3xp, linked statically like the console builds)
 #--------------------------------------------------------------------------
@@ -153,7 +181,7 @@ elseif(NINTENDO_3DS)
 	# On Windows the game was a DLL, which keeps everything.
 	target_link_libraries(doom3ds PRIVATE
 		-Wl,--whole-archive game engine doomclassic idlib -Wl,--no-whole-archive
-		external ctru m
+		external citro3d ctru m
 		# our objects use 32-bit enums, libctru/newlib variable-size ones; enums only
 		# cross that boundary by value, so the ABI attribute mismatch is harmless
 		-Wl,--no-enum-size-warning)

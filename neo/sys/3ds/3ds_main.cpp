@@ -81,6 +81,10 @@ extern u32		__ctru_linear_heap;
 extern u32		__ctru_linear_heap_size;
 
 static const u32 N3DS_MIN_LINEAR_HEAP = 8 * 1024 * 1024;
+#if !defined( N3DS_APP_HEAP_MB )
+#define N3DS_APP_HEAP_MB 86
+#endif
+static const u32 N3DS_APP_HEAP_MAX = (u32)N3DS_APP_HEAP_MB * 1024 * 1024;
 
 void __system_allocateHeaps( void ) {
 	Result rc;
@@ -103,6 +107,11 @@ void __system_allocateHeaps( void ) {
 	u32 heapSize = ( remaining > N3DS_MIN_LINEAR_HEAP ) ? remaining - N3DS_MIN_LINEAR_HEAP : remaining / 2;
 	if ( heapSize > heapWindow ) {
 		heapSize = heapWindow;
+	}
+	// build option DOOM3DS_APP_HEAP_MB: what is not given to the heap goes to the
+	// linear heap (citro3d: vertex cache, command buffer, later textures)
+	if ( heapSize > N3DS_APP_HEAP_MAX ) {
+		heapSize = N3DS_APP_HEAP_MAX;
 	}
 	heapSize &= ~0xFFF;
 	__ctru_heap_size = heapSize;
@@ -138,6 +147,9 @@ idCVar n3ds_lazySaveBuffer( "n3ds_lazySaveBuffer", "1", CVAR_SYSTEM | CVAR_BOOL 
 idCVar n3ds_skipImageData( "n3ds_skipImageData", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "read only image headers, not pixels (the null GL drops them anyway)" );
 idCVar n3ds_lazyInteractions( "n3ds_lazyInteractions", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "do not pre-generate every light/entity interaction at map start; create them when first seen" );
 idCVar n3ds_discardStaticGeo( "n3ds_discardStaticGeo", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "null GL: drop static vertex/index cache uploads instead of keeping an 11 MB copy nobody draws" );
+idCVar n3ds_renderer( "n3ds_renderer", "1", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "0 = null GL (nothing drawn), 1 = citro3d" );
+idCVar n3ds_staticVertexKB( "n3ds_staticVertexKB", "0", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "static vertex cache size, 0 = default for the renderer" );
+idCVar n3ds_staticIndexKB( "n3ds_staticIndexKB", "0", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "static index cache size, 0 = default for the renderer" );
 idCVar n3ds_core1Percent( "n3ds_core1Percent", "30", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "share of the system core (core 1) given to the game's threads, 0-80" );
 
 idCVar sys_logFlush( "sys_logFlush", "1", CVAR_SYSTEM | CVAR_BOOL, "flush sdmc:/doom3/log.txt after every line (slower, but survives crashes)" );

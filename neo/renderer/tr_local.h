@@ -161,6 +161,12 @@ public:
 // model loaders drop shadow/silhouette data and no light casts shadows.
 extern bool r_n3dsNoShadows;
 extern bool r_n3dsDiscardStaticGeo;		// null GL: static vertex/index uploads are dropped
+extern bool r_n3dsC3D;					// citro3d backend active (renderer/3DS/n3ds_backend.cpp)
+struct emptyCommand_t;
+bool RB_N3DS_Init();
+void RB_N3DS_Shutdown();
+void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds );
+void RB_N3DS_FlushForGPU( const void * p, int size );
 #endif
 
 class idRenderLightLocal : public idRenderLight {

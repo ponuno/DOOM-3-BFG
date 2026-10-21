@@ -272,6 +272,24 @@ static GLvoid * NullGL_MapBuffer( GLenum target, GLintptr offset ) {
 	return b->data + offset;
 }
 
+/*
+	For the New 3DS citro3d backend: the storage behind a buffer object, and
+	whether it is in linear (GPU-visible) memory.
+*/
+void * NullGL_BufferStorage( GLuint name, bool * linear ) {
+	nullBuffer_t * b = NullGL_FindBuffer( name );
+	if ( b == NULL || !NullGL_EnsureStorage( b ) ) {
+		if ( linear != NULL ) {
+			*linear = false;
+		}
+		return NULL;
+	}
+	if ( linear != NULL ) {
+		*linear = b->linear;
+	}
+	return b->data;
+}
+
 static GLboolean NullGL_IsBuffer( GLuint name ) {
 	return NullGL_FindBuffer( name ) != NULL ? GL_TRUE : GL_FALSE;
 }
