@@ -532,6 +532,17 @@ void			Sys_ShowConsole( int visLevel, bool quitOnClose );
 // This really isn't the right place to have this, but since this is the 'top level' include
 // and has a function signature with 'FILE' in it, it kinda needs to be here =/
 #if defined( ID_3DS )
+// New 3DS hang watchdog: each thread records what it is doing; if no frame
+// completes for a few seconds the watchdog thread logs every slot.
+enum { N3DS_STAGE_MAIN, N3DS_STAGE_GAME, N3DS_STAGE_RENDER, N3DS_STAGE_COUNT };
+void			Sys_N3DSStage( int slot, const char * what );
+void			Sys_N3DSFrameDone();
+#define N3DS_STAGE( slot, what )	Sys_N3DSStage( slot, what )
+#else
+#define N3DS_STAGE( slot, what )
+#endif
+
+#if defined( ID_3DS )
 typedef FILE * idFileHandle;
 #else
 typedef HANDLE idFileHandle;

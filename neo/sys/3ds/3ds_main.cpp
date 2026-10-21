@@ -51,6 +51,7 @@ extern "C" {
 #include <3ds/services/apt.h>
 #include <3ds/services/hid.h>
 #include <3ds/gpu/gx.h>
+#include <3ds/thread.h>
 }
 
 n3dsVars_t	n3ds;
@@ -736,8 +737,61 @@ void Sys_SetLanguageFromSystem() {
 Sys_Init
 ================
 */
+/*
+================================================================================================
+
+	Hang watchdog
+
+================================================================================================
+*/
+static const char * volatile	n3dsStages[N3DS_STAGE_COUNT] = { "start", "-", "-" };
+static volatile uint32			n3dsFramesDone = 0;
+static Thread					n3dsWatchdogThread = NULL;
+
+void Sys_N3DSStage( int slot, const char * what ) {
+	if ( slot >= 0 && slot < N3DS_STAGE_COUNT ) {
+		n3dsStages[slot] = what;
+	}
+}
+
+void Sys_N3DSFrameDone() {
+	n3dsFramesDone++;
+}
+
+static void N3DS_WatchdogMain( void * ) {
+	uint32 lastFrames = n3dsFramesDone;
+	int stalledMs = 0;
+	bool reported = false;
+	for ( ;; ) {
+		svcSleepThread( 500LL * 1000 * 1000 );
+		const uint32 frames = n3dsFramesDone;
+		if ( frames != lastFrames ) {
+			if ( reported ) {
+				Sys_Printf( "WATCHDOG: frames resumed after %.1f s\n", stalledMs * 0.001f );
+			}
+			lastFrames = frames;
+			stalledMs = 0;
+			reported = false;
+			continue;
+		}
+		stalledMs += 500;
+		// frames only count once a map runs; loading has its own long pauses
+		if ( frames > 0 && !reported && stalledMs >= 5000 ) {
+			reported = true;
+			Sys_Printf( "WATCHDOG: no frame for %.1f s (frame %u): main '%s', game thread '%s', render '%s'\n",
+				stalledMs * 0.001f, frames, n3dsStages[N3DS_STAGE_MAIN], n3dsStages[N3DS_STAGE_GAME], n3dsStages[N3DS_STAGE_RENDER] );
+		} else if ( reported && ( stalledMs % 10000 ) == 0 ) {
+			Sys_Printf( "WATCHDOG: still stuck %.0f s: main '%s', game thread '%s', render '%s'\n",
+				stalledMs * 0.001f, n3dsStages[N3DS_STAGE_MAIN], n3dsStages[N3DS_STAGE_GAME], n3dsStages[N3DS_STAGE_RENDER] );
+		}
+	}
+}
+
 void Sys_Init() {
 	Sys_Printf( "%s\n", Sys_GetProcessorString() );
+
+	// higher priority than the engine threads so it runs even if one of them spins
+	n3dsWatchdogThread = threadCreate( N3DS_WatchdogMain, NULL, 16 * 1024, 0x19, -2, true );
 
 	// let threads placed on core 1 actually run (0 = none of its time is ours)
 	const int core1 = idMath::ClampInt( 0, 80, n3ds_core1Percent.GetInteger() );

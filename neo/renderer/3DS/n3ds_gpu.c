@@ -29,6 +29,11 @@ static shaderProgram_s		program;
 static int					uLocMvp = -1;
 static int					uLocColor = -1;
 static C3D_RenderTarget *	topTarget = NULL;
+static void					( *hangCallback )( unsigned int ) = NULL;
+
+void N3DSGPU_SetHangCallback( void ( *callback )( unsigned int waitedMs ) ) {
+	hangCallback = callback;
+}
 
 const char * N3DSGPU_LastError( void ) {
 	return lastError;
@@ -107,7 +112,19 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 	if ( !initialized || inFrame ) {
 		return;
 	}
-	C3D_FrameBegin( C3D_FRAME_SYNCDRAW );
+	// non-blocking polls so a hung GPU is reported instead of freezing silently
+	const u64 start = osGetTime();
+	int reported = 0;
+	while ( !C3D_FrameBegin( C3D_FRAME_SYNCDRAW | C3D_FRAME_NONBLOCK ) ) {
+		const u64 waited = osGetTime() - start;
+		if ( !reported && waited > 2000 ) {
+			reported = 1;
+			if ( hangCallback != NULL ) {
+				hangCallback( (unsigned int)waited );
+			}
+		}
+		svcSleepThread( 1000LL * 1000 );
+	}
 	C3D_RenderTargetClear( topTarget, C3D_CLEAR_ALL, clearRGBA, 0 );
 	C3D_FrameDrawOn( topTarget );
 	inFrame = 1;

@@ -21,7 +21,10 @@ int				N3DSGPU_Init( void );						// 1 on success
 void			N3DSGPU_Shutdown( void );
 const char *	N3DSGPU_LastError( void );
 
+// waits for the GPU to finish the previous frame; if that takes over 2 s the hang
+// callback is called once (then the wait goes on)
 void			N3DSGPU_BeginFrame( unsigned int clearRGBA );
+void			N3DSGPU_SetHangCallback( void ( *callback )( unsigned int waitedMs ) );
 void			N3DSGPU_EndFrame( void );
 
 // rows[16]: row-major 4x4, already converted to PICA clip space

@@ -119,6 +119,7 @@ int idGameThread::Run() {
 		// run the game logic
 		for ( int i = 0; i < numGameFrames; i++ ) {
 			SCOPED_PROFILE_EVENT( "GameTic" );
+			N3DS_STAGE( N3DS_STAGE_GAME, "game tic" );
 			if ( userCmdMgr ) {
 				game->RunFrame( *userCmdMgr, ret );
 			}
@@ -136,6 +137,7 @@ int idGameThread::Run() {
 	}
 
 	commonLocal.frameTiming.finishGameTime = Sys_Microseconds();
+	N3DS_STAGE( N3DS_STAGE_GAME, "game draw" );
 
 #if defined( ID_3DS )
 	{
@@ -157,6 +159,7 @@ int idGameThread::Run() {
 	}
 
 	commonLocal.frameTiming.finishDrawTime = Sys_Microseconds();
+	N3DS_STAGE( N3DS_STAGE_GAME, "idle" );
 #if defined( ID_3DS )
 	n3dsPerfDrawUs += commonLocal.frameTiming.finishDrawTime - commonLocal.frameTiming.finishGameTime;
 #endif
@@ -404,6 +407,7 @@ void idCommonLocal::Frame() {
 		PerformGameSwitch();
 
 		// pump all the events
+		N3DS_STAGE( N3DS_STAGE_MAIN, "events" );
 		Sys_GenerateEvents();
 
 		// write config file if anything changed
@@ -453,6 +457,7 @@ void idCommonLocal::Frame() {
 		// This may block if the GPU isn't finished renderng the previous frame.
 		frameTiming.startSyncTime = Sys_Microseconds();
 		const emptyCommand_t * renderCommands = NULL;
+		N3DS_STAGE( N3DS_STAGE_MAIN, "swap command buffers" );
 		if ( com_smp.GetBool() ) {
 			renderCommands = renderSystem->SwapCommandBuffers( &time_frontend, &time_backend, &time_shadows, &time_gpu );
 		} else {
@@ -642,6 +647,7 @@ void idCommonLocal::Frame() {
 		}
 		
 		// start the game / draw command generation thread going in the background
+		N3DS_STAGE( N3DS_STAGE_MAIN, "run game and draw" );
 		gameReturn_t ret = gameThread.RunGameAndDraw( numGameFrames, userCmdMgr, IsClient(), gameFrame - numGameFrames );
 
 		if ( !com_smp.GetBool() ) {
@@ -655,7 +661,9 @@ void idCommonLocal::Frame() {
 		// ASAP to minimize the pipeline bubble.
 		//----------------------------------------
 		frameTiming.startRenderTime = Sys_Microseconds();
+		N3DS_STAGE( N3DS_STAGE_MAIN, "render command buffers" );
 		renderSystem->RenderCommandBuffers( renderCommands );
+		N3DS_STAGE( N3DS_STAGE_MAIN, "after render" );
 		if ( com_sleepRender.GetInteger() > 0 ) {
 			// debug tool to test frame adaption
 			Sys_Sleep( com_sleepRender.GetInteger() );
@@ -699,6 +707,9 @@ void idCommonLocal::Frame() {
 		}
 
 #if defined( ID_3DS )
+		if ( mapSpawned ) {
+			Sys_N3DSFrameDone();
+		}
 		// New 3DS: one line every 2 seconds once a map is running
 		{
 			static int perfStart = 0;

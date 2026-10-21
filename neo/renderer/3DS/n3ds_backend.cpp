@@ -52,6 +52,32 @@ static int		c3dStatBad = 0;
 static float	c3dStatCmdMax = 0.0f;
 static float	c3dStatGpuMs = 0.0f;
 static int		c3dStatStart = 0;
+static int		c3dBadMatrix = 0;
+
+// the previous frame's draws, dumped if the GPU does not finish it
+struct c3dDrawRecord_t {
+	const idMaterial *	material;
+	int					numIndexes;
+	int					vbOffset;
+	int					ibOffset;
+	unsigned int		vbName;
+	unsigned int		ibName;
+};
+static const int		C3D_MAX_RECORDS = 160;
+static c3dDrawRecord_t	c3dRecords[2][C3D_MAX_RECORDS];
+static int				c3dNumRecords[2];
+static int				c3dRecordSet = 0;		// set being filled this frame
+
+static void N3DS_GPUHang( unsigned int waitedMs ) {
+	const int prev = c3dRecordSet;		// not flipped yet: the frame the GPU is still on
+	common->Printf( "citro3d: GPU has not finished the previous frame after %u ms (3D frame %d); its %d draws:\n",
+		waitedMs, c3dFrame3D, c3dNumRecords[prev] );
+	for ( int i = 0; i < c3dNumRecords[prev]; i++ ) {
+		const c3dDrawRecord_t & r = c3dRecords[prev][i];
+		common->Printf( "  %3d %s: %d indexes, vb %u+%d, ib %u+%d\n", i,
+			r.material != NULL ? r.material->GetName() : "?", r.numIndexes, r.vbName, r.vbOffset, r.ibName, r.ibOffset );
+	}
+}
 
 /*
 ========================
@@ -64,6 +90,7 @@ bool RB_N3DS_Init() {
 		r_n3dsC3D = false;
 		return false;
 	}
+	N3DSGPU_SetHangCallback( N3DS_GPUHang );
 	common->Printf( "citro3d: initialized (stage 1: untextured world)\n" );
 	r_n3dsC3D = true;
 	return true;
@@ -101,7 +128,15 @@ orientation and z remapped to -w..0, the same as citro3d's *Tilt projections:
 	{{0,1,0,0},{-1,0,0,0},{0,0,0.5,-0.5},{0,0,0,1}} * mvp
 ========================
 */
-static void N3DS_SetMVP( const idRenderMatrix & mvp ) {
+static bool N3DS_SetMVP( const idRenderMatrix & mvp ) {
+	for ( int i = 0; i < 4; i++ ) {
+		for ( int j = 0; j < 4; j++ ) {
+			const float v = mvp[i][j];
+			if ( IEEE_FLT_IS_NAN( v ) || IEEE_FLT_IS_INF( v ) || idMath::Fabs( v ) > 1e12f ) {
+				return false;
+			}
+		}
+	}
 	float rows[16];
 	const float * r0 = mvp[0];
 	const float * r1 = mvp[1];
@@ -114,6 +149,7 @@ static void N3DS_SetMVP( const idRenderMatrix & mvp ) {
 		rows[3 * 4 + c] = r3[c];
 	}
 	N3DSGPU_SetMatrix( rows );
+	return true;
 }
 
 /*
@@ -181,6 +217,7 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 	const bool validate = n3ds_c3dValidate.GetBool();
 	int draws = 0;
 	const viewEntity_t * lastSpace = NULL;
+	bool spaceOk = true;
 	GLuint lastVBName = 0, lastIBName = 0;
 	byte * vbBase = NULL;
 	byte * ibBase = NULL;
@@ -241,8 +278,23 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 		draws++;
 
 		if ( surf->space != lastSpace ) {
-			N3DS_SetMVP( surf->space->mvp );
+			spaceOk = N3DS_SetMVP( surf->space->mvp );
 			lastSpace = surf->space;
+			if ( !spaceOk && c3dBadMatrix++ < 8 ) {
+				common->Printf( "citro3d: non-finite matrix for %s, its surfaces are skipped\n", material->GetName() );
+			}
+		}
+		if ( !spaceOk ) {
+			continue;
+		}
+		if ( c3dNumRecords[c3dRecordSet] < C3D_MAX_RECORDS ) {
+			c3dDrawRecord_t & r = c3dRecords[c3dRecordSet][c3dNumRecords[c3dRecordSet]++];
+			r.material = material;
+			r.numIndexes = surf->numIndexes;
+			r.vbOffset = vb.GetOffset();
+			r.ibOffset = ib.GetOffset();
+			r.vbName = vbName;
+			r.ibName = ibName;
 		}
 		N3DS_MaterialColor( material );
 		if ( test == 2 ) {
@@ -290,7 +342,11 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		common->Printf( "citro3d: 3D frame %d: begin\n", c3dFrame3D );
 	}
 
+	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: waiting for GPU" );
 	N3DSGPU_BeginFrame( 0x182030FF );
+	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: drawing" );
+	c3dRecordSet ^= 1;
+	c3dNumRecords[c3dRecordSet] = 0;
 	if ( trace ) {
 		common->Printf( "citro3d: 3D frame %d: GPU ready, previous frame %.2f ms\n", c3dFrame3D, N3DSGPU_DrawingTimeMs() );
 	}
@@ -310,7 +366,9 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		common->Printf( "citro3d: 3D frame %d: %d draws, command buffer %.0f%%, submitting\n",
 			c3dFrame3D, c3dStatDraws - drawsBefore, cmdUse * 100.0f );
 	}
+	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: submitting" );
 	N3DSGPU_EndFrame();
+	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: idle" );
 	if ( trace ) {
 		common->Printf( "citro3d: 3D frame %d: submitted\n", c3dFrame3D );
 	}
