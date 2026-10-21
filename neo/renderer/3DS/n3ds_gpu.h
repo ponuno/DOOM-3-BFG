@@ -98,6 +98,20 @@ void			N3DSGPU_HWAmbient( float r, float g, float b );
 // colour; alphaSource as N3DSGPU_SetFillPass (mask on unit 1); depth written
 void			N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, int scale );
 
+// ambient / GUI stages (program 2 = n3ds_vshader_amb)
+// colour = ( vertex colour * vcModulate + vcAdd ) * color; st through texS / texT
+void			N3DSGPU_SetStageUniforms( const float * color, float vcModulate, float vcAdd, const float * texS, const float * texT );
+// blend factors in GL order (0 zero, 1 one, 2 src colour, 3 1-src colour, 4 dst colour,
+// 5 1-dst colour, 6 src alpha, 7 1-src alpha, 8 dst alpha, 9 1-dst alpha); blendOp 0 add,
+// 1 subtract, 2 min, 3 max; depthFunc 0 GL lequal, 1 always, 2 GL greater, 3 equal;
+// writeMask PICA bits (1 r, 2 g, 4 b, 8 a, 0x10 depth); alphaRef 0..255 or -1; depth bias
+// in 1/65536 units towards the viewer
+void			N3DSGPU_SetStageState( int srcBlend, int dstBlend, int blendOp, int depthFunc, int writeMask,
+									int alphaRef, int depthBiasUnits );
+// texture (or NULL) x vertex colour; swf: + swfAdd[4] (signed) and premultiplied alpha
+void			N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd );
+void			N3DSGPU_EndStages( void );
+
 // scissor in render target pixels (240 x 400, the 3DS framebuffer orientation),
 // right/bottom exclusive
 void			N3DSGPU_SetScissor( int enable, int left, int top, int right, int bottom );

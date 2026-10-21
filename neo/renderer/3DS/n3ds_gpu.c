@@ -18,6 +18,8 @@ extern const u8		n3ds_vshader_shbin[];
 extern const u32	n3ds_vshader_shbin_size;
 extern const u8		n3ds_vshader_lit_shbin[];
 extern const u32	n3ds_vshader_lit_shbin_size;
+extern const u8		n3ds_vshader_amb_shbin[];
+extern const u32	n3ds_vshader_amb_shbin_size;
 
 #define DISPLAY_TRANSFER_FLAGS \
 	( GX_TRANSFER_FLIP_VERT( 0 ) | GX_TRANSFER_OUT_TILED( 0 ) | GX_TRANSFER_RAW_COPY( 0 ) | \
@@ -46,7 +48,18 @@ static int					litMvp = -1;
 static int					litMv = -1;
 static int					litColor = -1;
 static int					litPow2 = -1;
-static int					activeLit = 0;			// program in use
+static int					activeLit = 0;			// program in use: 0 base, 1 lit, 2 ambient/gui
+// ambient / GUI program (n3ds_vshader_amb.v.pica)
+static DVLB_s *				vshDvlbAmb = NULL;
+static shaderProgram_s		programAmb;
+static int					ambOk = 0;
+static int					ambMvp = -1;
+static int					ambColor = -1;
+static int					ambVc = -1;
+static int					ambTexS = -1;
+static int					ambTexT = -1;
+static int					ambPow2 = -1;
+static int					stageStateKey = -1;
 static int					texEnvMode = -1;		// texture combiner setup of the current pass
 static int					alphaTestOn = -1;
 
@@ -142,6 +155,18 @@ int N3DSGPU_Init( void ) {
 		litPow2 = shaderInstanceGetUniformLocation( programLit.vertexShader, "pow2" );
 		litOk = ( litMvp >= 0 && litMv >= 0 && litColor >= 0 && litPow2 >= 0 );
 	}
+	vshDvlbAmb = DVLB_ParseFile( (u32 *)n3ds_vshader_amb_shbin, n3ds_vshader_amb_shbin_size );
+	if ( vshDvlbAmb != NULL && vshDvlbAmb->numDVLE >= 1 ) {
+		shaderProgramInit( &programAmb );
+		shaderProgramSetVsh( &programAmb, &vshDvlbAmb->DVLE[0] );
+		ambMvp = shaderInstanceGetUniformLocation( programAmb.vertexShader, "mvp" );
+		ambColor = shaderInstanceGetUniformLocation( programAmb.vertexShader, "stageColor" );
+		ambVc = shaderInstanceGetUniformLocation( programAmb.vertexShader, "vcParams" );
+		ambTexS = shaderInstanceGetUniformLocation( programAmb.vertexShader, "texS" );
+		ambTexT = shaderInstanceGetUniformLocation( programAmb.vertexShader, "texT" );
+		ambPow2 = shaderInstanceGetUniformLocation( programAmb.vertexShader, "pow2" );
+		ambOk = ( ambMvp >= 0 && ambColor >= 0 && ambVc >= 0 && ambTexS >= 0 && ambTexT >= 0 && ambPow2 >= 0 );
+	}
 	N3DS_HWLightInit();
 
 	C3D_AttrInfo * attrInfo = C3D_GetAttrInfo();
@@ -149,6 +174,7 @@ int N3DSGPU_Init( void ) {
 	AttrInfo_AddLoader( attrInfo, 0, GPU_FLOAT, 3 );			// v0 = position
 	AttrInfo_AddLoader( attrInfo, 1, GPU_UNSIGNED_BYTE, 4 );	// v1 = normal
 	AttrInfo_AddLoader( attrInfo, 2, GPU_SHORT, 2 );			// v2 = st (raw half floats)
+	AttrInfo_AddLoader( attrInfo, 3, GPU_UNSIGNED_BYTE, 4 );	// v3 = vertex colour
 
 	texEnvMode = -1;
 	alphaTestOn = -1;
@@ -180,6 +206,12 @@ void N3DSGPU_Shutdown( void ) {
 	C3D_LightEnvBind( NULL );
 	shaderProgramFree( &program );
 	DVLB_Free( vshDvlb );
+	if ( vshDvlbAmb != NULL ) {
+		shaderProgramFree( &programAmb );
+		DVLB_Free( vshDvlbAmb );
+		vshDvlbAmb = NULL;
+	}
+	ambOk = 0;
 	if ( vshDvlbLit != NULL ) {
 		shaderProgramFree( &programLit );
 		DVLB_Free( vshDvlbLit );
@@ -236,11 +268,11 @@ void N3DSGPU_SetMatrix( const float * rows ) {
 		mtx.r[i].z = rows[i * 4 + 2];
 		mtx.r[i].w = rows[i * 4 + 3];
 	}
-	C3D_FVUnifMtx4x4( GPU_VERTEX_SHADER, activeLit ? litMvp : uLocMvp, &mtx );
+	C3D_FVUnifMtx4x4( GPU_VERTEX_SHADER, activeLit == 2 ? ambMvp : ( activeLit ? litMvp : uLocMvp ), &mtx );
 }
 
 void N3DSGPU_SetColor( float r, float g, float b, float a ) {
-	C3D_FVUnifSet( GPU_VERTEX_SHADER, activeLit ? litColor : uLocColor, r, g, b, a );
+	C3D_FVUnifSet( GPU_VERTEX_SHADER, activeLit == 2 ? ambColor : ( activeLit ? litColor : uLocColor ), r, g, b, a );
 }
 
 void N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short * indexes, int numIndexes ) {
@@ -250,8 +282,9 @@ void N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short *
 	C3D_BufInfo * bufInfo = C3D_GetBufInfo();
 	BufInfo_Init( bufInfo );
 	// idDrawVert, 32 bytes, described completely so the components add up to the stride:
-	// position (attr 0, 12) | st (attr 2, 4) | normal (attr 1, 4) | tangent, color, color2 (pad 12 = 0xE)
-	BufInfo_Add( bufInfo, verts, stride, 4, 0xE120 );
+	// position (attr 0, 12) | st (attr 2, 4) | normal (attr 1, 4) | tangent (pad 4 = 0xC) |
+	// colour (attr 3, 4) | colour2 (pad 4)
+	BufInfo_Add( bufInfo, verts, stride, 6, 0xC3C120 );
 	C3D_DrawElements( GPU_TRIANGLES, numIndexes, C3D_UNSIGNED_SHORT, indexes );
 }
 
@@ -259,6 +292,7 @@ typedef struct {
 	float			xyz[3];
 	short			st[2];
 	unsigned char	normal[4];
+	unsigned char	color[4];
 } testVert_t;
 
 static testVert_t *			testVerts = NULL;
@@ -290,6 +324,7 @@ void N3DSGPU_DrawTestTriangle( void ) {
 			testVerts[i].normal[1] = 128;
 			testVerts[i].normal[2] = 255;
 			testVerts[i].normal[3] = 0;
+			testVerts[i].color[0] = testVerts[i].color[1] = testVerts[i].color[2] = testVerts[i].color[3] = 255;
 			testIndexes[i] = (unsigned short)i;
 		}
 		GSPGPU_FlushDataCache( testVerts, 3 * sizeof( testVert_t ) );
@@ -302,7 +337,7 @@ void N3DSGPU_DrawTestTriangle( void ) {
 	N3DSGPU_SetPassParams( 1, 0 );
 	C3D_BufInfo * bufInfo = C3D_GetBufInfo();
 	BufInfo_Init( bufInfo );
-	BufInfo_Add( bufInfo, testVerts, sizeof( testVert_t ), 3, 0x120 );
+	BufInfo_Add( bufInfo, testVerts, sizeof( testVert_t ), 4, 0x3120 );
 	C3D_DrawElements( GPU_TRIANGLES, 3, C3D_UNSIGNED_SHORT, testIndexes );
 }
 
@@ -656,27 +691,33 @@ static void N3DS_HWLightInit( void ) {
 }
 
 int N3DSGPU_UseProgram( int lit ) {
-	if ( lit && !litOk ) {
+	if ( lit == 1 && !litOk ) {
+		return 0;
+	}
+	if ( lit == 2 && !ambOk ) {
 		return 0;
 	}
 	if ( lit == activeLit ) {
 		return 1;
 	}
 	activeLit = lit;
-	C3D_BindProgram( lit ? &programLit : &program );
-	N3DS_SetPow2( lit ? litPow2 : uLocPow2 );		// the programs' uniforms share registers
+	C3D_BindProgram( lit == 2 ? &programAmb : ( lit ? &programLit : &program ) );
+	N3DS_SetPow2( lit == 2 ? ambPow2 : ( lit ? litPow2 : uLocPow2 ) );	// the programs' uniforms share registers
 	texEnvMode = -1;
 	alphaTestOn = -1;
-	if ( !lit ) {
+	stageStateKey = -1;
+	if ( lit != 1 ) {
 		C3D_LightEnvBind( NULL );
 		hwEnvBound = 0;
+	}
+	if ( lit == 0 ) {
 		N3DSGPU_SetFillPass( NULL, NULL, 0 );
 	}
 	return 1;
 }
 
 void N3DSGPU_SetModelView( const float * rows ) {
-	if ( !activeLit ) {
+	if ( activeLit != 1 ) {
 		return;
 	}
 	C3D_FVUnifSet( GPU_VERTEX_SHADER, litMv + 0, rows[0], rows[1], rows[2], rows[3] );
@@ -793,4 +834,106 @@ void N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, i
 		alphaTestOn = at;
 		C3D_AlphaTest( at != 0, GPU_GREATER, 127 );
 	}
+}
+
+/*
+================================================================================================
+
+	Ambient / GUI stages (program 2)
+
+================================================================================================
+*/
+
+void N3DSGPU_SetStageUniforms( const float * color, float vcModulate, float vcAdd, const float * texS, const float * texT ) {
+	if ( activeLit != 2 ) {
+		return;
+	}
+	C3D_FVUnifSet( GPU_VERTEX_SHADER, ambColor, color[0], color[1], color[2], color[3] );
+	C3D_FVUnifSet( GPU_VERTEX_SHADER, ambVc, vcModulate, vcAdd, 0.0f, 0.0f );
+	C3D_FVUnifSet( GPU_VERTEX_SHADER, ambTexS, texS[0], texS[1], texS[2], texS[3] );
+	C3D_FVUnifSet( GPU_VERTEX_SHADER, ambTexT, texT[0], texT[1], texT[2], texT[3] );
+}
+
+static GPU_BLENDFACTOR N3DS_BlendFactor( int f ) {
+	// N3DS_BLEND_* have the PICA (= GL) order
+	return (GPU_BLENDFACTOR)f;
+}
+
+void N3DSGPU_SetStageState( int srcBlend, int dstBlend, int blendOp, int depthFunc, int writeMask,
+		int alphaRef, int depthBiasUnits ) {
+	const int key = srcBlend | ( dstBlend << 4 ) | ( blendOp << 8 ) | ( depthFunc << 10 ) | ( writeMask << 13 ) |
+		( ( alphaRef + 1 ) << 18 ) | ( ( depthBiasUnits & 0xFF ) << 27 );
+	if ( key == stageStateKey ) {
+		return;
+	}
+	stageStateKey = key;
+	static const GPU_BLENDEQUATION ops[4] = { GPU_BLEND_ADD, GPU_BLEND_SUBTRACT, GPU_BLEND_MIN, GPU_BLEND_MAX };
+	C3D_AlphaBlend( ops[blendOp & 3], ops[blendOp & 3], N3DS_BlendFactor( srcBlend ), N3DS_BlendFactor( dstBlend ),
+		N3DS_BlendFactor( srcBlend ), N3DS_BlendFactor( dstBlend ) );
+	// the depth buffer is reversed (near = 1): GL's LEQUAL becomes GEQUAL
+	static const GPU_TESTFUNC funcs[5] = { GPU_GEQUAL, GPU_ALWAYS, GPU_LESS, GPU_EQUAL, GPU_ALWAYS };
+	const int f = ( depthFunc >= 0 && depthFunc < 5 ) ? depthFunc : 1;
+	C3D_DepthTest( true, funcs[f], (GPU_WRITEMASK)( writeMask & 0x1F ) );
+	if ( alphaRef >= 0 ) {
+		C3D_AlphaTest( true, GPU_GREATER, alphaRef );
+	} else {
+		C3D_AlphaTest( false, GPU_ALWAYS, 0 );
+	}
+	alphaTestOn = -1;
+	// polygon offset: pull the depth towards the viewer
+	C3D_DepthMap( true, -1.0f, (float)depthBiasUnits * ( 1.0f / 65536.0f ) );
+}
+
+void N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd ) {
+	// normal stage: texture x vertex colour. SWF GUI (as gui.pixel): texture x vertex
+	// colour + add colour, then the colour premultiplied by its alpha
+	if ( tex != NULL ) {
+		C3D_TexBind( 0, (C3D_Tex *)tex );
+	}
+	const int key = 0x800 | ( tex != NULL ? 1 : 0 ) | ( swf ? 2 : 0 );
+	if ( key != texEnvMode || swf ) {
+		texEnvMode = key;
+		C3D_TexEnv * env = C3D_GetTexEnv( 0 );
+		C3D_TexEnvInit( env );
+		if ( tex != NULL ) {
+			C3D_TexEnvSrc( env, C3D_Both, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_Both, GPU_MODULATE );
+		} else {
+			C3D_TexEnvSrc( env, C3D_Both, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_Both, GPU_REPLACE );
+		}
+		env = C3D_GetTexEnv( 1 );
+		C3D_TexEnvInit( env );
+		env = C3D_GetTexEnv( 2 );
+		C3D_TexEnvInit( env );
+		if ( swf ) {
+			// + add colour (signed, stored as 0.5 + add / 2)
+			env = C3D_GetTexEnv( 1 );
+			C3D_TexEnvSrc( env, C3D_Both, GPU_PREVIOUS, GPU_CONSTANT, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_Both, GPU_ADD_SIGNED );
+			u32 c = 0;
+			for ( int k = 0; k < 4; k++ ) {
+				float v = 0.5f + 0.5f * swfAdd[k];
+				v = v < 0.0f ? 0.0f : ( v > 1.0f ? 1.0f : v );
+				c |= ( (u32)( v * 255.0f + 0.5f ) ) << ( 8 * k );
+			}
+			C3D_TexEnvColor( env, c );
+			// premultiply
+			env = C3D_GetTexEnv( 2 );
+			C3D_TexEnvSrc( env, C3D_RGB, GPU_PREVIOUS, GPU_PREVIOUS, GPU_PRIMARY_COLOR );
+			C3D_TexEnvOpRgb( env, GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_ALPHA, GPU_TEVOP_RGB_SRC_COLOR );
+			C3D_TexEnvFunc( env, C3D_RGB, GPU_MODULATE );
+		}
+	}
+}
+
+void N3DSGPU_EndStages( void ) {
+	// back to the opaque setup
+	C3D_DepthMap( true, -1.0f, 0.0f );
+	C3D_DepthTest( true, GPU_GREATER, GPU_WRITE_ALL );
+	C3D_AlphaBlend( GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO );
+	C3D_AlphaTest( false, GPU_ALWAYS, 0 );
+	alphaTestOn = -1;
+	stageStateKey = -1;
+	texEnvMode = -1;
 }

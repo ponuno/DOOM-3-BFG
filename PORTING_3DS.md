@@ -117,6 +117,13 @@ Its lights come from the interaction lists (matched to the view surface by verte
 space). Point lights -> positional lights with a shared distance attenuation table scaled by the
 radius (derived from the light projection planes); projected lights -> spot lights (axis and cone
 from the projection frustum, range from the falloff plane); ambient lights -> surface ambient.
+Ambient stages and GUIs (`N3DS_DrawAmbientStages`, third program `n3ds_vshader_amb.v.pica`): after
+the lit passes every SL_AMBIENT stage is drawn as RB_DrawShaderPasses does (blend/depth/alpha-test
+state from drawStateBits, stage colour x vertex colour, texture matrix, polygon offset); unlit opaque
+materials are filled black so their stages land on black. RC_DRAW_VIEW_GUI views (HUD, menus,
+loading screens) are drawn the same way without depth; SWF stages (GLS_OVERRIDE) add the colour2
+transform and premultiply alpha like gui.pixel. GUI/font images keep a level up to
+`n3ds_texGuiMaxSize` (512). Not yet: TG_SCREEN/cube texgens, cinematics, program stages, scissor.
 Skinned models are skinned on the CPU (`r_useGPUSkinning` forced to 0 with citro3d).
 
 ## Sound
@@ -160,6 +167,9 @@ shares `n3ds_soundMemoryKB` with least-recently-played eviction. Needs the DSP f
 | `n3ds_soundMemoryKB` | 8192 | sound sample data budget |
 | `n3ds_soundPreloadKB` | 48 | samples up to this size are read at level load |
 | `n3ds_soundVolume` | 1 | mixer master volume |
+| `n3ds_ambientStages` | 1 | ambient/blended stages and fullscreen GUIs |
+| `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD / font texture |
+| `n3ds_polygonOffset` | 4 | depth bias per material polygonOffset unit (decals) |
 | `n3ds_debugPhysics` | 0 | heavy physics diagnostics: NaN checks per AF step, LCP dumps, trace counters, SLOW AF lines |
 | `n3ds_staticVertexKB` / `n3ds_staticIndexKB` | 0 | static vertex/index cache size; 0 = 6144/2048 with citro3d, 10240/6144 budget-only with null GL |
 | `n3ds_core1Percent` | 30 | `APT_SetAppCpuTimeLimit` for the system core |

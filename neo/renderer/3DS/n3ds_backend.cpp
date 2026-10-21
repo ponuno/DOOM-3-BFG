@@ -70,6 +70,8 @@ static int		c3dStatScissorPixels = 0;	// light rectangles, summed
 
 idCVar n3ds_lighting( "n3ds_lighting", "2", CVAR_RENDERER | CVAR_INTEGER, "citro3d: 0 = everything at full brightness, 1 = a pass per light (projected light images, per-vertex N.L), 2 = PICA fragment lighting, one pass, up to 8 lights per surface" );
 idCVar n3ds_hwLightRadius( "n3ds_hwLightRadius", "1", CVAR_RENDERER | CVAR_FLOAT, "citro3d n3ds_lighting 2: point light reach as a fraction of the smallest half-size of the light box" );
+idCVar n3ds_ambientStages( "n3ds_ambientStages", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: draw ambient / blended material stages (glows, glass, particles, decals, screens) and fullscreen GUIs" );
+idCVar n3ds_polygonOffset( "n3ds_polygonOffset", "4", CVAR_RENDERER | CVAR_FLOAT, "citro3d: depth bias per material polygonOffset unit (1/65536 of the depth range)" );
 idCVar n3ds_hwSpotFlip( "n3ds_hwSpotFlip", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d n3ds_lighting 2: reverse the spot light direction (if the flashlight lights everything but its cone)" );
 idCVar n3ds_hwLightScale( "n3ds_hwLightScale", "4", CVAR_RENDERER | CVAR_INTEGER, "citro3d n3ds_lighting 2: overbright range, 2 or 4 (light colours are divided by it, the combiner multiplies)" );
 idCVar n3ds_ambient( "n3ds_ambient", "0.1", CVAR_RENDERER | CVAR_FLOAT, "citro3d: brightness of lit surfaces where no light reaches (Doom 3 itself: 0)" );
@@ -534,7 +536,8 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 				alphaSource = ( maskTex != NULL ) ? 2 : 0;
 			}
 		}
-		const float level = images.lit ? ambient : 1.0f;
+		// unlit materials: black with depth, their ambient stages are drawn on top later
+		const float level = images.lit ? ambient : ( n3ds_ambientStages.GetBool() ? 0.0f : 1.0f );
 		if ( colorTex != NULL ) {
 			N3DSGPU_SetColor( level, level, level, 1.0f );
 			c3dStatTextured++;
@@ -1055,17 +1058,220 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 				b = idMath::ClampFloat( 0.0f, 1.0f, surf->shaderRegisters[ diffuseStage->color.registers[2] ] );
 			}
 		}
+		if ( !lit && n3ds_ambientStages.GetBool() ) {
+			r = g = b = 0.0f;		// unlit: black with depth, the ambient stages come later
+		}
 		if ( colorTex != NULL ) {
 			c3dStatTextured++;
 			N3DSGPU_SetColor( r, g, b, 1.0f );
 		} else {
-			N3DS_MaterialColor( material, 1.0f );
+			N3DS_MaterialColor( material, lit ? 1.0f : r );
 		}
 		N3DSGPU_SetHWPass( colorTex, maskTex, alphaSource, lit ? 1 : 0, combinerScale );
 		N3DS_Draw( surf, verts, indexes, record, test );
 	}
 }
 
+
+/*
+================================================================================================
+
+	Ambient stages and GUIs (as RB_DrawShaderPasses)
+
+	Every SL_AMBIENT stage of every surface, in sort order, with the stage's blend,
+	depth and alpha test state, stage colour x vertex colour, the stage's texture
+	matrix and polygon offset. In 3D views this runs after the fill/light passes
+	(unlit opaque materials were filled black, so their stages land on black like
+	on the PC); fullscreen GUI views (HUD, menus, loading screens) are only this,
+	without depth. SWF GUIs (GLS_OVERRIDE) add their colour transform (color2) and
+	premultiply alpha like gui.pixel. Not yet: TG_SCREEN / cube texgens,
+	cinematics, new-style (program) stages, scissor.
+
+================================================================================================
+*/
+
+static int c3dStatStages = 0;
+static int c3dStatStagesSkipped = 0;
+
+// GLS source / destination blend bits -> GL-order factor numbers (see N3DSGPU_SetStageState)
+static int N3DS_SrcBlend( uint64 bits ) {
+	static const int map[8] = { 1, 0, 4, 5, 6, 7, 8, 9 };
+	return map[ bits & GLS_SRCBLEND_BITS ];
+}
+static int N3DS_DstBlend( uint64 bits ) {
+	static const int map[8] = { 0, 1, 2, 3, 6, 7, 8, 9 };
+	return map[ ( bits & GLS_DSTBLEND_BITS ) >> 3 ];
+}
+
+static void N3DS_DrawAmbientStages( const viewDef_t * viewDef, bool gui ) {
+	if ( !n3ds_ambientStages.GetBool() || !N3DSGPU_UseProgram( 2 ) ) {
+		return;
+	}
+	n3dsBuffers_t buffers;
+	memset( &buffers, 0, sizeof( buffers ) );
+	buffers.validate = n3ds_c3dValidate.GetBool();
+	c3dDrawRecord_t record;
+	const viewEntity_t * lastSpace = NULL;
+	bool spaceOk = true;
+	int draws = 0;
+	const int test = n3ds_c3dTest.GetInteger();
+
+	for ( int i = 0; i < viewDef->numDrawSurfs; i++ ) {
+		const drawSurf_t * surf = viewDef->drawSurfs[i];
+		const idMaterial * shader = surf->material;
+		if ( shader == NULL || !shader->HasAmbient() || shader->IsPortalSky() || surf->numIndexes == 0 ) {
+			continue;
+		}
+		if ( !gui && shader->GetSort() >= SS_POST_PROCESS ) {
+			break;
+		}
+		const float * regs = surf->shaderRegisters;
+		if ( regs == NULL ) {
+			continue;
+		}
+		const unsigned short * indexes = NULL;
+		const byte * verts = NULL;
+
+		uint64 surfGLState = surf->extraGLState;
+		int bias = 0;
+		if ( shader->TestMaterialFlag( MF_POLYGONOFFSET ) ) {
+			bias = (int)( n3ds_polygonOffset.GetFloat() * shader->GetPolygonOffset() );
+			surfGLState = GLS_POLYGON_OFFSET;
+		}
+
+		for ( int stage = 0; stage < shader->GetNumStages(); stage++ ) {
+			const shaderStage_t * pStage = shader->GetStage( stage );
+			if ( regs[ pStage->conditionRegister ] == 0 || pStage->lighting != SL_AMBIENT ) {
+				continue;
+			}
+			uint64 stageGLState = surfGLState;
+			if ( ( surfGLState & GLS_OVERRIDE ) == 0 ) {
+				stageGLState |= pStage->drawStateBits;
+			}
+			if ( ( stageGLState & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) == ( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_ONE ) ) {
+				continue;
+			}
+			if ( pStage->newStage != NULL || pStage->texture.cinematic != NULL || pStage->texture.dynamic ) {
+				c3dStatStagesSkipped++;
+				continue;
+			}
+			if ( pStage->texture.texgen != TG_EXPLICIT ) {
+				c3dStatStagesSkipped++;
+				continue;
+			}
+			float color[4];
+			color[0] = regs[ pStage->color.registers[0] ];
+			color[1] = regs[ pStage->color.registers[1] ];
+			color[2] = regs[ pStage->color.registers[2] ];
+			color[3] = regs[ pStage->color.registers[3] ];
+			const uint64 blend = stageGLState & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS );
+			if ( blend == ( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE ) && color[0] <= 0 && color[1] <= 0 && color[2] <= 0 ) {
+				continue;
+			}
+			if ( blend == ( GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA ) && color[3] <= 0 ) {
+				continue;
+			}
+			void * tex = NULL;
+			if ( pStage->texture.image != NULL ) {
+				tex = N3DS_TexForImage( pStage->texture.image );
+				if ( tex == NULL ) {
+					c3dStatStagesSkipped++;		// not on the GPU (yet): a white quad would be worse
+					continue;
+				}
+			}
+
+			if ( verts == NULL ) {
+				verts = N3DS_SurfaceBuffers( surf, buffers, &indexes, &record );
+				if ( verts == NULL ) {
+					break;
+				}
+				if ( surf->space != lastSpace ) {
+					spaceOk = N3DS_SetMVP( surf->space->mvp );
+					lastSpace = surf->space;
+				}
+			}
+			if ( !spaceOk ) {
+				break;
+			}
+			if ( !N3DS_CommandRoom( draws ) ) {
+				N3DSGPU_EndStages();
+				return;
+			}
+
+			stageVertexColor_t svc = pStage->vertexColor;
+			const bool guiSurface = surf->space->isGuiSurface;
+			const bool swf = guiSurface && ( stageGLState & GLS_OVERRIDE ) != 0;
+			if ( guiSurface ) {
+				svc = SVC_MODULATE;
+			}
+			float vcMod = 0.0f, vcAdd = 1.0f;
+			if ( svc == SVC_MODULATE ) {
+				vcMod = 1.0f;
+				vcAdd = 0.0f;
+			} else if ( svc == SVC_INVERSE_MODULATE ) {
+				vcMod = -1.0f;
+				vcAdd = 1.0f;
+			}
+			float swfAdd[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			if ( swf ) {
+				// gui.vertex: colour transform add term = color2 * 2 - 1 (one per surface here)
+				const idDrawVert * v = (const idDrawVert *)verts + indexes[0];
+				for ( int k = 0; k < 4; k++ ) {
+					swfAdd[k] = v->color2[k] * ( 2.0f / 255.0f ) - 1.0f;
+				}
+				color[0] = color[1] = color[2] = color[3] = 1.0f;		// gui.vertex ignores the stage colour
+			}
+			float texS[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+			float texT[4] = { 0.0f, 1.0f, 0.0f, 0.0f };
+			if ( pStage->texture.hasMatrix ) {
+				float m[16];
+				N3DS_GetShaderTextureMatrix( regs, &pStage->texture, m );
+				texS[0] = m[0 * 4 + 0]; texS[1] = m[1 * 4 + 0]; texS[2] = m[2 * 4 + 0]; texS[3] = m[3 * 4 + 0];
+				texT[0] = m[0 * 4 + 1]; texT[1] = m[1 * 4 + 1]; texT[2] = m[2 * 4 + 1]; texT[3] = m[3 * 4 + 1];
+			}
+
+			int depthFunc = (int)( ( stageGLState & GLS_DEPTHFUNC_BITS ) >> 13 );
+			int writeMask = 0;
+			if ( !( stageGLState & GLS_REDMASK ) ) {
+				writeMask |= 1;
+			}
+			if ( !( stageGLState & GLS_GREENMASK ) ) {
+				writeMask |= 2;
+			}
+			if ( !( stageGLState & GLS_BLUEMASK ) ) {
+				writeMask |= 4;
+			}
+			if ( !( stageGLState & GLS_ALPHAMASK ) ) {
+				writeMask |= 8;
+			}
+			if ( !( stageGLState & GLS_DEPTHMASK ) ) {
+				writeMask |= 0x10;
+			}
+			if ( gui ) {
+				depthFunc = 1;			// fullscreen GUIs: no depth
+				writeMask &= ~0x10;
+			}
+			int alphaRef = -1;
+			if ( pStage->hasAlphaTest ) {
+				alphaRef = idMath::ClampInt( 0, 255, (int)( regs[ pStage->alphaTestRegister ] * 255.0f ) );
+			}
+			int stageBias = bias;
+			if ( pStage->privatePolygonOffset != 0.0f ) {
+				stageBias = (int)( n3ds_polygonOffset.GetFloat() * pStage->privatePolygonOffset );
+			}
+			const int blendOp = (int)( ( stageGLState & GLS_BLENDOP_BITS ) >> 18 );
+
+			N3DSGPU_SetStageState( N3DS_SrcBlend( stageGLState ), N3DS_DstBlend( stageGLState ), blendOp, depthFunc, writeMask,
+				alphaRef, idMath::ClampInt( 0, 255, stageBias ) );
+			N3DSGPU_SetStageUniforms( color, vcMod, vcAdd, texS, texT );
+			N3DSGPU_SetStageTexEnv( tex, swf ? 1 : 0, swfAdd );
+			N3DS_Draw( surf, verts, indexes, record, test );
+			draws++;
+			c3dStatStages++;
+		}
+	}
+	N3DSGPU_EndStages();
+}
 
 /*
 ========================
@@ -1157,7 +1363,7 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: waiting for GPU" );
-	N3DSGPU_BeginFrame( 0x182030FF );
+	N3DSGPU_BeginFrame( 0x000000FF );
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: drawing" );
 	N3DS_TexBeginFrame( has3D );
 	// lighting path for this frame (the lit program may be missing: fall back)
@@ -1172,6 +1378,14 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 	const int drawsBefore = c3dStatDraws;
 	for ( ; cmds != NULL; cmds = (const emptyCommand_t *)cmds->next ) {
+		if ( cmds->commandId == RC_DRAW_VIEW_GUI ) {
+			// fullscreen GUI: HUD, menus, loading screens
+			const viewDef_t * viewDef = ( (const drawSurfsCommand_t *)cmds )->viewDef;
+			if ( viewDef != NULL && n3ds_c3dTest.GetInteger() == 0 ) {
+				N3DS_DrawAmbientStages( viewDef, true );
+			}
+			continue;
+		}
 		if ( cmds->commandId != RC_DRAW_VIEW_3D ) {
 			continue;
 		}
@@ -1180,10 +1394,14 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 			continue;
 		}
 		N3DS_LogWeaponSurfaces( viewDef );
+		N3DSGPU_UseProgram( useHW ? 1 : 0 );
 		if ( useHW ) {
 			N3DS_DrawViewHW( viewDef );
 		} else {
 			N3DS_DrawView( viewDef );
+		}
+		if ( n3ds_c3dTest.GetInteger() == 0 ) {
+			N3DS_DrawAmbientStages( viewDef, false );
 		}
 	}
 	const float cmdUse = N3DSGPU_CmdBufUsage();
@@ -1214,6 +1432,9 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights, light area %.1f screens) %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d\n",
 			c3dStatDraws / f, c3dStatTextured / f, c3dStatLightDraws / f, c3dStatLights / f, c3dStatScissorPixels / ( f * 96000.0f ),
 			c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad );
+		common->Printf( "PERF   citro3d stages: %.0f ambient/GUI stage draws per frame, %.0f skipped (texgen, cinematic, program, not loaded)\n",
+			c3dStatStages / f, c3dStatStagesSkipped / f );
+		c3dStatStages = c3dStatStagesSkipped = 0;
 		if ( c3dStatHWLit > 0 ) {
 			common->Printf( "PERF   citro3d HW lights: %.0f lit surfaces, %.2f lights each, %.0f slot loads, %.0f lights over 8 dropped per frame\n",
 				c3dStatHWLit / f, c3dStatHWLightsPerSurf / (float)c3dStatHWLit, c3dStatHWSlotLoads / f, c3dStatHWDropped / f );

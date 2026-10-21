@@ -130,7 +130,8 @@ if(NINTENDO_3DS)
 	# vertex shaders: picasso -> .shbin -> C array
 	#   n3ds_vshader      textured world, per-vertex light passes (n3ds_lighting 0/1)
 	#   n3ds_vshader_lit  hardware fragment lighting (n3ds_lighting 2)
-	foreach(N3DS_SHADER n3ds_vshader n3ds_vshader_lit)
+	#   n3ds_vshader_amb  ambient / blended stages and GUIs
+	foreach(N3DS_SHADER n3ds_vshader n3ds_vshader_lit n3ds_vshader_amb)
 		set(N3DS_SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/renderer/3DS/${N3DS_SHADER}.v.pica)
 		set(N3DS_SHADER_BIN ${CMAKE_CURRENT_BINARY_DIR}/${N3DS_SHADER}.shbin)
 		set(N3DS_SHADER_C   ${CMAKE_CURRENT_BINARY_DIR}/${N3DS_SHADER}_shbin.c)

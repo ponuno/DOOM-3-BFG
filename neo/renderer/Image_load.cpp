@@ -196,7 +196,7 @@ void idImage::GenerateImage( const byte *pic, int width, int height, textureFilt
 		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
 	}
 #if defined( ID_3DS )
-	N3DS_KeepLevel( im, RB_N3DS_TexKeepSize( usage ) );		// _white, _noFalloff, _quadratic, ...
+	N3DS_KeepLevel( im, RB_N3DS_TexKeepSize( usage, GetName() ) );		// _white, _noFalloff, _quadratic, ...
 #endif
 }
 
@@ -278,7 +278,7 @@ void idImage::N3DS_KeepLevel( idBinaryImage & im, int keepSize ) {
 	}
 	const bimageImage_t & img = im.GetImageHeader( pick );
 	RB_N3DS_ImageLevel( this, opts.format, opts.colorFormat, img.width, img.height,
-		im.GetImageData( pick ), img.dataSize, wrap, usage == TD_COVERAGE );
+		im.GetImageData( pick ), img.dataSize, wrap, usage == TD_COVERAGE, keepSize );
 }
 #endif
 
@@ -349,7 +349,7 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	idBinaryImage im( generatedName );
 #if defined( ID_3DS )
 	// citro3d: keep one small level of colour images for the texture cache
-	const int n3dsKeepSize = ( cubeFiles == CF_2D ) ? RB_N3DS_TexKeepSize( usage ) : 0;
+	const int n3dsKeepSize = ( cubeFiles == CF_2D ) ? RB_N3DS_TexKeepSize( usage, GetName() ) : 0;
 	idBinaryImage::keepLevelMaxSize = n3dsKeepSize;
 #endif
 	binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );

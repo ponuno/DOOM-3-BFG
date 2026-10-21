@@ -35,6 +35,7 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 
 idCVar n3ds_textures( "n3ds_textures", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: draw textures (0 = flat colours)" );
 idCVar n3ds_texMaxSize( "n3ds_texMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d: largest texture size; the level kept at load is the largest one not over this", 8, 512 );
+idCVar n3ds_texGuiMaxSize( "n3ds_texGuiMaxSize", "512", CVAR_RENDERER | CVAR_INTEGER, "citro3d: largest texture size for GUI / HUD / font images (guis/, generated/swf/, newfonts/, fonts/)", 8, 1024 );
 idCVar n3ds_texMips( "n3ds_texMips", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: build mip maps" );
 idCVar n3ds_texUploadsPerFrame( "n3ds_texUploadsPerFrame", "4", CVAR_RENDERER | CVAR_INTEGER, "citro3d: textures decoded and copied to VRAM per frame at most", 1, 64 );
 idCVar n3ds_texUploadsAfterLoad( "n3ds_texUploadsAfterLoad", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d: texture upload limit for the first 20 3D frames after a map load (the GX queue caps it at 24)" );
@@ -52,6 +53,7 @@ struct n3dsTexture_t {
 	byte *				data;
 	int					wrap;			// N3DS_WRAP_*
 	bool				alphaOnly;		// coverage images: only the alpha is used
+	int					maxSize;		// largest side on the GPU
 	bool				unsupported;	// the level cannot be decoded
 	// on the GPU
 	void *				gpu;
@@ -129,7 +131,12 @@ RB_N3DS_TexKeepSize
 Largest level to keep for this image at load time, 0 = keep nothing.
 ========================
 */
-int RB_N3DS_TexKeepSize( textureUsage_t usage ) {
+static bool N3DS_IsGuiImage( const char * name ) {
+	return name != NULL && ( idStr::Icmpn( name, "guis/", 5 ) == 0 || idStr::Icmpn( name, "generated/swf/", 14 ) == 0 ||
+		idStr::Icmpn( name, "newfonts/", 9 ) == 0 || idStr::Icmpn( name, "fonts/", 6 ) == 0 );
+}
+
+int RB_N3DS_TexKeepSize( textureUsage_t usage, const char * name ) {
 	if ( !r_n3dsC3D ) {
 		return 0;
 	}
@@ -141,9 +148,14 @@ int RB_N3DS_TexKeepSize( textureUsage_t usage ) {
 		case TD_LOOKUP_TABLE_MONO:
 		case TD_LOOKUP_TABLE_RGB1:
 		case TD_LOOKUP_TABLE_RGBA:
+		case TD_FONT:
 			break;
 		default:
 			return 0;
+	}
+	// GUIs are drawn at about screen size: their atlases need far more than world textures
+	if ( usage == TD_FONT || N3DS_IsGuiImage( name ) ) {
+		return n3ds_texGuiMaxSize.GetInteger();
 	}
 	return n3ds_texMaxSize.GetInteger();
 }
@@ -156,7 +168,7 @@ Called at the end of idImage::ActuallyLoadImage with the kept level.
 ========================
 */
 void RB_N3DS_ImageLevel( idImage * image, int format, int colorFormat, int width, int height,
-						 const byte * data, int dataSize, int wrap, bool alphaOnly ) {
+						 const byte * data, int dataSize, int wrap, bool alphaOnly, int maxSize ) {
 	RB_N3DS_ImagePurged( image );
 	if ( data == NULL || dataSize <= 0 ) {
 		return;
@@ -173,6 +185,7 @@ void RB_N3DS_ImageLevel( idImage * image, int format, int colorFormat, int width
 	memcpy( t->data, data, dataSize );
 	t->wrap = wrap;
 	t->alphaOnly = alphaOnly;
+	t->maxSize = maxSize;
 	image->n3dsTex = t;
 	keptCount++;
 	keptBytes += dataSize;
@@ -265,7 +278,7 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		return false;
 	}
 	n3dsTexLayout_t layout;
-	N3DS_ChooseLayout( rgba.Ptr(), t->width, t->height, n3ds_texMaxSize.GetInteger(), n3ds_texMips.GetBool(), t->alphaOnly, layout );
+	N3DS_ChooseLayout( rgba.Ptr(), t->width, t->height, t->maxSize, n3ds_texMips.GetBool(), t->alphaOnly, layout );
 
 	// room in VRAM: evict textures that the current frame does not use
 	const unsigned int reserve = (unsigned int)Max( 0, n3ds_texVRAMReserveKB.GetInteger() ) * 1024;

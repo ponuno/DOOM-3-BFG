@@ -1,0 +1,78 @@
+; New 3DS vertex shader for blended / ambient material stages and GUIs.
+;   v0 = position (float3)
+;   v2 = st (the two raw half floats of idDrawVert, read as signed shorts)
+;   v3 = vertex colour (ubyte4)
+;
+;   colour    = ( vertexColour * vcParams.x + vcParams.y ) * stageColor
+;               (vcParams: ignore = (0, 1), modulate = (1, 0), inverse = (-1, 1))
+;   texcoord0 = ( texS . (s, t, 0, 1), texT . (s, t, 0, 1) )   (the stage's texture matrix)
+;
+; The position is computed with exactly the same instructions as the other
+; programs, so depth-equal tests against the fill pass hold.
+
+; Uniforms
+.fvec mvp[4], stageColor, vcParams, texS, texT
+; half float exponent table, set once by n3ds_gpu.c (see n3ds_vshader.v.pica)
+.fvec pow2[32]
+
+; Constants
+.constf consts(1.0, 0.0, 0.0039215686, -1.0)
+.constf halfK(32768.0, 0.0009765625, -1024.0, -2.0)
+.alias  ones   consts.xxxx
+.alias  zeros  consts.yyyy
+.alias  cscale consts.zzzz
+
+; Outputs
+.out outpos position
+.out outclr color
+.out outtc0 texcoord0
+
+; Inputs
+.alias inpos v0
+.alias inst  v2
+.alias inclr v3
+
+.proc main
+	; r0 = (xyz, 1)
+	mov r0.xyz, inpos
+	mov r0.w,   ones
+
+	; outpos = mvp * r0
+	dp4 outpos.x, mvp[0], r0
+	dp4 outpos.y, mvp[1], r0
+	dp4 outpos.z, mvp[2], r0
+	dp4 outpos.w, mvp[3], r0
+
+	; ---- st: half float bits -> float, into r11.xy ----
+	mov r5, inst
+	slt r6, r5, zeros
+	mad r7, r6, halfK.xxxx, r5
+	mul r8, halfK.yyyy, r7
+	flr r8, r8
+	mad r9, r8, halfK.zzzz, r7
+	mova a0.xy, r8.xy
+	mul r6, halfK.wwww, r6
+	add r6, ones, r6
+	mov r10, pow2[a0.x]
+	mad r11.x, r9.x, r10.y, r10.x
+	mov r10, pow2[a0.y]
+	mad r11.y, r9.y, r10.y, r10.x
+	mul r11.xy, r11.xy, r6.xy
+	; (s, t, 0, 1) through the texture matrix
+	mov r11.z, zeros
+	mov r11.w, ones
+	dp4 r12.x, texS, r11
+	dp4 r12.y, texT, r11
+	mov r12.zw, zeros
+	mov outtc0, r12
+
+	; ---- colour ----
+	mov r1, inclr
+	mul r1, cscale, r1
+	mul r1, vcParams.xxxx, r1
+	add r1, vcParams.yyyy, r1
+	mul r1, stageColor, r1
+	mov outclr, r1
+
+	end
+.end
