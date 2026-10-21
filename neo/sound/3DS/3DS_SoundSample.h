@@ -100,15 +100,22 @@ protected:
 		int bufferSize;
 		int numSamples;
 		int fileOffset;			// where the data is in generatedName
+		int osOffset;			// ... and in the OS file of streamPath (the container), for the loader thread
 	};
 
 	// New 3DS: data on demand (3DS_SoundSample.cpp)
 	bool			EnsureData();
+	int				PrepareData();		// 1 data in memory, 0 being read (ask again next frame), -1 cannot be read
+	void			CancelLoad();		// before the buffers list or the object goes away
 	void			FreeBuffers();
 	bool			ReadBuffers( idFile * f );
 	void			MakeRoom( int bytes );
 	void			N3DS_MarkResident();
 	idStr			generatedName;		// empty: data read whole, never dropped
+	int				streamPath;			// loader thread path index (-1: read through the engine file system)
+	int				loadState;			// SND_LOAD_* (under the loader lock)
+	idList<void *, TAG_AUDIO>	loadedBuffers;	// filled by the loader thread, taken by the main thread
+	friend class	idN3DSSoundLoader;
 	bool			dataLoaded;
 	int				activeVoices;		// voices created with this sample (data must stay)
 	int				lastUse;

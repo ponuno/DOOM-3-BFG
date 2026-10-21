@@ -90,6 +90,14 @@ private:
 	volatile bool			paused;
 	volatile bool			playing;
 
+	// sample data still being read from the SD card when Start() was called: the start
+	// happens in Update() once it is in memory
+	bool					pendingStart;
+	int						pendingOffsetMS;
+	int						pendingFlags;
+	int						pendingSince;
+	void					StartNow( int offsetMS, int ssFlags );
+
 	// mixer state (under the mixer lock)
 	idSoundSample_3DS *		current;			// leadin or looping
 	int64					position;			// in frames of 'current', 32.32 fixed point

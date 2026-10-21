@@ -62,16 +62,21 @@ static void FreeBuffer( void * p ) {
 	New 3DS: sample data on demand
 
 	LoadResource() reads only the header of a generated .idwav (format, length,
-	amplitude) and remembers where each buffer's data sits in the file. Small
-	samples are read right away; the rest are read the first time a voice plays
-	them (EnsureData, main thread). All sample data shares n3ds_soundMemoryKB:
-	when it is full, the least recently played samples that no voice uses give
-	their data back.
+	amplitude) and remembers where each buffer's data sits in the file and in the
+	container's OS file. Small samples are read right away; the rest are read the
+	first time a voice plays them by a loader thread with its own unbuffered FILE
+	(PrepareData; the voice waits in Update() for the few ms that takes instead of
+	the main thread stalling on the SD card). All sample data shares
+	n3ds_soundMemoryKB: when it is full, the least recently played samples that no
+	voice uses give their data back.
 
 ================================================================================================
 */
-idCVar n3ds_soundMemoryKB( "n3ds_soundMemoryKB", "8192", CVAR_SOUND | CVAR_INTEGER, "New 3DS: memory for sound sample data; least recently played samples are dropped when it is full" );
-idCVar n3ds_soundPreloadKB( "n3ds_soundPreloadKB", "48", CVAR_SOUND | CVAR_INTEGER, "New 3DS: samples up to this size are read at level load, bigger ones when first played" );
+// mars_city1 ran out of heap in the sound EndLevelLoad with 7.1 MB of samples resident
+// (every sample up to 48 KB was read at load); with reads in a loader thread the
+// budget can be small and only short sounds need to be there beforehand
+idCVar n3ds_soundMemoryKB( "n3ds_soundMemoryKB", "4096", CVAR_SOUND | CVAR_INTEGER, "New 3DS: memory for sound sample data; least recently played samples are dropped when it is full" );
+idCVar n3ds_soundPreloadKB( "n3ds_soundPreloadKB", "16", CVAR_SOUND | CVAR_INTEGER, "New 3DS: samples up to this size are read at level load, bigger ones when first played" );
 
 static idList< idSoundSample_3DS *, TAG_AUDIO >	allSamples;
 static int										sampleDataBytes = 0;
@@ -92,6 +97,216 @@ Memory diagnostics: resident sample data and the biggest resident samples.
 */
 void N3DS_SoundLogMemory() {
 	idSoundSample_3DS::N3DS_LogMemory();
+}
+
+
+
+/*
+================================================================================================
+
+	Loader thread
+
+================================================================================================
+*/
+enum {
+	SND_LOAD_IDLE,		// nothing pending (data in memory or not)
+	SND_LOAD_QUEUED,
+	SND_LOAD_LOADING,
+	SND_LOAD_READY,		// loadedBuffers filled; the main thread takes them
+	SND_LOAD_FAILED
+};
+
+static const int SND_QUEUE_SIZE = 128;
+static const int SND_MAX_PATHS = 16;
+
+struct sndStreamPath_t {
+	idStrStatic< MAX_OSPATH >	path;
+	FILE *						file;		// loader thread's own handle
+};
+
+static idSysMutex			sndLoadLock;
+static idSoundSample_3DS *	sndQueue[SND_QUEUE_SIZE];
+static int					sndQueueHead = 0;
+static int					sndQueueCount = 0;
+static sndStreamPath_t		sndPaths[SND_MAX_PATHS];
+static int					sndReads = 0;
+static int					sndReadBytes = 0;
+
+// under sndLoadLock; -1 when the table is full (the sample is then read the old way)
+static int N3DS_SoundPathIndex( const char * osPath ) {
+	for ( int i = 0; i < SND_MAX_PATHS; i++ ) {
+		if ( !sndPaths[i].path.IsEmpty() && sndPaths[i].path.Icmp( osPath ) == 0 ) {
+			return i;
+		}
+	}
+	for ( int i = 0; i < SND_MAX_PATHS; i++ ) {
+		if ( sndPaths[i].path.IsEmpty() ) {
+			sndPaths[i].path = osPath;
+			return i;
+		}
+	}
+	return -1;
+}
+
+class idN3DSSoundLoader : public idSysThread {
+public:
+	virtual int Run() {
+		for ( ;; ) {
+			sndLoadLock.Lock();
+			idSoundSample_3DS * s = NULL;
+			while ( sndQueueCount > 0 && s == NULL ) {
+				s = sndQueue[sndQueueHead];
+				sndQueue[sndQueueHead] = NULL;
+				sndQueueHead = ( sndQueueHead + 1 ) % SND_QUEUE_SIZE;
+				sndQueueCount--;
+			}
+			if ( s == NULL ) {
+				sndLoadLock.Unlock();
+				return 0;
+			}
+			s->loadState = SND_LOAD_LOADING;
+			const int pathIndex = s->streamPath;
+			FILE * f = sndPaths[pathIndex].file;
+			idStrStatic< MAX_OSPATH > path = sndPaths[pathIndex].path;
+			sndLoadLock.Unlock();
+
+			// buffers and loadedBuffers are not resized while the sample is LOADING (CancelLoad waits)
+			if ( f == NULL ) {
+				f = fopen( path.c_str(), "rb" );
+				if ( f != NULL ) {
+					setvbuf( f, NULL, _IONBF, 0 );
+					sndLoadLock.Lock();
+					sndPaths[pathIndex].file = f;
+					sndLoadLock.Unlock();
+				}
+			}
+			bool ok = ( f != NULL );
+			int bytes = 0;
+			for ( int i = 0; ok && i < s->buffers.Num(); i++ ) {
+				const int size = s->buffers[i].bufferSize;
+				void * data = Mem_Alloc( size, TAG_AUDIO );
+				s->loadedBuffers[i] = data;
+				ok = data != NULL && fseek( f, s->buffers[i].osOffset, SEEK_SET ) == 0 && (int)fread( data, 1, size, f ) == size;
+				bytes += size;
+			}
+			if ( !ok ) {
+				for ( int i = 0; i < s->loadedBuffers.Num(); i++ ) {
+					Mem_Free( s->loadedBuffers[i] );
+					s->loadedBuffers[i] = NULL;
+				}
+			}
+			sndLoadLock.Lock();
+			s->loadState = ok ? SND_LOAD_READY : SND_LOAD_FAILED;
+			if ( ok ) {
+				sndReads++;
+				sndReadBytes += bytes;
+			}
+			sndLoadLock.Unlock();
+		}
+	}
+};
+
+static idN3DSSoundLoader *	sndLoader = NULL;
+
+/*
+========================
+idSoundSample_3DS::PrepareData
+
+Main thread, when a voice starts or waits to start: 1 when the data is in memory,
+0 while it is being read, -1 when it cannot be read.
+========================
+*/
+int idSoundSample_3DS::PrepareData() {
+	lastUse = ++sampleUseClock;
+	if ( dataLoaded ) {
+		return 1;
+	}
+	if ( generatedName.IsEmpty() ) {
+		return -1;
+	}
+	if ( streamPath < 0 ) {
+		return EnsureData() ? 1 : -1;		// no OS file to read from: through the engine
+	}
+	sndLoadLock.Lock();
+	const int state = loadState;
+	if ( state == SND_LOAD_READY ) {
+		loadState = SND_LOAD_IDLE;
+		sndLoadLock.Unlock();
+		N3DS_SoundLock();
+		for ( int i = 0; i < buffers.Num(); i++ ) {
+			buffers[i].buffer = loadedBuffers[i];
+			loadedBuffers[i] = NULL;
+			sampleDataBytes += buffers[i].bufferSize;
+		}
+		dataLoaded = true;
+		N3DS_SoundUnlock();
+		sampleLoadsOnDemand++;
+		return 1;
+	}
+	if ( state == SND_LOAD_FAILED ) {
+		loadState = SND_LOAD_IDLE;
+		sndLoadLock.Unlock();
+		return -1;
+	}
+	if ( state != SND_LOAD_IDLE || sndQueueCount >= SND_QUEUE_SIZE ) {
+		sndLoadLock.Unlock();
+		return 0;		// queued or being read (or the queue is full: asked again next frame)
+	}
+	sndLoadLock.Unlock();
+
+	// room for it now, so that the data fits when it arrives
+	MakeRoom( totalBufferSize );
+	loadedBuffers.SetNum( buffers.Num() );
+	for ( int i = 0; i < loadedBuffers.Num(); i++ ) {
+		loadedBuffers[i] = NULL;
+	}
+	sndLoadLock.Lock();
+	const bool wasEmpty = ( sndQueueCount == 0 );
+	sndQueue[( sndQueueHead + sndQueueCount ) % SND_QUEUE_SIZE] = this;
+	sndQueueCount++;
+	loadState = SND_LOAD_QUEUED;
+	sndLoadLock.Unlock();
+	if ( sndLoader == NULL ) {
+		sndLoader = new (TAG_AUDIO) idN3DSSoundLoader;
+		sndLoader->StartWorkerThread( "N3DS_SoundLoader", CORE_0A, THREAD_ABOVE_NORMAL, 32 * 1024 );
+	}
+	if ( wasEmpty ) {
+		sndLoader->SignalWork();		// a non-empty queue has a wake-up pending already
+	}
+	return 0;
+}
+
+/*
+========================
+idSoundSample_3DS::CancelLoad
+
+Main thread: takes the sample out of the queue, or waits for the read in progress
+(a few ms), and drops what was read.
+========================
+*/
+void idSoundSample_3DS::CancelLoad() {
+	for ( ;; ) {
+		sndLoadLock.Lock();
+		if ( loadState != SND_LOAD_LOADING ) {
+			break;
+		}
+		sndLoadLock.Unlock();
+		Sys_Sleep( 1 );
+	}
+	if ( loadState == SND_LOAD_QUEUED ) {
+		for ( int i = 0; i < sndQueueCount; i++ ) {
+			idSoundSample_3DS *& q = sndQueue[( sndQueueHead + i ) % SND_QUEUE_SIZE];
+			if ( q == this ) {
+				q = NULL;		// the loader skips it
+			}
+		}
+	}
+	loadState = SND_LOAD_IDLE;
+	sndLoadLock.Unlock();
+	for ( int i = 0; i < loadedBuffers.Num(); i++ ) {
+		Mem_Free( loadedBuffers[i] );
+	}
+	loadedBuffers.Clear();
 }
 
 void idSoundSample_3DS::N3DS_LogMemory() {
@@ -131,6 +346,41 @@ void idSoundSample_3DS::N3DS_LogMemory() {
 		idLib::Printf( "    %4d KB %s%s%s\n", top[k]->totalBufferSize / 1024, top[k]->GetName(),
 			top[k]->neverPurge ? " (never purge)" : "", top[k]->activeVoices > 0 ? " (playing)" : "" );
 	}
+	// all samples of the level by format, rate and channels (their full data size)
+	struct fmtStat_t { int tag, rate, channels, count, bytes; };
+	fmtStat_t fmts[8];
+	int numFmts = 0;
+	for ( int i = 0; i < allSamples.Num(); i++ ) {
+		const idSoundSample_3DS * s = allSamples[i];
+		if ( s->totalBufferSize <= 0 ) {
+			continue;
+		}
+		int k = 0;
+		for ( ; k < numFmts; k++ ) {
+			if ( fmts[k].tag == s->format.basic.formatTag && fmts[k].rate == (int)s->format.basic.samplesPerSec &&
+					fmts[k].channels == s->format.basic.numChannels ) {
+				break;
+			}
+		}
+		if ( k == numFmts ) {
+			if ( numFmts == 8 ) {
+				continue;
+			}
+			fmts[k].tag = s->format.basic.formatTag;
+			fmts[k].rate = s->format.basic.samplesPerSec;
+			fmts[k].channels = s->format.basic.numChannels;
+			fmts[k].count = fmts[k].bytes = 0;
+			numFmts++;
+		}
+		fmts[k].count++;
+		fmts[k].bytes += s->totalBufferSize;
+	}
+	for ( int k = 0; k < numFmts; k++ ) {
+		idLib::Printf( "    format %s %d Hz %d ch: %d samples, %d KB\n",
+			fmts[k].tag == idWaveFile::FORMAT_PCM ? "PCM16" : fmts[k].tag == idWaveFile::FORMAT_ADPCM ? "ADPCM" : "other",
+			fmts[k].rate, fmts[k].channels, fmts[k].count, fmts[k].bytes / 1024 );
+	}
+	idLib::Printf( "    loader: %d reads %d KB, %d queued\n", sndReads, sndReadBytes / 1024, sndQueueCount );
 }
 
 /*
@@ -142,6 +392,8 @@ idSoundSample_3DS::idSoundSample_3DS() {
 	dataLoaded = false;
 	activeVoices = 0;
 	lastUse = 0;
+	streamPath = -1;
+	loadState = 0;
 	allSamples.Append( this );
 	timestamp = FILE_NOT_FOUND_TIMESTAMP;
 	loaded = false;
@@ -164,6 +416,7 @@ idSoundSample_3DS::~idSoundSample_3DS
 ========================
 */
 idSoundSample_3DS::~idSoundSample_3DS() {
+	CancelLoad();
 	FreeData();
 	allSamples.Remove( this );
 }
@@ -348,11 +601,22 @@ bool idSoundSample_3DS::LoadGeneratedSample( const idStr &filename ) {
 	fileIn->ReadBig( num );
 	buffers.SetNum( num );
 	int total = 0;
+	bool streamable = true;
+	idStr osPath;
 	for ( int i = 0; i < num; i++ ) {
 		fileIn->ReadBig( buffers[ i ].numSamples );
 		fileIn->ReadBig( buffers[ i ].bufferSize );
 		buffers[ i ].buffer = NULL;
 		buffers[ i ].fileOffset = fileIn->Tell();
+		idStr bufferPath;
+		int osOffset = 0;
+		if ( streamable && fileIn->GetDataLocation( bufferPath, osOffset ) && ( i == 0 || bufferPath.Icmp( osPath ) == 0 ) ) {
+			osPath = bufferPath;
+			buffers[ i ].osOffset = osOffset;
+		} else {
+			streamable = false;
+			buffers[ i ].osOffset = 0;
+		}
 		total += buffers[ i ].bufferSize;
 		if ( i + 1 < num ) {
 			fileIn->Seek( buffers[ i ].bufferSize, FS_SEEK_CUR );
@@ -360,6 +624,12 @@ bool idSoundSample_3DS::LoadGeneratedSample( const idStr &filename ) {
 	}
 	generatedName = filename;
 	dataLoaded = false;
+	streamPath = -1;
+	if ( streamable && num > 0 ) {
+		sndLoadLock.Lock();
+		streamPath = N3DS_SoundPathIndex( osPath );
+		sndLoadLock.Unlock();
+	}
 	if ( total <= n3ds_soundPreloadKB.GetInteger() * 1024 ) {
 		if ( !ReadBuffers( fileIn ) ) {
 			FreeBuffers();
@@ -656,6 +926,8 @@ Called before deleting the object and at the start of LoadResource()
 ========================
 */
 void idSoundSample_3DS::FreeData() {
+	CancelLoad();
+	streamPath = -1;
 	if ( buffers.Num() > 0 ) {
 		soundSystemLocal.StopVoicesWithSample( (idSoundSample *)this );
 		FreeBuffers();

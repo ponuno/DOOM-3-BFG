@@ -119,6 +119,10 @@ idSoundVoice_3DS::idSoundVoice_3DS()
 		hasVUMeter( false ),
 		paused( true ),
 		playing( false ),
+		pendingStart( false ),
+		pendingOffsetMS( 0 ),
+		pendingFlags( 0 ),
+		pendingSince( 0 ),
 		current( NULL ),
 		position( 0 ),
 		pitchScale( 1.0f ),
@@ -212,6 +216,7 @@ idSoundVoice_3DS::DestroyInternal
 ========================
 */
 void idSoundVoice_3DS::DestroyInternal() {
+	pendingStart = false;
 	SetSamples( NULL, NULL );
 	formatTag = 0;
 }
@@ -235,12 +240,39 @@ void idSoundVoice_3DS::Start( int offsetMS, int ssFlags ) {
 		}
 		return;
 	}
-	// the data of big samples is read the first time they play
-	if ( !leadinSample->EnsureData() ) {
+	// sample data not in memory is read by the loader thread; the voice starts when it is
+	const int leadin = leadinSample->PrepareData();
+	if ( leadin < 0 ) {
 		return;
 	}
-	if ( loopingSample != NULL && loopingSample != leadinSample && !loopingSample->EnsureData() ) {
+	int looping = 1;
+	if ( loopingSample != NULL && loopingSample != leadinSample ) {
+		looping = loopingSample->PrepareData();
+	}
+	if ( leadin == 0 || looping == 0 ) {
+		pendingStart = true;
+		pendingOffsetMS = offsetMS;
+		pendingFlags = ssFlags;
+		pendingSince = Sys_Milliseconds();
+		return;
+	}
+	if ( looping < 0 ) {
 		SetSamples( leadinSample, NULL );
+	}
+	StartNow( offsetMS, ssFlags );
+}
+
+/*
+========================
+idSoundVoice_3DS::StartNow
+
+Start() with the data in memory.
+========================
+*/
+void idSoundVoice_3DS::StartNow( int offsetMS, int ssFlags ) {
+	pendingStart = false;
+	if ( leadinSample == NULL ) {
+		return;
 	}
 	if ( leadinSample->format.basic.formatTag != idWaveFile::FORMAT_PCM && leadinSample->format.basic.formatTag != idWaveFile::FORMAT_ADPCM ) {
 		return;
@@ -295,6 +327,30 @@ idSoundVoice_3DS::Update
 bool idSoundVoice_3DS::Update() {
 	if ( leadinSample == NULL ) {
 		return false;
+	}
+	if ( pendingStart ) {
+		const int leadin = leadinSample->PrepareData();
+		int looping = 1;
+		if ( loopingSample != NULL && loopingSample != leadinSample ) {
+			looping = loopingSample->PrepareData();
+		}
+		if ( leadin < 0 ) {
+			pendingStart = false;		// cannot be read: stays silent
+			return false;
+		}
+		if ( leadin == 0 || looping == 0 ) {
+			return true;				// still reading
+		}
+		if ( looping < 0 ) {
+			SetSamples( leadinSample, NULL );
+		}
+		// long sounds (speech with lip sync, music) keep their timing, short ones start whole
+		int offset = pendingOffsetMS;
+		if ( leadinSample->LengthInMsec() > 2000 ) {
+			offset += Sys_Milliseconds() - pendingSince;
+		}
+		StartNow( offset, pendingFlags );		// does an Update() itself
+		return true;
 	}
 	const int srcChannels = Min( (int)leadinSample->NumChannels(), 2 );
 	float pLevelMatrix[ MAX_CHANNELS_PER_VOICE * MAX_CHANNELS_PER_VOICE ] = { 0 };
@@ -498,6 +554,7 @@ idSoundVoice_3DS::Stop
 ========================
 */
 void idSoundVoice_3DS::Stop() {
+	pendingStart = false;
 	N3DS_SoundLock();
 	playing = false;
 	paused = true;
