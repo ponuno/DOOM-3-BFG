@@ -43,7 +43,9 @@ extern "C" {
 #include <3ds/types.h>
 #include <3ds/synchronization.h>
 }
-#include "tlsf/tlsf.h"
+#include <malloc.h>
+#include <reent.h>
+#include <errno.h>
 
 /*
 ================================================================================================
@@ -173,90 +175,136 @@ void Mem_ArenaStats( int & used, int & peak, int & size ) {
 /*
 ================================================================================================
 
-	New 3DS second heap (extended memory mode)
+	New 3DS heap regions: one malloc over the heap window and spare linear memory
 
 	The application heap window is 96 MB in every memory mode. With the 178 MB New 3DS
 	mode (the CIA build) the rest of the application's memory can only be linear
-	memory. N3DS_Main (after common->Init) gives the part the GPU does not need to Mem_InitSecondHeap; when
-	malloc cannot satisfy a big block or a slab chunk, it comes from there. A TLSF
-	allocator (O(1), immediate coalescing) manages it under its own lock: libctru's
-	linear allocator is not thread safe and is only used by the main thread.
+	memory. That part used to be a separate TLSF heap that only Mem_Alloc fell back
+	to, so everything else that calls malloc directly - libctru's threadCreate (thread
+	stack + context), newlib's FILE buffers, C library internals - still failed once the
+	heap window was full: phobos3 loaded with 15 MB free in the second heap and then
+	"Sys_CreateThread: failed to create thread 'Savegame'".
+
+	Now malloc itself owns both. newlib's malloc gets memory from _sbrk_r, a weak
+	symbol in libsysbase, defined here instead: it hands out the heap window
+	(fake_heap_start..fake_heap_end, set up by __system_allocateHeaps) and, once that is
+	used up, the region given to Mem_AddHeapRegion. newlib's malloc_extend_top handles a
+	break that jumps upward ("foreign sbrk"): it fences off the old top chunk, frees it
+	into the bins, and carries on in the new region. Linear memory is at 0x30000000+,
+	above the heap window, as that requires.
+
+	The jump would strand whatever part of the window malloc had not asked for yet (up
+	to the size of the request that did not fit), so Mem_AddHeapRegion first makes malloc
+	take the whole rest of the window: one malloc of all of it and a free, with trimming
+	off so that the free does not hand it back. The window is committed memory anyway;
+	trimming never returned anything to the system.
 
 ================================================================================================
 */
 
-static tlsf_t			heap2 = NULL;
-static uintptr_t		heap2Begin = 0;
-static uintptr_t		heap2End = 0;
-static LightLock		heap2Lock;
-static int				heap2Size = 0;
-static int				heap2Used = 0;
-static int				heap2Peak = 0;
+extern "C" {
+extern char *	fake_heap_start;
+extern char *	fake_heap_end;
+}
 
-void Mem_InitSecondHeap( void * mem, int bytes ) {
-	if ( heap2 != NULL || mem == NULL || bytes < 1024 * 1024 ) {
+static char *			sbrkBreak = NULL;		// current break
+static char *			sbrkLimit = NULL;		// end of the region the break is in
+static char *			sbrkRegionStart = NULL;	// start of that region
+static char *			region2Begin = NULL;	// extra region, NULL until Mem_AddHeapRegion
+static char *			region2End = NULL;
+static ptrdiff_t		sbrkGap = 0;			// address space skipped by the jump
+
+// called by newlib's malloc only, with the malloc lock held
+extern "C" void * _sbrk_r( struct _reent * r, ptrdiff_t incr ) {
+	if ( sbrkBreak == NULL ) {
+		// first call: libctru has moved fake_heap_start past the main stack and argv by now
+		sbrkBreak = fake_heap_start;
+		sbrkLimit = fake_heap_end;
+		sbrkRegionStart = fake_heap_start;
+	}
+	if ( incr < 0 ) {
+		if ( sbrkBreak + incr < sbrkRegionStart ) {
+			r->_errno = ENOMEM;
+			return (void *)-1;
+		}
+	} else if ( incr > sbrkLimit - sbrkBreak ) {
+		// the window is used up: continue in the extra region, if there is one
+		if ( region2Begin == NULL || sbrkRegionStart == region2Begin || incr > region2End - region2Begin ) {
+			r->_errno = ENOMEM;
+			return (void *)-1;
+		}
+		sbrkGap = region2Begin - sbrkBreak;
+		sbrkBreak = region2Begin;
+		sbrkLimit = region2End;
+		sbrkRegionStart = region2Begin;
+	}
+	char * prev = sbrkBreak;
+	sbrkBreak += incr;
+	return prev;
+}
+
+void Mem_AddHeapRegion( void * mem, int bytes ) {
+	if ( region2Begin != NULL || mem == NULL || bytes < 1024 * 1024 ) {
 		return;
 	}
-	// TLSF wants its pool aligned to its own alignment (8 bytes covers 32 and 64 bits)
-	const uintptr_t start = ( (uintptr_t)mem + 7 ) & ~(uintptr_t)7;
-	bytes -= (int)( start - (uintptr_t)mem );
-	bytes &= ~7;
-	mem = (void *)start;
-	// other threads are running by now: publish the heap only once it is complete
-	LightLock_Init( &heap2Lock );
-	tlsf_t h = tlsf_create_with_pool( mem, bytes );
-	heap2Begin = (uintptr_t)mem;
-	heap2End = heap2Begin + bytes;
-	heap2Size = bytes;
-	__sync_synchronize();
-	heap2 = h;
-}
+	// a free must never give memory back to sbrk: the window's tail is about to be
+	// committed to malloc, and the extra region cannot shrink below its start
+	mallopt( M_TRIM_THRESHOLD, -1 );
 
-static bool Heap2_Owns( const void * p ) {
-	return heap2 != NULL && (uintptr_t)p >= heap2Begin && (uintptr_t)p < heap2End;
-}
-
-static void * Heap2_Malloc( int bytes ) {
-	if ( heap2 == NULL ) {
-		return NULL;
-	}
-	LightLock_Lock( &heap2Lock );
-	void * p = tlsf_malloc( heap2, bytes );
-	if ( p != NULL ) {
-		heap2Used += (int)tlsf_block_size( p );
-		if ( heap2Used > heap2Peak ) {
-			heap2Peak = heap2Used;
+	// let malloc take the rest of the window (see above). Other threads may allocate
+	// meanwhile; a request that does not fit just tries a smaller one.
+	for ( int tries = 0; tries < 8; tries++ ) {
+		__malloc_lock( _REENT );
+		const ptrdiff_t rest = ( sbrkBreak != NULL ) ? sbrkLimit - sbrkBreak : 0;
+		__malloc_unlock( _REENT );
+		// malloc_extend_top asks sbrk for the request + 16, rounded up to the page
+		const ptrdiff_t ask = rest - 2 * 4096;
+		if ( ask < 64 * 1024 ) {
+			break;
+		}
+		void * volatile p = malloc( ask );
+		if ( p != NULL ) {
+			free( p );
+			break;
 		}
 	}
-	LightLock_Unlock( &heap2Lock );
-	return p;
+
+	char * begin = (char *)( ( (uintptr_t)mem + 4095 ) & ~(uintptr_t)4095 );
+	char * end = (char *)( ( (uintptr_t)mem + bytes ) & ~(uintptr_t)4095 );
+	__malloc_lock( _REENT );
+	region2End = end;
+	region2Begin = begin;
+	__malloc_unlock( _REENT );
 }
 
-static void Heap2_Free( void * p ) {
-	LightLock_Lock( &heap2Lock );
-	heap2Used -= (int)tlsf_block_size( p );
-	tlsf_free( heap2, p );
-	LightLock_Unlock( &heap2Lock );
+// size of the extra region, how much of it malloc has taken so far
+void Mem_HeapRegionStats( int & size, int & taken ) {
+	__malloc_lock( _REENT );
+	size = (int)( region2End - region2Begin );
+	taken = ( region2Begin != NULL && sbrkRegionStart == region2Begin ) ? (int)( sbrkBreak - region2Begin ) : 0;
+	__malloc_unlock( _REENT );
 }
 
-void Mem_SecondHeapStats( int & size, int & used, int & peak ) {
-	size = heap2Size;
-	used = heap2Used;
-	peak = heap2Peak;
+/*
+==================
+Mem_MallInfo
+
+mallinfo() with the jump between the regions taken out: malloc counts the address
+space it skipped as memory it got from sbrk (and so as in use), hundreds of MB here.
+==================
+*/
+struct mallinfo Mem_MallInfo() {
+	struct mallinfo mi = mallinfo();
+	__malloc_lock( _REENT );
+	const ptrdiff_t gap = sbrkGap;
+	__malloc_unlock( _REENT );
+	mi.arena -= gap;
+	mi.uordblks -= gap;
+	return mi;
 }
 
-// malloc, else the second heap
-static void * Raw_Malloc( int bytes ) {
-	void * p = malloc( bytes );
-	return ( p != NULL ) ? p : Heap2_Malloc( bytes );
-}
-
-static void Raw_Free( void * p ) {
-	if ( Heap2_Owns( p ) ) {
-		Heap2_Free( p );
-	} else {
-		free( p );
-	}
+static bool Region2_Owns( const void * p ) {
+	return region2Begin != NULL && (const char *)p >= region2Begin && (const char *)p < region2End;
 }
 
 /*
@@ -293,8 +341,8 @@ static const int		SLAB_MAX_CHUNKS = 255;
 static const uintptr_t	SLAB_ADDR_BASE = 0x08000000;		// application heap address range
 static const uintptr_t	SLAB_ADDR_END = 0x10000000;
 static const int		SLAB_HEAP_PAGES = ( SLAB_ADDR_END - SLAB_ADDR_BASE ) / SLAB_PAGE;
-static const int		SLAB_HEAP2_PAGES = ( 128 * 1024 * 1024 ) / SLAB_PAGE;	// second heap: up to 128 MB mapped
-static const int		SLAB_MAP_PAGES = SLAB_HEAP_PAGES + SLAB_HEAP2_PAGES;
+static const int		SLAB_REGION2_PAGES = ( 128 * 1024 * 1024 ) / SLAB_PAGE;	// extra heap region: up to 128 MB mapped
+static const int		SLAB_MAP_PAGES = SLAB_HEAP_PAGES + SLAB_REGION2_PAGES;
 
 struct slabPage_t {
 	uint16			objSize;		// 0 while in the empty pool
@@ -328,10 +376,10 @@ static inline int Slab_MapIndex( const void * p ) {
 		return (int)( ( a - SLAB_ADDR_BASE ) / SLAB_PAGE );
 	}
 	// slab pages are aligned to SLAB_PAGE in absolute addresses: index from the page
-	// boundary below the heap start, not from the (unaligned) start itself
-	const uintptr_t heap2MapBase = heap2Begin & ~(uintptr_t)( SLAB_PAGE - 1 );
-	if ( Heap2_Owns( p ) && a - heap2MapBase < (uintptr_t)SLAB_HEAP2_PAGES * SLAB_PAGE ) {
-		return SLAB_HEAP_PAGES + (int)( ( a - heap2MapBase ) / SLAB_PAGE );
+	// boundary below the region start, not from the (page aligned) start itself
+	const uintptr_t region2MapBase = (uintptr_t)region2Begin & ~(uintptr_t)( SLAB_PAGE - 1 );
+	if ( Region2_Owns( p ) && a - region2MapBase < (uintptr_t)SLAB_REGION2_PAGES * SLAB_PAGE ) {
+		return SLAB_HEAP_PAGES + (int)( ( a - region2MapBase ) / SLAB_PAGE );
 	}
 	return -1;
 }
@@ -374,13 +422,13 @@ static bool Slab_AddChunk() {
 	if ( slot < 0 ) {
 		return false;
 	}
-	void * raw = Raw_Malloc( SLAB_CHUNK + SLAB_PAGE );
+	void * raw = malloc( SLAB_CHUNK + SLAB_PAGE );
 	if ( raw == NULL ) {
 		return false;
 	}
 	byte * base = (byte *)( ( (uintptr_t)raw + SLAB_PAGE - 1 ) & ~(uintptr_t)( SLAB_PAGE - 1 ) );
 	if ( Slab_MapIndex( base ) < 0 || Slab_MapIndex( base + SLAB_CHUNK - 1 ) < 0 ) {
-		Raw_Free( raw );		// outside the mapped address ranges: not ours to map
+		free( raw );		// outside the mapped address ranges: not ours to map
 		return false;
 	}
 	slabChunks[slot].raw = raw;
@@ -405,7 +453,7 @@ static void Slab_ReleaseChunk( int slot ) {
 		slabEmptyPages--;
 		slabPageChunk[Slab_MapIndex( page )] = 0;
 	}
-	Raw_Free( slabChunks[slot].raw );
+	free( slabChunks[slot].raw );
 	slabChunks[slot].raw = NULL;
 	slabChunkCount--;
 }
@@ -485,8 +533,8 @@ static const uint32 BIG_BLOCK_MAGIC = 0xB16B10C5;
 static const int BIG_INFO = ( sizeof( uint32 ) + sizeof( void * ) + 7 ) & ~7;	// 8 bytes on the 3DS
 
 static void * Big_Alloc( int size ) {
-	// malloc aligns to 8, the second heap (TLSF) only to 4: room for any lead up to BIG_INFO + 15
-	byte * raw = (byte *)Raw_Malloc( size + BIG_INFO + 15 );
+	// malloc aligns to 8: room for any lead up to BIG_INFO + 15
+	byte * raw = (byte *)malloc( size + BIG_INFO + 15 );
 	if ( raw == NULL ) {
 		return NULL;
 	}
@@ -510,7 +558,7 @@ static void Big_Free( void * p ) {
 	byte * b = (byte *)p;
 	void * raw = *(void **)( b - sizeof( void * ) );
 	*(uint32 *)( b - sizeof( void * ) - sizeof( uint32 ) ) = 0;	// a stale pointer freed twice is not taken for a block again
-	Raw_Free( raw );
+	free( raw );
 }
 
 // any engine block: slab, temp arena, big block, or foreign malloc memory
@@ -704,7 +752,7 @@ void * Mem_Alloc16( const int size, const memTag_t tag ) {
 		}
 		// Running out of memory is the expected failure on 3DS: say so, with the
 		// breakdown, instead of letting the caller crash on a NULL pointer later.
-		struct mallinfo mi = mallinfo();
+		struct mallinfo mi = Mem_MallInfo();
 		idLib::Printf( "Mem_Alloc16: out of memory allocating %d KB for %s, malloc %d KB in use, largest free block %d KB, temp arena %d / %d KB\n",
 			paddedSize / 1024, ( tag >= 0 && tag < TAG_NUM_TAGS ) ? memTagNames[tag] : "?", (int)( mi.uordblks / 1024 ),
 			Mem_LargestFreeBlock() / 1024, memArenaUsed / 1024, ( memArena != NULL ) ? MEM_TEMP_ARENA_SIZE / 1024 : 0 );

@@ -92,7 +92,7 @@ set(IDLIB_SOURCES
 )
 
 if(NINTENDO_3DS)
-	list(APPEND IDLIB_SOURCES idlib/sys/3ds/3ds_thread.cpp idlib/tlsf/tlsf.c)
+	list(APPEND IDLIB_SOURCES idlib/sys/3ds/3ds_thread.cpp)
 else()
 	list(APPEND IDLIB_SOURCES idlib/math/Simd_SSE.cpp idlib/sys/win32/win_thread.cpp)
 endif()

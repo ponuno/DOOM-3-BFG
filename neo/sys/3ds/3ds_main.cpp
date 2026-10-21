@@ -75,7 +75,7 @@ n3dsVars_t	n3ds;
 	sizes its static vertex/index caches for that (Sys_N3DSExtendedMemory), and once
 	common->Init has allocated every long-lived GPU buffer, main() keeps
 	N3DS_GPU_HEADROOM_MB of linear memory for citro3d's run-time needs and hands the rest
-	to the engine allocator as its second heap (Mem_InitSecondHeap): linear memory is
+	to malloc as a second region (Mem_AddHeapRegion, idlib/Heap.cpp): linear memory is
 	ordinary cached RAM, only its physical layout is special. In the 124 MB mode (.3dsx)
 	nothing changes: 86 MB heap, the rest linear, no second heap.
 */
@@ -280,8 +280,9 @@ void R_FrameMemoryStats( int & highWater, int & size );	// renderer/tr_frontend_
 void N3DS_SoundLogMemory();								// sound/3DS/3DS_SoundSample.cpp
 void N3DS_LogDeclMemory();								// framework/DeclManager.cpp
 void Mem_SlabStats( int & chunkBytes, int & usedBytes, int & emptyBytes );	// idlib/Heap.cpp
-void Mem_InitSecondHeap( void * mem, int bytes );						// idlib/Heap.cpp
-void Mem_SecondHeapStats( int & size, int & used, int & peak );			// idlib/Heap.cpp
+void Mem_AddHeapRegion( void * mem, int bytes );						// idlib/Heap.cpp
+void Mem_HeapRegionStats( int & size, int & taken );					// idlib/Heap.cpp
+struct mallinfo Mem_MallInfo();											// idlib/Heap.cpp
 
 bool Sys_N3DSExtendedMemory() {
 	return __ctru_linear_heap_size >= N3DS_EXT_MIN_LINEAR;
@@ -291,9 +292,11 @@ bool Sys_N3DSExtendedMemory() {
 ==============
 Sys_N3DSInitSecondHeap
 
-Extended memory mode: linear memory beyond what citro3d needs becomes the engine's
-second heap. Runs after common->Init, when the long-lived GPU buffers (frame and static
-vertex caches, citro3d) are allocated; until then malloc alone has plenty.
+Extended memory mode: linear memory beyond what citro3d needs becomes a second region
+of malloc itself (Mem_AddHeapRegion), so everything that allocates - the engine, libctru
+(thread stacks), newlib (FILE buffers) - can use it. Runs after common->Init, when the
+long-lived GPU buffers (frame and static vertex caches, citro3d) are allocated; until
+then the heap window alone has plenty.
 ==============
 */
 static void Sys_N3DSInitSecondHeap() {
@@ -307,8 +310,8 @@ static void Sys_N3DSInitSecondHeap() {
 		Sys_Printf( "second heap: linearAlloc( %d KB ) failed\n", (int)( bytes / 1024 ) );
 		return;
 	}
-	Mem_InitSecondHeap( mem, (int)bytes );
-	Sys_Printf( "second heap: %d KB of linear memory, %d KB left for the GPU\n", (int)( bytes / 1024 ), (int)( linearSpaceFree() / 1024 ) );
+	Mem_AddHeapRegion( mem, (int)bytes );
+	Sys_Printf( "second heap: %d KB of linear memory added to malloc, %d KB left for the GPU\n", (int)( bytes / 1024 ), (int)( linearSpaceFree() / 1024 ) );
 }
 
 /*
@@ -320,12 +323,12 @@ taken from the heap (its high-water footprint), the heap size, free linear memor
 ==============
 */
 void Sys_N3DSMemSample( int & mallocUsedKB, int & mallocArenaKB, int & heapKB, int & linearFreeKB ) {
-	struct mallinfo mi = mallinfo();
-	int h2Size, h2Used, h2Peak;
-	Mem_SecondHeapStats( h2Size, h2Used, h2Peak );
-	// the second heap counts as part of malloc / the heap
-	mallocUsedKB = (int)( ( mi.uordblks + h2Used ) / 1024 );
-	mallocArenaKB = (int)( ( mi.arena + h2Used ) / 1024 );
+	struct mallinfo mi = Mem_MallInfo();
+	int h2Size, h2Taken;
+	Mem_HeapRegionStats( h2Size, h2Taken );
+	// malloc spans the heap window and the second region
+	mallocUsedKB = (int)( mi.uordblks / 1024 );
+	mallocArenaKB = (int)( mi.arena / 1024 );
 	heapKB = (int)( ( __ctru_heap_size + h2Size ) / 1024 );
 	linearFreeKB = (int)( linearSpaceFree() / 1024 );
 }
@@ -334,7 +337,7 @@ void Sys_LogMemory( const char * when ) {
 	const int appFree = (int)osGetMemRegionFree( MEMREGION_APPLICATION );
 	const int appSize = (int)osGetMemRegionSize( MEMREGION_APPLICATION );
 	const int linFree = (int)linearSpaceFree();
-	struct mallinfo mi = mallinfo();
+	struct mallinfo mi = Mem_MallInfo();
 	int arenaUsed, arenaPeak, arenaSize;
 	Mem_ArenaStats( arenaUsed, arenaPeak, arenaSize );
 	Sys_Printf( "MEM [%s]: malloc used %d KB, free in malloc %d KB, largest free %d KB, region free %d / %d KB, linear free %d KB, temp arena %d (peak %d) / %d KB\n",
@@ -344,10 +347,10 @@ void Sys_LogMemory( const char * when ) {
 	int slabChunk, slabUsed, slabEmpty;
 	Mem_SlabStats( slabChunk, slabUsed, slabEmpty );
 	Sys_Printf( "  small blocks: %d KB in pages, %d KB in use, %d KB in empty pages\n", slabChunk / 1024, slabUsed / 1024, slabEmpty / 1024 );
-	int h2Size, h2Used, h2Peak;
-	Mem_SecondHeapStats( h2Size, h2Used, h2Peak );
+	int h2Size, h2Taken;
+	Mem_HeapRegionStats( h2Size, h2Taken );
 	if ( h2Size > 0 ) {
-		Sys_Printf( "  second heap: %d KB used (peak %d KB) of %d KB\n", h2Used / 1024, h2Peak / 1024, h2Size / 1024 );
+		Sys_Printf( "  second heap: malloc has taken %d KB of %d KB (window %d KB)\n", h2Taken / 1024, h2Size / 1024, (int)( __ctru_heap_size / 1024 ) );
 	}
 
 	// what is inside the big tags (no allocations: safe on the out-of-memory path)
