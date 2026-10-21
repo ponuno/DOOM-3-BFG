@@ -6,8 +6,9 @@
 	n3ds_audio.c is the only sound file that includes <3ds.h>. One NDSP channel plays
 	stereo 16-bit PCM; a mixer thread on the system core keeps a few wave buffers
 	queued and fills each one through the callback (the engine's software mixer,
-	3DS_SoundHardware.cpp). The callback runs on the mixer thread with the mixer
-	lock held; the engine takes the same lock to change voices.
+	3DS_SoundHardware.cpp). The callback runs on the mixer thread; it takes the mixer
+	lock around each voice, and the engine takes the same lock to start / stop voices
+	and to free sample data.
 
 ================================================================================================
 */

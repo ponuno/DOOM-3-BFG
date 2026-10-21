@@ -89,6 +89,10 @@ void idSoundHardware_3DS::Init() {
 	if ( audioOk ) {
 		idLib::Printf( "Sound: NDSP, software mixer at %d Hz, %d voices, %d frames x 4 buffers\n",
 			outputRate, voices.Num(), n3ds_soundBufferFrames.GetInteger() );
+		if ( !fileSystem->FindFile( "_sound_pc.resources" ) ) {
+			// the sound data lives in its own resource files
+			idLib::Printf( "Sound: WARNING: no _sound_pc.resources in sdmc:/doom3/base -- copy _sound_pc.resources and _sound_pc_<lang>.resources from the PC game's base folder\n" );
+		}
 	} else {
 		idLib::Printf( "Sound: no output (%s), %d silent voices\n", N3DSAudio_LastError(), voices.Num() );
 	}
@@ -129,7 +133,12 @@ void idSoundHardware_3DS::MixBlock( short * out, int frames ) {
 	}
 	memset( mixBuffer, 0, frames * 2 * sizeof( int ) );
 	for ( int i = 0; i < voices.Num(); i++ ) {
+		if ( !voices[i].playing ) {
+			continue;
+		}
+		N3DS_SoundLock();
 		voices[i].Mix( mixBuffer, frames, outputRate );
+		N3DS_SoundUnlock();
 	}
 	const int master = (int)( idMath::ClampFloat( 0.0f, 4.0f, n3ds_soundVolume.GetFloat() ) * 256.0f );
 	for ( int i = 0; i < frames * 2; i++ ) {

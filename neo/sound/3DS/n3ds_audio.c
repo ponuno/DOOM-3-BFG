@@ -71,9 +71,9 @@ static void N3DS_FrameCallback( void * data ) {
 
 static void N3DS_FillBuffer( ndspWaveBuf * buf ) {
 	const u64 start = svcGetSystemTick();
-	LightLock_Lock( &mixLock );
+	// the callback takes the mixer lock itself, per voice, so the main thread never
+	// waits long (this thread can be preempted on the time-limited system core)
 	mixCallback( buf->data_pcm16, bufFrames, mixUser );
-	LightLock_Unlock( &mixLock );
 	DSP_FlushDataCache( buf->data_pcm16, bufFrames * 2 * sizeof( short ) );
 	ndspChnWaveBufAdd( 0, buf );
 	mixTicks += svcGetSystemTick() - start;

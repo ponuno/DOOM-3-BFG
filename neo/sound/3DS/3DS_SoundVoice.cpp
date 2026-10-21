@@ -227,6 +227,14 @@ void idSoundVoice_3DS::Start( int offsetMS, int ssFlags ) {
 	}
 	hasVUMeter = ( ssFlags & SSF_NO_FLICKER ) == 0;
 
+	// a sample whose file is missing is the default beep on the PC; here it stays silent
+	if ( leadinSample->IsDefault() ) {
+		static int warned = 0;
+		if ( warned++ < 5 ) {
+			idLib::Printf( "Sound: no data for %s (missing from the resources), not played\n", leadinSample->GetName() );
+		}
+		return;
+	}
 	// the data of big samples is read the first time they play
 	if ( !leadinSample->EnsureData() ) {
 		return;
@@ -302,10 +310,9 @@ bool idSoundVoice_3DS::Update() {
 			newLevels[src][dst] = (int)( idMath::ClampFloat( 0.0f, 4.0f, l ) * 65536.0f );
 		}
 	}
-	N3DS_SoundLock();
+	// plain stores the mixer may see half-updated for one block: harmless, no lock
 	memcpy( levels, newLevels, sizeof( levels ) );
 	pitchScale = idMath::ClampFloat( 0.1f, 8.0f, pitch );
-	N3DS_SoundUnlock();
 	return true;
 }
 
