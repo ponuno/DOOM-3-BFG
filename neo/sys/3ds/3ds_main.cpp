@@ -136,7 +136,7 @@ idCVar n3ds_noShadows( "n3ds_noShadows", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INI
 idCVar n3ds_mapEntitiesOnly( "n3ds_mapEntitiesOnly", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "discard .map brushes/patches while parsing (collision comes from .bcmodel)" );
 idCVar n3ds_lazySaveBuffer( "n3ds_lazySaveBuffer", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "do not preallocate the 4 MB savegame buffer at startup" );
 idCVar n3ds_skipImageData( "n3ds_skipImageData", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "read only image headers, not pixels (the null GL drops them anyway)" );
-idCVar n3ds_lazyInteractions( "n3ds_lazyInteractions", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "do not pre-generate every light/entity interaction at map start; create them when first seen" );
+idCVar n3ds_lazyInteractions( "n3ds_lazyInteractions", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "do not pre-generate every light/entity interaction at map start; create them when first seen" );
 idCVar n3ds_discardStaticGeo( "n3ds_discardStaticGeo", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "null GL: drop static vertex/index cache uploads instead of keeping an 11 MB copy nobody draws" );
 idCVar n3ds_core1Percent( "n3ds_core1Percent", "30", CVAR_SYSTEM | CVAR_INTEGER | CVAR_INIT, "share of the system core (core 1) given to the game's threads, 0-80" );
 
@@ -759,7 +759,8 @@ static void Sys_BuildCommandLine() {
 	idStr cmd =
 		"+set com_skipIntroVideos 1 "
 		"+set s_noSound 1 "
-		"+set com_disableAutoSaves 1 ";	// map-start autosave needs ~2 MB of buffers; no room yet
+		"+set com_disableAutoSaves 1 "
+		"+set r_cullDynamicLightTriangles 0 ";	// per-frame light-tri culling of moving models: CPU + frame index cache	// map-start autosave needs ~2 MB of buffers; no room yet
 
 	FILE * f = fopen( N3DS_BASE_PATH "/cmdline.txt", "rb" );
 	if ( f != NULL ) {

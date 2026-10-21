@@ -31,7 +31,7 @@ If you have questions concerning this license or the applicable additional terms
 #if defined( ID_3DS )
 // New 3DS has ~178 MB for the whole application; PC sizes would need ~186 MB here alone.
 // First-pass budgets, to be tuned from measurements (r_showVertexCache / map load log).
-const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 1 * 1024 * 1024;
+const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 2 * 1024 * 1024;	// 1 MB overflowed in mars_city1
 const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 3 * 1024 * 1024;
 #else
 const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
@@ -45,8 +45,9 @@ const int VERTCACHE_NUM_FRAMES = 2;
 // index lists that reference existing vertexes
 #if defined( ID_3DS )
 // mars_city1's whole .bproc is 8.6 MB; map load prints how much of these was used
-const int STATIC_INDEX_MEMORY = 3 * 1024 * 1024;
-const int STATIC_VERTEX_MEMORY = 8 * 1024 * 1024;
+// (with n3ds_discardStaticGeo these are only budgets: no storage behind them)
+const int STATIC_INDEX_MEMORY = 6 * 1024 * 1024;	// static interactions (light tris) live here too
+const int STATIC_VERTEX_MEMORY = 10 * 1024 * 1024;	// mars_city1 used 7917 KB
 #else
 const int STATIC_INDEX_MEMORY = 31 * 1024 * 1024;
 const int STATIC_VERTEX_MEMORY = 31 * 1024 * 1024;	// make sure it fits in VERTCACHE_OFFSET_MASK!

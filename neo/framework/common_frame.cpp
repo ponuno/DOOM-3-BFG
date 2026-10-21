@@ -723,6 +723,16 @@ void idCommonLocal::Frame() {
 						elapsed * 0.001f, perfFrames, perfFrames * 1000.0f / elapsed,
 						n3dsPerfTicks, n3dsPerfGameUs * 0.001f / ticks, n3dsPerfGameMaxUs * 0.001f,
 						n3dsPerfDrawUs * 0.001f / perfFrames, perfFrontendUs * 0.001f / perfFrames, perfBackendUs * 0.001f / perfFrames );
+					extern int n3dsRenderStats[8];
+					extern int n3dsFramePeakIndex, n3dsFramePeakVertex, n3dsCacheOverflows, n3dsFrameIndexBytes, n3dsFrameVertexBytes;
+					const float rf = (float)Max( n3dsRenderStats[0], 1 );
+					Printf( "PERF   scene/frame: ents %.0f lights %.0f guiSurfs %.0f draws %.0f tris %.0f newInteractions %.1f deformVerts %.0f | frame cache peak idx %d / %d KB, vtx %d / %d KB, overflows %d\n",
+						n3dsRenderStats[1] / rf, n3dsRenderStats[2] / rf, n3dsRenderStats[3] / rf, n3dsRenderStats[4] / rf,
+						n3dsRenderStats[5] / rf, n3dsRenderStats[6] / rf, n3dsRenderStats[7] / rf,
+						n3dsFramePeakIndex / 1024, n3dsFrameIndexBytes / 1024,
+						n3dsFramePeakVertex / 1024, n3dsFrameVertexBytes / 1024, n3dsCacheOverflows );
+					memset( n3dsRenderStats, 0, sizeof( n3dsRenderStats ) );
+					n3dsFramePeakIndex = n3dsFramePeakVertex = n3dsCacheOverflows = 0;
 					perfStart = now;
 					perfFrames = 0;
 					perfFrontendUs = perfBackendUs = 0;

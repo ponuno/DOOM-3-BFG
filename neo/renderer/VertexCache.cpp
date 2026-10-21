@@ -49,6 +49,10 @@ static void ClearGeoBufferSet( geoBufferSet_t &gbs ) {
 	gbs.allocations = 0;
 }
 
+#if defined( ID_3DS )
+extern int n3dsCacheOverflows;
+#endif
+
 /*
 ==============
 MapGeoBufferSet
@@ -178,12 +182,25 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t & vcs, const void
 		base = &vcs.mappedIndexBase;
 		endPos = vcs.indexMemUsed.Add( bytes );
 		if ( endPos > vcs.indexBuffer.GetAllocedSize() ) {
+#if defined( ID_3DS )
+			// per-frame overflow: drop this surface for the frame instead of ending the game
+			if ( &vcs != &staticData ) {
+				n3dsCacheOverflows++;
+				return (vertCacheHandle_t)0;
+			}
+#endif
 			idLib::Error( "Out of index cache" );
 		}
 	} else if ( type == CACHE_VERTEX ) {
 		base = &vcs.mappedVertexBase;
 		endPos = vcs.vertexMemUsed.Add( bytes );
 		if ( endPos > vcs.vertexBuffer.GetAllocedSize() ) {
+#if defined( ID_3DS )
+			if ( &vcs != &staticData ) {
+				n3dsCacheOverflows++;
+				return (vertCacheHandle_t)0;
+			}
+#endif
 			idLib::Error( "Out of vertex cache" );
 		}
 	} else if ( type == CACHE_JOINT ) {
@@ -290,7 +307,19 @@ bool idVertexCache::GetJointBuffer( vertCacheHandle_t handle, idJointBuffer * jb
 idVertexCache::BeginBackEnd
 ==============
 */
+#if defined( ID_3DS )
+int n3dsFramePeakIndex = 0;		// read and reset by the PERF line
+int n3dsFramePeakVertex = 0;
+int n3dsCacheOverflows = 0;
+int n3dsFrameIndexBytes = VERTCACHE_INDEX_MEMORY_PER_FRAME;
+int n3dsFrameVertexBytes = VERTCACHE_VERTEX_MEMORY_PER_FRAME;
+#endif
+
 void idVertexCache::BeginBackEnd() {
+#if defined( ID_3DS )
+	n3dsFramePeakIndex = Max( n3dsFramePeakIndex, frameData[listNum].indexMemUsed.GetValue() );
+	n3dsFramePeakVertex = Max( n3dsFramePeakVertex, frameData[listNum].vertexMemUsed.GetValue() );
+#endif
 	mostUsedVertex = Max( mostUsedVertex, frameData[listNum].vertexMemUsed.GetValue() );
 	mostUsedIndex = Max( mostUsedIndex, frameData[listNum].indexMemUsed.GetValue() );
 	mostUsedJoint = Max( mostUsedJoint, frameData[listNum].jointMemUsed.GetValue() );
