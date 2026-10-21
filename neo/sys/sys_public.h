@@ -538,7 +538,19 @@ enum { N3DS_STAGE_MAIN, N3DS_STAGE_GAME, N3DS_STAGE_RENDER, N3DS_STAGE_COUNT };
 void			Sys_N3DSStage( int slot, const char * what );
 void			Sys_N3DSFrameDone();
 #define N3DS_STAGE( slot, what )	Sys_N3DSStage( slot, what )
+// logs "SLOW <label>: x ms" when the enclosing scope takes longer than limitMs
+class idN3DSSlowScope {
+public:
+					idN3DSSlowScope( const char * label_, int limitMs );
+					~idN3DSSlowScope();
+private:
+	const char *	label;
+	int				limitUs;
+	uint64			start;
+};
+#define N3DS_SLOW_SCOPE( label, limitMs )	idN3DSSlowScope n3dsSlowScope( label, limitMs )
 #else
+#define N3DS_SLOW_SCOPE( label, limitMs )
 #define N3DS_STAGE( slot, what )
 #endif
 

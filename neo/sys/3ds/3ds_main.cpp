@@ -758,6 +758,17 @@ void Sys_N3DSFrameDone() {
 	n3dsFramesDone++;
 }
 
+idN3DSSlowScope::idN3DSSlowScope( const char * label_, int limitMs ) :
+	label( label_ ), limitUs( limitMs * 1000 ), start( Sys_Microseconds() ) {
+}
+
+idN3DSSlowScope::~idN3DSSlowScope() {
+	const uint64 us = Sys_Microseconds() - start;
+	if ( us > (uint64)limitUs ) {
+		Sys_Printf( "SLOW %s: %.1f ms\n", label, us * 0.001f );
+	}
+}
+
 static void N3DS_WatchdogMain( void * ) {
 	uint32 lastFrames = n3dsFramesDone;
 	int stalledMs = 0;

@@ -1390,6 +1390,7 @@ idPush::ClipPush
 float idPush::ClipPush( trace_t &results, idEntity *pusher, const int flags,
 								const idVec3 &oldOrigin, const idMat3 &oldAxis,
 									idVec3 &newOrigin, idMat3 &newAxis ) {
+	N3DS_SLOW_SCOPE( "idPush::ClipPush", 20 );
 	idVec3 translation;
 	idRotation rotation;
 	float mass;

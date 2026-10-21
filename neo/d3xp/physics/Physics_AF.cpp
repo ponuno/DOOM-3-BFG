@@ -46,6 +46,12 @@ const float NO_MOVE_TRANSLATION_TOLERANCE	= 10.0f;
 const float NO_MOVE_ROTATION_TOLERANCE		= 10.0f;
 const float MIN_MOVE_TIME					= -1.0f;
 const float MAX_MOVE_TIME					= -1.0f;
+
+#if defined( ID_3DS )
+idCVar n3ds_afMaxMoveTime( "n3ds_afMaxMoveTime", "4", CVAR_GAME | CVAR_FLOAT, "articulated figures (ragdolls) are put to rest after simulating this many seconds without rest (0 = never)" );
+idCVar n3ds_afSlowMs( "n3ds_afSlowMs", "30", CVAR_GAME | CVAR_INTEGER, "log articulated figure evaluations slower than this, with a breakdown" );
+idCVar n3ds_afMaxEvalMs( "n3ds_afMaxEvalMs", "100", CVAR_GAME | CVAR_INTEGER, "an articulated figure whose evaluation takes longer than this is put to rest (0 = never)" );
+#endif
 const float IMPULSE_THRESHOLD				= 500.0f;
 const float SUSPEND_LINEAR_VELOCITY			= 10.0f;
 const float SUSPEND_ANGULAR_VELOCITY		= 15.0f;
@@ -5927,6 +5933,12 @@ bool idPhysics_AF::TestIfAtRest( float timeStep ) {
 	if ( maxMoveTime > 0.0f && current.activateTime > maxMoveTime ) {
 		return true;
 	}
+#if defined( ID_3DS )
+	// New 3DS: ragdolls that keep jittering cost several ms each every frame
+	if ( n3ds_afMaxMoveTime.GetFloat() > 0.0f && current.activateTime > n3ds_afMaxMoveTime.GetFloat() ) {
+		return true;
+	}
+#endif
 
 	// test if all bodies hardly moved over a period of time
 	if ( current.noMoveTime == 0.0f ) {
@@ -6265,6 +6277,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 #ifdef AF_TIMINGS
 	timer_collision.Start();
 #endif
+#if defined( ID_3DS )
+	const uint64 n3dsT0 = Sys_Microseconds();
+#endif
 
 	// evaluate contacts
 	EvaluateContacts();
@@ -6274,6 +6289,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 #ifdef AF_TIMINGS
 	timer_collision.Stop();
+#endif
+#if defined( ID_3DS )
+	const uint64 n3dsT1 = Sys_Microseconds();
 #endif
 
 	// evaluate constraint equations
@@ -6301,6 +6319,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// calculate forces on bodies after applying primary constraints
 	PrimaryForces( timeStep );
+#if defined( ID_3DS )
+	const uint64 n3dsT2 = Sys_Microseconds();
+#endif
 
 #ifdef AF_TIMINGS
 	timer_pc.Stop();
@@ -6309,6 +6330,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// calculate and apply auxiliary constraint forces
 	AuxiliaryForces( timeStep );
+#if defined( ID_3DS )
+	const uint64 n3dsT3 = Sys_Microseconds();
+#endif
 
 #ifdef AF_TIMINGS
 	timer_ac.Stop();
@@ -6335,6 +6359,9 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 
 	// check for collisions between current and next state
 	CheckForCollisions( timeStep );
+#if defined( ID_3DS )
+	const uint64 n3dsT4 = Sys_Microseconds();
+#endif
 
 #ifdef AF_TIMINGS
 	timer_collision.Stop();
@@ -6373,6 +6400,30 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 							self->name.c_str(), self->GetType()->classname, bodies[0]->current->worldOrigin.ToString(0) );
 		Rest();
 	}
+
+#if defined( ID_3DS )
+	{
+		const uint64 n3dsT5 = Sys_Microseconds();
+		const float totalMs = ( n3dsT5 - n3dsT0 ) * 0.001f;
+		if ( totalMs >= n3ds_afSlowMs.GetFloat() ) {
+			int rowsP = 0, rowsA = 0;
+			for ( int k = 0; k < primaryConstraints.Num(); k++ ) {
+				rowsP += primaryConstraints[k]->J1.GetNumRows();
+			}
+			for ( int k = 0; k < auxiliaryConstraints.Num(); k++ ) {
+				rowsA += auxiliaryConstraints[k]->J1.GetNumRows();
+			}
+			const bool stop = n3ds_afMaxEvalMs.GetInteger() > 0 && totalMs >= n3ds_afMaxEvalMs.GetFloat();
+			gameLocal.Printf( "SLOW AF %s: %.1f ms = contacts %.1f + primary %.1f + auxiliary/LCP %.1f + collisions %.1f | %d bodies, %d contacts, %d primary rows, %d auxiliary rows, active %.1f s%s\n",
+				self->name.c_str(), totalMs, ( n3dsT1 - n3dsT0 ) * 0.001f, ( n3dsT2 - n3dsT1 ) * 0.001f,
+				( n3dsT3 - n3dsT2 ) * 0.001f, ( n3dsT4 - n3dsT3 ) * 0.001f,
+				bodies.Num(), contacts.Num(), rowsP, rowsA, current.activateTime, stop ? " -> put to rest" : "" );
+			if ( stop ) {
+				Rest();
+			}
+		}
+	}
+#endif
 
 #ifdef AF_TIMINGS
 	timer_total.Stop();
