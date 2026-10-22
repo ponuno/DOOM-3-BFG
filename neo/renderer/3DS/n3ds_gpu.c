@@ -118,6 +118,7 @@ static void N3DS_DeleteTex( C3D_Tex * tex ) {
 }
 static int					pendingSet = 0;
 static C3D_RenderTarget *	topTarget = NULL;
+static void					N3DS_WritePendingColorBuffer( void );
 static void					( *hangCallback )( unsigned int ) = NULL;
 
 void N3DSGPU_SetHangCallback( void ( *callback )( unsigned int waitedMs ) ) {
@@ -348,6 +349,7 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 	}
 	numPendingFree[pendingSet] = 0;
 	// depth 0 (far, the depth buffer is reversed), stencil 128: SWF masks count from there
+	N3DS_WritePendingColorBuffer();
 	C3D_RenderTargetClear( topTarget, C3D_CLEAR_ALL, clearRGBA, 128u << 24 );
 	C3D_FrameDrawOn( topTarget );
 	inFrame = 1;
@@ -611,26 +613,39 @@ int N3DSGPU_DumpKeysHeld( void ) {
 	return t.py >= 120;
 }
 
-// diagnostics (frame dump): wait for the submitted frame, then write its colour buffer
-// as it is in VRAM (240 x 400 RGBA8, 8x8 Morton tiles, rows bottom-up per GPU convention)
+// diagnostics (frame dump): the colour buffer of the frame just submitted is written at
+// the start of the next frame, once the GPU has finished it and before it is cleared
+// (240 x 400 RGBA8 as it is in VRAM, 8x8 Morton tiles)
+static char fbDumpPath[64];
+
 int N3DSGPU_DumpColorBuffer( const char * path ) {
-	if ( topTarget == NULL ) {
-		return 0;
+	snprintf( fbDumpPath, sizeof( fbDumpPath ), "%s", path );
+	return 1;
+}
+
+static void N3DS_WritePendingColorBuffer( void ) {
+	if ( fbDumpPath[0] == '\0' || topTarget == NULL ) {
+		return;
 	}
-	gxCmdQueueWait( &__C3D_Context.gxQueue, 3000000000LL );
 	const C3D_FrameBuf * fb = &topTarget->frameBuf;
 	const u32 size = (u32)fb->width * fb->height * 4;
-	GSPGPU_InvalidateDataCache( fb->colorBuf, size );
-	FILE * f = fopen( path, "wb" );
+	FILE * f = fopen( fbDumpPath, "wb" );
+	fbDumpPath[0] = '\0';
 	if ( f == NULL ) {
-		return 0;
+		return;
 	}
 	N3DS_DumpPut32( f, 0x4246334E );		// "N3FB"
 	N3DS_DumpPut32( f, fb->width );
 	N3DS_DumpPut32( f, fb->height );
 	N3DS_DumpPut32( f, (u32)fb->colorFmt );
-	fwrite( fb->colorBuf, 1, size, f );
-	return fclose( f ) == 0;
+	// VRAM through a small copy: fwrite straight from VRAM goes through the SD driver
+	static u8 chunk[4096];
+	for ( u32 off = 0; off < size; off += sizeof( chunk ) ) {
+		const u32 n = ( size - off < sizeof( chunk ) ) ? size - off : sizeof( chunk );
+		memcpy( chunk, (const u8 *)fb->colorBuf + off, n );
+		fwrite( chunk, 1, n, f );
+	}
+	fclose( f );
 }
 
 int N3DSGPU_HangDump( const char * path, int withRegs ) {
