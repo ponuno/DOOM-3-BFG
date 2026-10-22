@@ -958,6 +958,14 @@ static bool N3DS_TexHasAlpha( const n3dsTexture_t * t, const n3dsTexLayout_t & l
 
 // VRAM full: the texture goes to linear memory, within n3ds_texLinearKB, evicting linear
 // textures this frame does not use. Written in place, no copy.
+// a texture the previous frame drew is in view: textures are uploaded while the frame is
+// drawn, so "not drawn this frame" also covers every texture this frame has not reached yet.
+// Evicting those (the old test) took textures from the screen, the next frame drew those
+// surfaces without them (flat colour, no normal map) and uploaded them again.
+static bool N3DS_TexInView( const n3dsTexture_t * v ) {
+	return v->lastFrame >= texFrame - 1;
+}
+
 static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & layout, const byte * rgba, bool & comingBack ) {
 	comingBack = false;
 	const int budget = Max( 0, n3ds_texLinearKB.GetInteger() ) * 1024;
@@ -981,7 +989,7 @@ static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & lay
 		}
 		// the least recently used linear texture this frame does not draw
 		n3dsTexture_t * victim = NULL;
-		for ( n3dsTexture_t * v = lruTail; v != NULL && v->lastFrame < texFrame; v = v->lruPrev ) {
+		for ( n3dsTexture_t * v = lruTail; v != NULL && !N3DS_TexInView( v ); v = v->lruPrev ) {
 			if ( v->inLinear ) {
 				victim = v;
 				break;
@@ -1072,7 +1080,7 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 			// enough VRAM in total but no block that large (fragmented): an eviction only
 			// shows once its memory is back, so one victim now and linear memory meanwhile
 			n3dsTexture_t * victim = NULL;
-			for ( n3dsTexture_t * v = lruTail; v != NULL && v->lastFrame < texFrame; v = v->lruPrev ) {
+			for ( n3dsTexture_t * v = lruTail; v != NULL && !N3DS_TexInView( v ); v = v->lruPrev ) {
 				if ( !v->inLinear ) {
 					victim = v;
 					break;
@@ -1096,7 +1104,7 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		}
 		// the least recently used VRAM texture this frame does not draw
 		n3dsTexture_t * victim = NULL;
-		for ( n3dsTexture_t * v = lruTail; v != NULL && v->lastFrame < texFrame; v = v->lruPrev ) {
+		for ( n3dsTexture_t * v = lruTail; v != NULL && !N3DS_TexInView( v ); v = v->lruPrev ) {
 			if ( !v->inLinear ) {
 				victim = v;
 				break;
