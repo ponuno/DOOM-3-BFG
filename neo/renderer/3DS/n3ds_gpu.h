@@ -157,6 +157,8 @@ int				N3DSGPU_HangQueueReport( char * out, int outSize );
 // (which state the GPU is stuck in); 0 if the file could not be written
 int				N3DSGPU_DumpKeysHeld( void );		// diagnostics: touch on the lower half of the bottom screen
 int				N3DSGPU_DumpColorBuffer( const char * path );	// diagnostics
+void			N3DSGPU_RingCapture( int slots, int frame );	// diagnostics: keep this frame in the ring
+int				N3DSGPU_RingWrite( int firstIndex, int * frames, int maxFrames );
 int				N3DSGPU_HangDump( const char * path, int withRegs );
 // texture-copy destinations in the queue report are named through this (NULL: unknown)
 void			N3DSGPU_SetHangTexNamer( const char * ( *namer )( unsigned int address ) );

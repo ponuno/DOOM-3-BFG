@@ -141,6 +141,14 @@ idCVar n3ds_c3dFrameDump( "n3ds_c3dFrameDump", "3", CVAR_RENDERER | CVAR_INTEGER
 static int	c3dDumpLeft = 0;
 static int	c3dDumpIndex = 0;
 static bool	c3dDumpKeysWere = false;
+// n3ds_c3dFrameRing: the last frames are kept all the time; a touch writes them
+idCVar n3ds_c3dFrameRing( "n3ds_c3dFrameRing", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: keep the command lists, pictures and draw records of the last N frames (max 8) in RAM; a touch on the lower half of the bottom screen writes them to sdmc:/doom3/ringK.bin / .fb and their draws to the log (instead of n3ds_c3dFrameDump)", 0, 8 );
+static const int		C3D_RING_MAX = 8;
+static c3dDrawRecord_t *	ringRecords[C3D_RING_MAX];
+static int				ringNumRecords[C3D_RING_MAX];
+static int				ringFrame[C3D_RING_MAX];
+static int				ringNext = 0;
+static int				ringFileIndex = 0;
 
 static void N3DS_GPUHang( unsigned int waitedMs ) {
 	const int prev = c3dRecordSet;		// not flipped yet: the frame the GPU is still on
@@ -1858,7 +1866,27 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	c3dNumRecords[c3dRecordSet] = 0;
 	{
 		const bool keys = n3ds_c3dFrameDump.GetInteger() > 0 && N3DSGPU_DumpKeysHeld();
-		if ( keys && !c3dDumpKeysWere && c3dDumpLeft == 0 ) {
+		const int ringSize = Min( n3ds_c3dFrameRing.GetInteger(), C3D_RING_MAX );
+		if ( keys && !c3dDumpKeysWere && ringSize > 0 ) {
+			// the frames just shown: written now, the game waits meanwhile
+			int frames[C3D_RING_MAX];
+			const int first = ringFileIndex;
+			const int n = N3DSGPU_RingWrite( first, frames, C3D_RING_MAX );
+			common->Printf( "FRAMERING: touch: %d frames written as ring%d..ring%d\n", n, first, first + n - 1 );
+			for ( int k = 0; k < n; k++ ) {
+				int slot = -1;
+				for ( int r = 0; r < C3D_RING_MAX; r++ ) {
+					if ( ringRecords[r] != NULL && ringFrame[r] == frames[k] ) {
+						slot = r;
+					}
+				}
+				common->Printf( "FRAMERING ring%d: 3D frame %d, %d draws\n", first + k, frames[k], slot >= 0 ? ringNumRecords[slot] : -1 );
+				for ( int i = 0; slot >= 0 && i < ringNumRecords[slot]; i++ ) {
+					N3DS_PrintRecord( i, ringRecords[slot][i] );
+				}
+			}
+			ringFileIndex += n;
+		} else if ( keys && !c3dDumpKeysWere && c3dDumpLeft == 0 ) {
 			c3dDumpLeft = n3ds_c3dFrameDump.GetInteger();
 			common->Printf( "FRAMEDUMP: touch: writing the next %d frames\n", c3dDumpLeft );
 		}
@@ -1905,6 +1933,20 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: submitting" );
 	N3DSGPU_EndFrame();
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: idle" );
+	{
+		const int ringSize = Min( n3ds_c3dFrameRing.GetInteger(), C3D_RING_MAX );
+		if ( ringSize > 0 && has3D ) {
+			N3DSGPU_RingCapture( ringSize, c3dFrame3D );
+			const int slot = ringNext;
+			ringNext = ( ringNext + 1 ) % ringSize;
+			if ( ringRecords[slot] == NULL ) {
+				ringRecords[slot] = (c3dDrawRecord_t *)Mem_Alloc( C3D_MAX_RECORDS * sizeof( c3dDrawRecord_t ), TAG_RENDER );
+			}
+			ringNumRecords[slot] = c3dNumRecords[c3dRecordSet];
+			ringFrame[slot] = c3dFrame3D;
+			memcpy( ringRecords[slot], c3dRecords[c3dRecordSet], c3dNumRecords[c3dRecordSet] * sizeof( c3dDrawRecord_t ) );
+		}
+	}
 	if ( c3dDumpLeft > 0 && has3D ) {
 		// the frame just submitted is still in the GX queue (cleared at the next frame start)
 		const char * path = va( "sdmc:/doom3/frame%d.bin", c3dDumpIndex );

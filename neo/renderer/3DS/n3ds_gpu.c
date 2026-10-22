@@ -119,6 +119,7 @@ static void N3DS_DeleteTex( C3D_Tex * tex ) {
 static int					pendingSet = 0;
 static C3D_RenderTarget *	topTarget = NULL;
 static void					N3DS_WritePendingColorBuffer( void );
+static void					N3DS_RingPicture( void );
 static void					( *hangCallback )( unsigned int ) = NULL;
 
 void N3DSGPU_SetHangCallback( void ( *callback )( unsigned int waitedMs ) ) {
@@ -349,6 +350,7 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 	}
 	numPendingFree[pendingSet] = 0;
 	// depth 0 (far, the depth buffer is reversed), stencil 128: SWF masks count from there
+	N3DS_RingPicture();
 	N3DS_WritePendingColorBuffer();
 	C3D_RenderTargetClear( topTarget, C3D_CLEAR_ALL, clearRGBA, 128u << 24 );
 	C3D_FrameDrawOn( topTarget );
@@ -621,6 +623,144 @@ static char fbDumpPath[64];
 int N3DSGPU_DumpColorBuffer( const char * path ) {
 	snprintf( fbDumpPath, sizeof( fbDumpPath ), "%s", path );
 	return 1;
+}
+
+/*
+	Frame ring (n3ds_c3dFrameRing): the command list and the finished picture of the last
+	few frames are kept in RAM all the time, so that a touch writes what was on the screen
+	just before it - the game keeps its normal pace until then.
+*/
+#define FRAME_RING_MAX	8
+typedef struct {
+	u32 *	cmd;
+	u32		cmdSize;
+	u32		cmdCap;
+	u32		cmdAddr;
+	u8 *	fb;
+	int		fbValid;
+	int		frame;
+	int		used;
+} frameRingSlot_t;
+static frameRingSlot_t	frameRing[FRAME_RING_MAX];
+static int				frameRingSize = 0;
+static int				frameRingHead = 0;
+static int				frameRingLast = -1;		// slot waiting for its picture
+
+void N3DSGPU_RingCapture( int slots, int frame ) {
+	if ( slots <= 0 ) {
+		frameRingLast = -1;
+		return;
+	}
+	if ( slots > FRAME_RING_MAX ) {
+		slots = FRAME_RING_MAX;
+	}
+	if ( slots != frameRingSize ) {
+		frameRingSize = slots;
+		frameRingHead = 0;
+		for ( int i = 0; i < FRAME_RING_MAX; i++ ) {
+			frameRing[i].used = 0;
+		}
+	}
+	const gxCmdQueue_s * q = &__C3D_Context.gxQueue;
+	const int num = ( q->numEntries < q->maxEntries ) ? q->numEntries : q->maxEntries;
+	u32 addr = 0, size = 0;
+	for ( int i = 0; i < num; i++ ) {
+		const u32 * d = q->entries[i].data;
+		if ( ( d[0] & 0xFF ) == 0x01 ) {
+			addr = d[1];
+			size = d[2];
+			break;
+		}
+	}
+	if ( size == 0 || addr < __ctru_linear_heap || addr + size > __ctru_linear_heap + __ctru_linear_heap_size ) {
+		frameRingLast = -1;
+		return;
+	}
+	frameRingSlot_t * s = &frameRing[frameRingHead];
+	if ( s->cmdCap < size ) {
+		u32 * n = (u32 *)realloc( s->cmd, size );
+		if ( n == NULL ) {
+			frameRingLast = -1;
+			return;
+		}
+		s->cmd = n;
+		s->cmdCap = size;
+	}
+	memcpy( s->cmd, (const void *)addr, size );
+	s->cmdSize = size;
+	s->cmdAddr = addr;
+	s->fbValid = 0;
+	s->frame = frame;
+	s->used = 1;
+	frameRingLast = frameRingHead;
+	frameRingHead = ( frameRingHead + 1 ) % frameRingSize;
+}
+
+// next frame start: the GPU has finished the frame, its picture is still in the buffer
+static void N3DS_RingPicture( void ) {
+	if ( frameRingLast < 0 || topTarget == NULL ) {
+		return;
+	}
+	frameRingSlot_t * s = &frameRing[frameRingLast];
+	frameRingLast = -1;
+	const C3D_FrameBuf * fb = &topTarget->frameBuf;
+	const u32 size = (u32)fb->width * fb->height * 4;
+	if ( s->fb == NULL ) {
+		s->fb = (u8 *)malloc( size );
+		if ( s->fb == NULL ) {
+			return;
+		}
+	}
+	memcpy( s->fb, fb->colorBuf, size );
+	s->fbValid = 1;
+}
+
+// writes the ring, oldest first, as ringN.bin / ringN.fb from firstIndex; returns the
+// frame numbers written in order (frames[]) and how many
+int N3DSGPU_RingWrite( int firstIndex, int * frames, int maxFrames ) {
+	int written = 0;
+	const C3D_FrameBuf * fb = ( topTarget != NULL ) ? &topTarget->frameBuf : NULL;
+	for ( int k = 0; k < frameRingSize && written < maxFrames; k++ ) {
+		frameRingSlot_t * s = &frameRing[( frameRingHead + k ) % frameRingSize];
+		if ( !s->used || !s->fbValid ) {
+			continue;
+		}
+		char path[64];
+		snprintf( path, sizeof( path ), "sdmc:/doom3/ring%d.bin", firstIndex + written );
+		FILE * f = fopen( path, "wb" );
+		if ( f == NULL ) {
+			break;
+		}
+		N3DS_DumpPut32( f, 0x4847334E );		// "N3GH", one command list entry
+		N3DS_DumpPut32( f, 1 );
+		N3DS_DumpPut32( f, __ctru_linear_heap );
+		N3DS_DumpPut32( f, osConvertVirtToPhys( (const void *)__ctru_linear_heap ) );
+		N3DS_DumpPut32( f, __ctru_linear_heap_size );
+		N3DS_DumpPut32( f, 1 );
+		N3DS_DumpPut32( f, 1 );
+		N3DS_DumpPut32( f, 0 );
+		u32 entry[8] = { 0x01, s->cmdAddr, s->cmdSize, 0, 0, 0, 0, 0 };
+		fwrite( entry, 4, 8, f );
+		N3DS_DumpPut32( f, 0x4C444D43 );		// "CMDL"
+		N3DS_DumpPut32( f, 0 );
+		N3DS_DumpPut32( f, s->cmdSize );
+		fwrite( s->cmd, 1, s->cmdSize, f );
+		N3DS_DumpPut32( f, 0x444E4521 );
+		fclose( f );
+		snprintf( path, sizeof( path ), "sdmc:/doom3/ring%d.fb", firstIndex + written );
+		f = fopen( path, "wb" );
+		if ( f != NULL && fb != NULL ) {
+			N3DS_DumpPut32( f, 0x4246334E );
+			N3DS_DumpPut32( f, fb->width );
+			N3DS_DumpPut32( f, fb->height );
+			N3DS_DumpPut32( f, (u32)fb->colorFmt );
+			fwrite( s->fb, 1, (u32)fb->width * fb->height * 4, f );
+			fclose( f );
+		}
+		frames[written++] = s->frame;
+		s->used = 0;
+	}
+	return written;
 }
 
 static void N3DS_WritePendingColorBuffer( void ) {
