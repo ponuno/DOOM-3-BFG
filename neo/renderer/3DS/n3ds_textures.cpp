@@ -67,6 +67,7 @@ idCVar n3ds_texLinearKB( "n3ds_texLinearKB", "3072", CVAR_RENDERER | CVAR_INTEGE
 idCVar n3ds_texLinearReserveKB( "n3ds_texLinearReserveKB", "2048", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory the texture cache always leaves free (citro3d, staging copies)" );
 idCVar n3ds_texVRAMReserveKB( "n3ds_texVRAMReserveKB", "64", CVAR_RENDERER | CVAR_INTEGER, "citro3d: VRAM left free by the texture cache" );
 idCVar n3ds_texVerify( "n3ds_texVerify", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: 1 = check textures in VRAM against what was copied there (a few per frame) and log changed ones; 2 = also compare every packed upload with a fresh read of the pack" );
+idCVar n3ds_texA4AsA8( "n3ds_texA4AsA8", "1", CVAR_RENDERER | CVAR_BOOL, "the pack's A4 coverage masks go to the GPU as A8 (each 4-bit value widened on the console, same tiling); sampling A4 directly broke the GPU (hang, pixel garbage on both screens and in the HOME menu)" );
 idCVar n3ds_texPackDecode( "n3ds_texPackDecode", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics, bits: 1 / 2 / 4 = decode the pack's ETC1 / ETC1A4 / A4 textures on the console and upload them like the old path (RGB565 / RGBA4 / A8); 8 = ETC1 / ETC1A4 kept but level 0 only (no mips); 16 = decode ETC1 / ETC1A4 textures with a side under 32" );
 idCVar n3ds_texPack( "n3ds_texPack", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT, "citro3d: take textures from base/_n3ds_textures.pak (converted on the PC by n3dstex) when it is there" );
 idCVar n3ds_texWorldMaxSize( "n3ds_texWorldMaxSize", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest world texture (larger pack levels are skipped)", 8, 1024 );
@@ -770,7 +771,7 @@ static void N3DS_VerifyRecord( n3dsTexture_t * t, const byte * data, int bytes )
 		t->verifyCrc[i] = N3DS_Crc32( data + i * 1024, Min( 1024, bytes - i * 1024 ) );
 	}
 	// level 2: the bytes as they are in the pack file
-	if ( n3ds_texVerify.GetInteger() >= 2 && t->packed && t->streamPath >= 0 ) {
+	if ( n3ds_texVerify.GetInteger() >= 2 && t->packed && t->streamPath >= 0 && bytes == t->dataSize ) {
 		FILE * f = fopen( texPaths[t->streamPath].path.c_str(), "rb" );
 		if ( f != NULL ) {
 			byte * fresh = (byte *)Mem_Alloc( bytes, TAG_IMAGE );
@@ -935,7 +936,17 @@ static bool N3DS_TexDirectPack( const n3dsTexture_t * t ) {
 // the GPU chain: from the pack as it is, else built from the decoded level
 static void N3DS_TexFill( const n3dsTexture_t * t, const n3dsTexLayout_t & layout, const byte * rgba, byte * dst ) {
 	if ( N3DS_TexDirectPack( t ) ) {
-		memcpy( dst, t->data, layout.bytes );
+		if ( t->gpuFormat == N3DS_TEX_A4 && layout.format == N3DS_TEX_A8 ) {
+			// A4 -> A8: same Morton order, two pixels per byte, the even one in the low nibble
+			const byte * src = t->data;
+			for ( int i = 0; i < layout.bytes / 2; i++ ) {
+				const byte v = src[i];
+				dst[i * 2] = (byte)( ( v & 15 ) * 17 );
+				dst[i * 2 + 1] = (byte)( ( v >> 4 ) * 17 );
+			}
+		} else {
+			memcpy( dst, t->data, layout.bytes );
+		}
 	} else {
 		N3DS_BuildTexture( rgba, t->width, t->height, layout, n3ds_texFlip.GetBool(), dst );
 	}
@@ -1014,6 +1025,10 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		layout.maxLevel = t->packMaxLevel;
 		layout.format = t->gpuFormat;
 		layout.bytes = t->dataSize;
+		if ( t->gpuFormat == N3DS_TEX_A4 && n3ds_texA4AsA8.GetBool() ) {
+			layout.format = N3DS_TEX_A8;
+			layout.bytes = t->dataSize * 2;
+		}
 		if ( ( n3ds_texPackDecode.GetInteger() & 8 ) && ( t->gpuFormat == N3DS_TEX_ETC1 || t->gpuFormat == N3DS_TEX_ETC1A4 ) ) {
 			// diagnostics: the top level alone (it comes first in the chain)
 			layout.maxLevel = 0;
