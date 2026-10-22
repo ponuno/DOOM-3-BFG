@@ -46,7 +46,8 @@ void * NullGL_BufferStorage( GLuint name, bool * linear );	// gl_null.cpp
 bool r_n3dsC3D = false;
 
 idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: draw at most this many surfaces per frame (0 = all), for bisecting GPU hangs" );
-idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
+idCVar n3ds_guiStencil( "n3ds_guiStencil", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: stencil for SWF masks (0 = ignore the stencil state, for bisecting)" );
+idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
 idCVar n3ds_c3dTest( "n3ds_c3dTest", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d bring-up test: 1 = only a test triangle, 2 = engine surfaces copied to a private buffer first (first one per frame)" );
 idCVar n3ds_c3dTrace( "n3ds_c3dTrace", "3", CVAR_RENDERER | CVAR_INTEGER, "citro3d: log begin/end of the first N 3D frames" );
 
@@ -86,7 +87,10 @@ struct c3dDrawRecord_t {
 	int					ibOffset;
 	unsigned int		vbName;
 	unsigned int		ibName;
+	const char *		texName;		// stage draws: the texture's image
+	int					flags;			// stage draws: C3D_REC_*
 };
+static const int C3D_REC_STAGE = 1, C3D_REC_A8 = 2, C3D_REC_STENCIL = 4, C3D_REC_SWF = 8, C3D_REC_ALPHATEST = 16, C3D_REC_GUIVIEW = 32;
 static const int		C3D_MAX_RECORDS = 512;
 static c3dDrawRecord_t	c3dRecords[2][C3D_MAX_RECORDS];
 static int				c3dNumRecords[2];
@@ -98,8 +102,11 @@ static void N3DS_GPUHang( unsigned int waitedMs ) {
 		waitedMs, c3dFrame3D, c3dNumRecords[prev] );
 	for ( int i = 0; i < c3dNumRecords[prev]; i++ ) {
 		const c3dDrawRecord_t & r = c3dRecords[prev][i];
-		common->Printf( "  %3d %s: %d indexes, vb %u+%d, ib %u+%d\n", i,
-			r.material != NULL ? r.material->GetName() : "?", r.numIndexes, r.vbName, r.vbOffset, r.ibName, r.ibOffset );
+		common->Printf( "  %3d %s: %d indexes, vb %u+%d, ib %u+%d%s%s%s%s%s%s%s\n", i,
+			r.material != NULL ? r.material->GetName() : "?", r.numIndexes, r.vbName, r.vbOffset, r.ibName, r.ibOffset,
+			( r.flags & C3D_REC_STAGE ) ? " | stage, tex " : "", ( r.flags & C3D_REC_STAGE ) ? ( r.texName != NULL ? r.texName : "none" ) : "",
+			( r.flags & C3D_REC_A8 ) ? " A8" : "", ( r.flags & C3D_REC_STENCIL ) ? " stencil" : "", ( r.flags & C3D_REC_SWF ) ? " swf" : "",
+			( r.flags & C3D_REC_ALPHATEST ) ? " alphatest" : "", ( r.flags & C3D_REC_GUIVIEW ) ? " guiview" : "" );
 	}
 }
 
@@ -424,6 +431,8 @@ static const byte * N3DS_SurfaceBuffers( const drawSurf_t * surf, n3dsBuffers_t 
 	record->ibOffset = ib.GetOffset();
 	record->vbName = vbName;
 	record->ibName = ibName;
+	record->texName = NULL;
+	record->flags = 0;
 	*indexes = (const unsigned short *)( b.ibBase + ib.GetOffset() );
 	return b.vbBase + vb.GetOffset();
 }
@@ -1270,7 +1279,7 @@ static void N3DS_DrawAmbientStages( const viewDef_t * viewDef, bool gui ) {
 				const int sFail = (int)( ( stageGLState & GLS_STENCIL_OP_FAIL_BITS ) >> 39 );
 				const int sZFail = (int)( ( stageGLState & GLS_STENCIL_OP_ZFAIL_BITS ) >> 42 );
 				const int sPass = (int)( ( stageGLState & GLS_STENCIL_OP_PASS_BITS ) >> 45 );
-				if ( sFunc == 0 && sFail == 0 && sZFail == 0 && sPass == 0 ) {
+				if ( ( sFunc == 0 && sFail == 0 && sZFail == 0 && sPass == 0 ) || !n3ds_guiStencil.GetBool() ) {
 					N3DSGPU_SetStencil( -1, 0, 0, 0, 0, 0 );
 				} else {
 					N3DSGPU_SetStencil( sFunc, (int)( ( stageGLState & GLS_STENCIL_FUNC_REF_BITS ) >> GLS_STENCIL_FUNC_REF_SHIFT ),
@@ -1279,6 +1288,9 @@ static void N3DS_DrawAmbientStages( const viewDef_t * viewDef, bool gui ) {
 			}
 			const bool alphaTex = tex != NULL && N3DS_TexIsAlphaOnly( pStage->texture.image );
 			N3DSGPU_SetStageTexEnv( tex, swf ? 1 : 0, swfAdd, alphaTex ? 1 : 0 );
+			record.texName = ( tex != NULL ) ? pStage->texture.image->GetName() : NULL;
+			record.flags = C3D_REC_STAGE | ( alphaTex ? C3D_REC_A8 : 0 ) | ( swf ? C3D_REC_SWF : 0 ) | ( alphaRef >= 0 ? C3D_REC_ALPHATEST : 0 ) |
+				( gui ? C3D_REC_GUIVIEW : 0 ) | ( ( n3ds_guiStencil.GetBool() && ( stageGLState & ( GLS_STENCIL_FUNC_BITS | GLS_STENCIL_OP_FAIL_BITS | GLS_STENCIL_OP_ZFAIL_BITS | GLS_STENCIL_OP_PASS_BITS ) ) != 0 ) ? C3D_REC_STENCIL : 0 );
 			N3DS_Draw( surf, verts, indexes, record, test );
 			draws++;
 			c3dStatStages++;

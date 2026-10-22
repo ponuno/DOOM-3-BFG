@@ -68,6 +68,24 @@ static int					alphaTestOn = -1;
 // few (clear, command list, display transfer), so at most this many copies per frame
 #define MAX_PENDING_STAGING	24
 static void *				pendingStaging[2][MAX_PENDING_STAGING];
+// textures released while a frame that may sample them is still being built or drawn:
+// deleted once that frame is finished (with the staging buffers)
+#define MAX_PENDING_FREE	512
+static C3D_Tex *			pendingFree[2][MAX_PENDING_FREE];
+static int					numPendingFree[2];
+// what each texture unit has bound (citro3d keeps the pointer and reads the C3D_Tex
+// again whenever it re-emits the unit's registers, e.g. after a home menu visit)
+static C3D_Tex *			boundTex[3];
+
+static void N3DS_BindTex( int unit, C3D_Tex * tex ) {
+	boundTex[unit] = tex;
+	C3D_TexBind( unit, tex );
+}
+
+static void N3DS_DeleteTex( C3D_Tex * tex ) {
+	C3D_TexDelete( tex );
+	free( tex );
+}
 static int					numPendingStaging[2];
 static int					pendingSet = 0;
 static C3D_RenderTarget *	topTarget = NULL;
@@ -247,6 +265,10 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 		linearFree( pendingStaging[pendingSet][i] );
 	}
 	numPendingStaging[pendingSet] = 0;
+	for ( int i = 0; i < numPendingFree[pendingSet]; i++ ) {
+		N3DS_DeleteTex( pendingFree[pendingSet][i] );
+	}
+	numPendingFree[pendingSet] = 0;
 	// depth 0 (far, the depth buffer is reversed), stencil 128: SWF masks count from there
 	C3D_RenderTargetClear( topTarget, C3D_CLEAR_ALL, clearRGBA, 128u << 24 );
 	C3D_FrameDrawOn( topTarget );
@@ -477,8 +499,19 @@ void N3DSGPU_TexFree( void * handle ) {
 	if ( tex == NULL ) {
 		return;
 	}
-	C3D_TexDelete( tex );
-	free( tex );
+	// no unit may keep pointing at it
+	for ( int unit = 0; unit < 3; unit++ ) {
+		if ( boundTex[unit] == tex ) {
+			N3DS_BindTex( unit, NULL );
+		}
+	}
+	// the frame being built, or the one the GPU is drawing, may still sample it: its VRAM
+	// is given back once those are finished, so no other texture is copied over it meanwhile
+	if ( inFrame && numPendingFree[pendingSet] < MAX_PENDING_FREE ) {
+		pendingFree[pendingSet][numPendingFree[pendingSet]++] = tex;
+		return;
+	}
+	N3DS_DeleteTex( tex );
 }
 
 /*
@@ -511,10 +544,10 @@ void N3DSGPU_SetFillPass( void * diffuse, void * mask, int alphaSource ) {
 		alphaSource = 0;
 	}
 	if ( diffuse != NULL ) {
-		C3D_TexBind( 2, (C3D_Tex *)diffuse );
+		N3DS_BindTex( 2, (C3D_Tex *)diffuse );
 	}
 	if ( alphaSource == 2 ) {
-		C3D_TexBind( 1, (C3D_Tex *)mask );
+		N3DS_BindTex( 1, (C3D_Tex *)mask );
 	}
 	const int key = 0x100 | ( diffuse != NULL ? 1 : 0 ) | ( alphaSource << 1 );
 	if ( key != texEnvMode ) {
@@ -557,16 +590,16 @@ void N3DSGPU_SetLightPass( void * projection, void * falloff, void * diffuse, in
 		if ( projective ) {
 			projectionTex = *src;
 			projectionTex.param = ( projectionTex.param & ~GPU_TEXTURE_MODE( 7 ) ) | GPU_TEXTURE_MODE( GPU_TEX_PROJECTION );
-			C3D_TexBind( 0, &projectionTex );
+			N3DS_BindTex( 0, &projectionTex );
 		} else {
-			C3D_TexBind( 0, src );
+			N3DS_BindTex( 0, src );
 		}
 	}
 	if ( falloff != NULL ) {
-		C3D_TexBind( 1, (C3D_Tex *)falloff );
+		N3DS_BindTex( 1, (C3D_Tex *)falloff );
 	}
 	if ( diffuse != NULL ) {
-		C3D_TexBind( 2, (C3D_Tex *)diffuse );
+		N3DS_BindTex( 2, (C3D_Tex *)diffuse );
 	}
 	const int key = 0x200 | ( projection != NULL ? 1 : 0 ) | ( falloff != NULL ? 2 : 0 ) | ( diffuse != NULL ? 4 : 0 );
 	if ( key != texEnvMode ) {
@@ -779,10 +812,10 @@ void N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, i
 		alphaSource = 0;
 	}
 	if ( diffuse != NULL ) {
-		C3D_TexBind( 0, (C3D_Tex *)diffuse );
+		N3DS_BindTex( 0, (C3D_Tex *)diffuse );
 	}
 	if ( alphaSource == 2 ) {
-		C3D_TexBind( 1, (C3D_Tex *)mask );
+		N3DS_BindTex( 1, (C3D_Tex *)mask );
 	}
 	if ( lit != hwEnvBound ) {
 		hwEnvBound = lit;
@@ -890,7 +923,7 @@ void N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd, int alph
 	// colour + add colour, then the colour premultiplied by its alpha. An A8 texture
 	// (font, coverage) has no colour: white x vertex colour, alpha x vertex alpha
 	if ( tex != NULL ) {
-		C3D_TexBind( 0, (C3D_Tex *)tex );
+		N3DS_BindTex( 0, (C3D_Tex *)tex );
 	}
 	const int key = 0x800 | ( tex != NULL ? 1 : 0 ) | ( swf ? 2 : 0 ) | ( ( tex != NULL && alphaTex ) ? 4 : 0 );
 	if ( key != texEnvMode || swf ) {

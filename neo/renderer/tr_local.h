@@ -169,6 +169,7 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds );
 void RB_N3DS_FlushForGPU( const void * p, int size );
 // textures (renderer/3DS/n3ds_textures.cpp): one small level per colour image is kept at load
 int RB_N3DS_TexKeepSize( textureUsage_t usage, const char * name );		// 0 = keep nothing
+bool N3DS_FontsAlphaOnly();											// n3ds_texFontA8
 void RB_N3DS_ImageLevel( idImage * image, int format, int colorFormat, int width, int height,
 						 const byte * data, int dataSize, int wrap, bool alphaOnly, int maxSize );
 void RB_N3DS_ImageLevelStreamed( idImage * image, int format, int colorFormat, int width, int height,
