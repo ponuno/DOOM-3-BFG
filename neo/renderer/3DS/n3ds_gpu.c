@@ -611,6 +611,28 @@ int N3DSGPU_DumpKeysHeld( void ) {
 	return t.py >= 120;
 }
 
+// diagnostics (frame dump): wait for the submitted frame, then write its colour buffer
+// as it is in VRAM (240 x 400 RGBA8, 8x8 Morton tiles, rows bottom-up per GPU convention)
+int N3DSGPU_DumpColorBuffer( const char * path ) {
+	if ( topTarget == NULL ) {
+		return 0;
+	}
+	gxCmdQueueWait( &__C3D_Context.gxQueue, 3000000000LL );
+	const C3D_FrameBuf * fb = &topTarget->frameBuf;
+	const u32 size = (u32)fb->width * fb->height * 4;
+	GSPGPU_InvalidateDataCache( fb->colorBuf, size );
+	FILE * f = fopen( path, "wb" );
+	if ( f == NULL ) {
+		return 0;
+	}
+	N3DS_DumpPut32( f, 0x4246334E );		// "N3FB"
+	N3DS_DumpPut32( f, fb->width );
+	N3DS_DumpPut32( f, fb->height );
+	N3DS_DumpPut32( f, (u32)fb->colorFmt );
+	fwrite( fb->colorBuf, 1, size, f );
+	return fclose( f ) == 0;
+}
+
 int N3DSGPU_HangDump( const char * path, int withRegs ) {
 	FILE * f = fopen( path, "wb" );
 	if ( f == NULL ) {
@@ -1301,6 +1323,22 @@ void N3DSGPU_SetModelView( const float * rows ) {
 // diagnostics (n3ds_hwKeepEnv, n3ds_hwEnvDirty): keep the light environment bound for
 // unlit surfaces of the HW pass; send the whole environment (registers, every table,
 // every light) again: 1 = once per view, 2 = before every lit surface
+// polygon offset for the HW pass (decals and other MF_POLYGONOFFSET surfaces drawn on top
+// of a coplanar wall): depth pulled towards the viewer, as the stage pass does
+static int hwDepthBias = -1;
+void N3DSGPU_HWDepthBias( int units ) {
+	if ( units == hwDepthBias ) {
+		return;
+	}
+	hwDepthBias = units;
+	C3D_DepthMap( true, -1.0f, (float)units * ( 1.0f / 65536.0f ) );
+}
+
+void N3DSGPU_HWDepthBiasReset( void ) {
+	hwDepthBias = -1;
+	N3DSGPU_HWDepthBias( 0 );
+}
+
 void N3DSGPU_HWFlatUnit1( int on ) {
 	hwFlatUnit1 = on;
 }

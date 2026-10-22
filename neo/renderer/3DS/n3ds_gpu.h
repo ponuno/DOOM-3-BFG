@@ -115,6 +115,8 @@ void			N3DSGPU_HWAmbient( float r, float g, float b );
 void			N3DSGPU_HWQuatMode( int mode );		// diagnostics
 void			N3DSGPU_HWEnvDiag( int keepEnv, int envDirty );	// diagnostics
 void			N3DSGPU_HWFlatUnit1( int on );		// diagnostics
+void			N3DSGPU_HWDepthBias( int units );	// polygon offset in the HW pass
+void			N3DSGPU_HWDepthBiasReset( void );
 void			N3DSGPU_HWForgetLights( void );		// diagnostics
 void			N3DSGPU_HWAddPass( int on );		// 1: add onto the pixels of the same surface (lights beyond 8)
 // one pass: diffuse (unit 0, or NULL) x (lit ? fragment lighting x scale : 1) x vertex
@@ -154,6 +156,7 @@ int				N3DSGPU_HangQueueReport( char * out, int outSize );
 // by tools/n3ds/gpuhang.py), then, if withRegs, appends the GPU's registers as they stand
 // (which state the GPU is stuck in); 0 if the file could not be written
 int				N3DSGPU_DumpKeysHeld( void );		// diagnostics: touch on the lower half of the bottom screen
+int				N3DSGPU_DumpColorBuffer( const char * path );	// diagnostics
 int				N3DSGPU_HangDump( const char * path, int withRegs );
 // texture-copy destinations in the queue report are named through this (NULL: unknown)
 void			N3DSGPU_SetHangTexNamer( const char * ( *namer )( unsigned int address ) );

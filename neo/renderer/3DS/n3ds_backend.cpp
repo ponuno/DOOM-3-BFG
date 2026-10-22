@@ -137,7 +137,7 @@ static void N3DS_GPUNotice( const char * text ) {
 }
 
 // n3ds_c3dFrameDump: a touch on the lower half of the bottom screen writes the GPU command lists of the next frames
-idCVar n3ds_c3dFrameDump( "n3ds_c3dFrameDump", "8", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: touching the lower half of the bottom screen writes the GPU command lists of this many following frames to sdmc:/doom3/frameN.bin and their draws to the log (0 = off)" );
+idCVar n3ds_c3dFrameDump( "n3ds_c3dFrameDump", "3", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: touching the lower half of the bottom screen writes the GPU command lists of this many following frames to sdmc:/doom3/frameN.bin and their draws to the log (0 = off)" );
 static int	c3dDumpLeft = 0;
 static int	c3dDumpIndex = 0;
 static bool	c3dDumpKeysWere = false;
@@ -1198,6 +1198,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 	N3DSGPU_HWQuatMode( n3ds_hwQuat.GetInteger() );
 	N3DSGPU_HWEnvDiag( n3ds_hwKeepEnv.GetBool() ? 1 : 0, n3ds_hwEnvDirty.GetInteger() );
 	N3DSGPU_HWFlatUnit1( n3ds_hwFlatUnit1.GetBool() ? 1 : 0 );
+	N3DSGPU_HWDepthBiasReset();		// the stage pass of the previous frame may have left one
 	const bool surfLog = n3ds_hwSurfLog.GetInteger() > 0 && !viewDef->isSubview;
 	if ( surfLog ) {
 		c3dSurfLogFrame++;
@@ -1359,6 +1360,11 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 				alphaSource = ( maskTex != NULL ) ? 2 : 0;
 			}
 		}
+		// decals and other surfaces laid on a coplanar wall win the depth test by their
+		// polygon offset on the PC; without it here the two fought per pixel along the
+		// triangles, which one won changing with the view
+		N3DSGPU_HWDepthBias( material->TestMaterialFlag( MF_POLYGONOFFSET ) ?
+			(int)( n3ds_polygonOffset.GetFloat() * material->GetPolygonOffset() ) : 0 );
 
 		const bool lit = images.lit || images.color == NULL;
 		void * normalTex = NULL;
@@ -1903,8 +1909,9 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		// the frame just submitted is still in the GX queue (cleared at the next frame start)
 		const char * path = va( "sdmc:/doom3/frame%d.bin", c3dDumpIndex );
 		const int ok = N3DSGPU_HangDump( path, 0 );
-		common->Printf( "FRAMEDUMP %d: 3D frame %d, %d draws, %s %s\n", c3dDumpIndex, c3dFrame3D,
-			c3dNumRecords[c3dRecordSet], path, ok ? "written" : "NOT written" );
+		N3DSGPU_DumpColorBuffer( va( "sdmc:/doom3/frame%d.fb", c3dDumpIndex ) );
+		common->Printf( "FRAMEDUMP %d: 3D frame %d, %d draws, frame%d.bin + frame%d.fb %s\n", c3dDumpIndex, c3dFrame3D,
+			c3dNumRecords[c3dRecordSet], c3dDumpIndex, c3dDumpIndex, ok ? "written" : "NOT written" );
 		for ( int i = 0; i < c3dNumRecords[c3dRecordSet]; i++ ) {
 			N3DS_PrintRecord( i, c3dRecords[c3dRecordSet][i] );
 		}
