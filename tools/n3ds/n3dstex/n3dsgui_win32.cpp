@@ -250,32 +250,32 @@ static void UpdateOutInfo() {
 		SetText( IDC_OUT_INFO, L"" );
 		return;
 	}
-	SetText( IDC_OUT_INFO, L"Получится: " + ( fs::path( out ) / L"doom3" / L"base" ).wstring() +
-		L"  \u2192  содержимое outputDoom3 копируется в корень SD-карты" );
+	SetText( IDC_OUT_INFO, L"Result: " + ( fs::path( out ) / L"doom3" / L"base" ).wstring() +
+		L"  \u2192  copy the contents of outputDoom3 to the root of the SD card" );
 }
 
 static void RefreshBaseInfo() {
 	const std::wstring dir = GetText( IDC_BASE );
 	if ( dir.empty() ) {
-		SetText( IDC_BASE_INFO, L"Укажите папку игры DOOM 3 BFG Edition (или её папку base)." );
+		SetText( IDC_BASE_INFO, L"Choose the DOOM 3 BFG Edition folder (or its base folder)." );
 		return;
 	}
 	const baseInfo_t info = ScanBase( dir );
 	std::wstring text;
 	if ( info.found ) {
 		wchar_t buf[512];
-		swprintf( buf, 512, L"\u2713 Найдено: %d файлов .resources (%.1f ГБ)%s, роликов .bik: %d", info.resources,
-			info.bytes / 1073741824.0, info.sounds ? L", звуки есть" : L", звуков (_sound_pc*.resources) нет", info.videos );
+		swprintf( buf, 512, L"\u2713 Found: %d .resources files (%.1f GB)%s, %d .bik videos", info.resources,
+			info.bytes / 1073741824.0, info.sounds ? L", sounds present" : L", no sounds (_sound_pc*.resources)", info.videos );
 		text = buf;
 		if ( Wide( info.base ) != dir ) {
-			text += L"  (папка base: " + Wide( info.base ) + L")";
+			text += L"  (base folder: " + Wide( info.base ) + L")";
 		}
 	} else if ( info.videos > 0 ) {
 		wchar_t buf[256];
-		swprintf( buf, 256, L"Нет _common.resources: можно сконвертировать только ролики (%d .bik).", info.videos );
+		swprintf( buf, 256, L"No _common.resources: only the videos can be converted (%d .bik).", info.videos );
 		text = buf;
 	} else {
-		text = L"\u2717 Здесь нет _common.resources: выберите папку base игры (…\\DOOM 3 BFG Edition\\base).";
+		text = L"\u2717 No _common.resources here: choose the game's base folder (…\\DOOM 3 BFG Edition\\base).";
 	}
 	SetText( IDC_BASE_INFO, text );
 	if ( !outEdited ) {
@@ -358,10 +358,10 @@ static void AppendLog( const std::string & utf8 ) {
 
 static const wchar_t * StageName( int stage ) {
 	switch ( stage ) {
-		case STAGE_TEXTURES:	return L"Текстуры";
-		case STAGE_SOUNDS:		return L"Звуки";
-		case STAGE_VIDEOS:		return L"Ролики";
-		case STAGE_SDCOPY:		return L"Папка для SD";
+		case STAGE_TEXTURES:	return L"Textures";
+		case STAGE_SOUNDS:		return L"Sounds";
+		case STAGE_VIDEOS:		return L"Videos";
+		case STAGE_SDCOPY:		return L"SD card folder";
 		default:				return L"";
 	}
 }
@@ -407,9 +407,9 @@ static void UpdateUi() {
 	const int secs = (int)std::chrono::duration<double>( std::chrono::steady_clock::now() - runStart ).count();
 	wchar_t buf[512];
 	if ( stage < 0 ) {
-		swprintf( buf, 512, L"Читаю файлы игры…   %d:%02d", secs / 60, secs % 60 );
+		swprintf( buf, 512, L"Reading the game files…   %d:%02d", secs / 60, secs % 60 );
 	} else {
-		swprintf( buf, 512, L"Шаг %d из %d — %ls: %ls   (%d%%, %d:%02d)", step + 1, steps, StageName( stage ), Wide( text ).c_str(),
+		swprintf( buf, 512, L"Step %d of %d — %ls: %ls   (%d%%, %d:%02d)", step + 1, steps, StageName( stage ), Wide( text ).c_str(),
 			(int)( overall * 100.0 ), secs / 60, secs % 60 );
 	}
 	SetText( IDC_STATUS, buf );
@@ -432,21 +432,21 @@ static void StartConversion() {
 	const std::wstring outW = GetText( IDC_OUT );
 	const bool tex = Checked( IDC_TEX ), snd = Checked( IDC_SND ), vid = Checked( IDC_VID ), sd = Checked( IDC_SD );
 	if ( !tex && !snd && !vid && !sd ) {
-		MessageBoxW( mainWnd, L"Отметьте, что конвертировать.", L"n3dstex", MB_ICONINFORMATION );
+		MessageBoxW( mainWnd, L"Tick what to convert.", L"n3dstex", MB_ICONINFORMATION );
 		return;
 	}
 	const baseInfo_t info = ScanBase( baseW );
 	if ( !info.found && ( tex || snd || sd ) ) {
-		MessageBoxW( mainWnd, L"В выбранной папке нет _common.resources.\n\nУкажите папку base игры DOOM 3 BFG Edition "
-			L"(например C:\\Program Files (x86)\\Steam\\steamapps\\common\\DOOM 3 BFG Edition\\base).", L"n3dstex", MB_ICONWARNING );
+		MessageBoxW( mainWnd, L"There is no _common.resources in the chosen folder.\n\nChoose the base folder of DOOM 3 BFG Edition "
+			L"(e.g. C:\\Program Files (x86)\\Steam\\steamapps\\common\\DOOM 3 BFG Edition\\base).", L"n3dstex", MB_ICONWARNING );
 		return;
 	}
 	if ( !info.found && info.videos == 0 ) {
-		MessageBoxW( mainWnd, L"В выбранной папке нет ни файлов игры, ни роликов .bik.", L"n3dstex", MB_ICONWARNING );
+		MessageBoxW( mainWnd, L"The chosen folder has neither game files nor .bik videos.", L"n3dstex", MB_ICONWARNING );
 		return;
 	}
 	if ( outW.empty() ) {
-		MessageBoxW( mainWnd, L"Укажите папку результата.", L"n3dstex", MB_ICONWARNING );
+		MessageBoxW( mainWnd, L"Choose the output folder.", L"n3dstex", MB_ICONWARNING );
 		return;
 	}
 	// free space, roughly: packs ~0.2 + 0.7 GB, videos ~0.15 GB, the SD folder the slimmed .resources
@@ -459,7 +459,7 @@ static void StartConversion() {
 	ULARGE_INTEGER freeBytes;
 	if ( GetDiskFreeSpaceExW( probe.wstring().c_str(), &freeBytes, NULL, NULL ) && freeBytes.QuadPart / 1073741824.0 < needGB ) {
 		wchar_t buf[512];
-		swprintf( buf, 512, L"На диске с папкой результата свободно %.1f ГБ, а нужно примерно %.1f ГБ.\n\nВсё равно начать?",
+		swprintf( buf, 512, L"The output drive has %.1f GB free; about %.1f GB are needed.\n\nStart anyway?",
 			freeBytes.QuadPart / 1073741824.0, needGB );
 		if ( MessageBoxW( mainWnd, buf, L"n3dstex", MB_YESNO | MB_ICONWARNING ) != IDYES ) {
 			return;
@@ -519,21 +519,21 @@ static void ConversionDone( int rc ) {
 		return;
 	}
 	if ( rc == 2 ) {
-		SetText( IDC_STATUS, L"Отменено. Недописанные файлы удалены." );
+		SetText( IDC_STATUS, L"Cancelled. Unfinished files were deleted." );
 		return;
 	}
 	if ( rc == 0 ) {
 		SendMessageW( Item( IDC_PROGRESS ), PBM_SETPOS, 1000, 0 );
-		swprintf( buf, 1024, L"Готово за %d:%02d. Результат: %ls", secs / 60, secs % 60, Wide( opt.outDir ).c_str() );
+		swprintf( buf, 1024, L"Done in %d:%02d. Output: %ls", secs / 60, secs % 60, Wide( opt.outDir ).c_str() );
 		SetText( IDC_STATUS, buf );
-		swprintf( buf, 1024, L"Готово!\n\nВсё сохранено в папке\n%ls\n\nСкопируйте её содержимое (папку doom3) в корень SD-карты.%ls\n\nОткрыть папку?",
-			Wide( opt.outDir ).c_str(), opt.sdFull ? L"" : L"\nОригинальные файлы игры (.resources) должны остаться на карте в doom3\\base." );
+		swprintf( buf, 1024, L"Done!\n\nEverything was saved to\n%ls\n\nCopy its contents (the doom3 folder) to the root of the SD card.%ls\n\nOpen the folder?",
+			Wide( opt.outDir ).c_str(), opt.sdFull ? L"" : L"\nThe game's original .resources files must stay on the card in doom3\\base." );
 		if ( MessageBoxW( mainWnd, buf, L"n3dstex", MB_YESNO | MB_ICONINFORMATION ) == IDYES ) {
 			ShellExecuteW( mainWnd, L"open", Wide( opt.outDir ).c_str(), NULL, NULL, SW_SHOWNORMAL );
 		}
 	} else {
-		SetText( IDC_STATUS, L"Завершено с ошибками: подробности в журнале ниже." );
-		MessageBoxW( mainWnd, L"Конвертация завершилась с ошибками.\nПодробности в журнале внизу окна.", L"n3dstex", MB_ICONWARNING );
+		SetText( IDC_STATUS, L"Finished with errors: see the log below." );
+		MessageBoxW( mainWnd, L"The conversion finished with errors.\nSee the log at the bottom of the window.", L"n3dstex", MB_ICONWARNING );
 	}
 }
 
@@ -558,48 +558,48 @@ static void FillCombo( int id, const wchar_t * const * items, int count, int sel
 }
 
 static void CreateControls() {
-	Make( L"STATIC", L"Папка игры DOOM 3 BFG Edition (или её папка base):", 0, IDC_BASE_LABEL );
+	Make( L"STATIC", L"DOOM 3 BFG Edition folder (or its base folder):", 0, IDC_BASE_LABEL );
 	SendMessageW( Item( IDC_BASE_LABEL ), WM_SETFONT, (WPARAM)boldFont, FALSE );
 	Make( L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, IDC_BASE, WS_EX_CLIENTEDGE );
-	Make( L"BUTTON", L"Обзор…", WS_TABSTOP | BS_PUSHBUTTON, IDC_BASE_BROWSE );
+	Make( L"BUTTON", L"Browse…", WS_TABSTOP | BS_PUSHBUTTON, IDC_BASE_BROWSE );
 	Make( L"STATIC", L"", SS_ENDELLIPSIS | SS_NOPREFIX, IDC_BASE_INFO );
-	Make( L"STATIC", L"Папка результата:", 0, IDC_OUT_LABEL );
+	Make( L"STATIC", L"Output folder:", 0, IDC_OUT_LABEL );
 	SendMessageW( Item( IDC_OUT_LABEL ), WM_SETFONT, (WPARAM)boldFont, FALSE );
 	Make( L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, IDC_OUT, WS_EX_CLIENTEDGE );
-	Make( L"BUTTON", L"Обзор…", WS_TABSTOP | BS_PUSHBUTTON, IDC_OUT_BROWSE );
+	Make( L"BUTTON", L"Browse…", WS_TABSTOP | BS_PUSHBUTTON, IDC_OUT_BROWSE );
 	Make( L"STATIC", L"", SS_PATHELLIPSIS | SS_NOPREFIX, IDC_OUT_INFO );
 
-	Make( L"BUTTON", L"Что конвертировать", BS_GROUPBOX, IDC_GROUP_WHAT );
-	Make( L"BUTTON", L"Текстуры  (_n3ds_textures.pak)", WS_TABSTOP | BS_AUTOCHECKBOX, IDC_TEX );
-	Make( L"BUTTON", L"Звуки  (_n3ds_sounds.pak)", WS_TABSTOP | BS_AUTOCHECKBOX, IDC_SND );
-	Make( L"BUTTON", L"Ролики  (video\\*.n3v)", WS_TABSTOP | BS_AUTOCHECKBOX, IDC_VID );
-	Make( L"BUTTON", L"Собрать полную папку для SD-карты: файлы игры без того, что заменили паки "
-		L"(.resources становятся меньше), плюс все остальные файлы. Тогда на карту не нужно класть оригиналы.",
+	Make( L"BUTTON", L"Convert", BS_GROUPBOX, IDC_GROUP_WHAT );
+	Make( L"BUTTON", L"Textures  (_n3ds_textures.pak)", WS_TABSTOP | BS_AUTOCHECKBOX, IDC_TEX );
+	Make( L"BUTTON", L"Sounds  (_n3ds_sounds.pak)", WS_TABSTOP | BS_AUTOCHECKBOX, IDC_SND );
+	Make( L"BUTTON", L"Videos  (video\\*.n3v)", WS_TABSTOP | BS_AUTOCHECKBOX, IDC_VID );
+	Make( L"BUTTON", L"Build the complete SD card folder: the game files without what the packs replace "
+		L"(smaller .resources) plus every other file. The original files are then not needed on the card.",
 		WS_TABSTOP | BS_AUTOCHECKBOX | BS_MULTILINE | BS_TOP, IDC_SD );
 
-	Make( L"BUTTON", L"Качество", BS_GROUPBOX, IDC_GROUP_Q );
-	Make( L"STATIC", L"Текстуры (ETC1):", 0, IDC_QTEX_LABEL );
+	Make( L"BUTTON", L"Quality", BS_GROUPBOX, IDC_GROUP_Q );
+	Make( L"STATIC", L"Textures (ETC1):", 0, IDC_QTEX_LABEL );
 	Make( L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, IDC_QTEX );
-	Make( L"STATIC", L"Размер роликов:", 0, IDC_VSIZE_LABEL );
+	Make( L"STATIC", L"Video size:", 0, IDC_VSIZE_LABEL );
 	Make( L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, IDC_VSIZE );
-	Make( L"STATIC", L"Кадров в секунду:", 0, IDC_VFPS_LABEL );
+	Make( L"STATIC", L"Frames per second:", 0, IDC_VFPS_LABEL );
 	Make( L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, IDC_VFPS );
 
-	Make( L"BUTTON", L"Начать", WS_TABSTOP | BS_DEFPUSHBUTTON, IDC_START );
+	Make( L"BUTTON", L"Start", WS_TABSTOP | BS_DEFPUSHBUTTON, IDC_START );
 	SendMessageW( Item( IDC_START ), WM_SETFONT, (WPARAM)boldFont, FALSE );
-	Make( L"BUTTON", L"Отмена", WS_TABSTOP | BS_PUSHBUTTON, IDC_CANCEL );
-	Make( L"BUTTON", L"Открыть папку результата", WS_TABSTOP | BS_PUSHBUTTON, IDC_OPENOUT );
+	Make( L"BUTTON", L"Cancel", WS_TABSTOP | BS_PUSHBUTTON, IDC_CANCEL );
+	Make( L"BUTTON", L"Open output folder", WS_TABSTOP | BS_PUSHBUTTON, IDC_OPENOUT );
 	Make( PROGRESS_CLASSW, L"", PBS_SMOOTH, IDC_PROGRESS );
 	SendMessageW( Item( IDC_PROGRESS ), PBM_SETRANGE32, 0, 1000 );
-	Make( L"STATIC", L"Выберите папку игры и нажмите «Начать».", SS_ENDELLIPSIS | SS_NOPREFIX, IDC_STATUS );
+	Make( L"STATIC", L"Choose the game folder and press Start.", SS_ENDELLIPSIS | SS_NOPREFIX, IDC_STATUS );
 	Make( L"EDIT", L"", WS_TABSTOP | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
 		IDC_LOG, WS_EX_CLIENTEDGE );
 	SendMessageW( Item( IDC_LOG ), WM_SETFONT, (WPARAM)logFont, FALSE );
 	SendMessageW( Item( IDC_LOG ), EM_SETLIMITTEXT, 0, 0 );
 
-	static const wchar_t * const qtex[] = { L"Быстро", L"Средне (рекомендуется)", L"Высоко (долго)" };
-	static const wchar_t * const vsize[] = { L"256", L"512 (рекомендуется)", L"1024" };
-	static const wchar_t * const vfps[] = { L"15", L"20 (рекомендуется)", L"30" };
+	static const wchar_t * const qtex[] = { L"Fast", L"Medium (recommended)", L"High (slow)" };
+	static const wchar_t * const vsize[] = { L"256", L"512 (recommended)", L"1024" };
+	static const wchar_t * const vfps[] = { L"15", L"20 (recommended)", L"30" };
 	FillCombo( IDC_QTEX, qtex, 3, RegInt( L"qtex", 1 ) );
 	FillCombo( IDC_VSIZE, vsize, 3, RegInt( L"vsize", 1 ) );
 	FillCombo( IDC_VFPS, vfps, 3, RegInt( L"vfps", 1 ) );
@@ -739,13 +739,13 @@ static LRESULT CALLBACK WndProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp ) {
 				UpdateOutInfo();
 			} else if ( id == IDC_BASE_BROWSE ) {
 				std::wstring p = GetText( IDC_BASE );
-				if ( BrowseFolder( L"Папка игры DOOM 3 BFG Edition или её папка base", p ) ) {
+				if ( BrowseFolder( L"DOOM 3 BFG Edition folder or its base folder", p ) ) {
 					SetText( IDC_BASE, Wide( DetectBaseDir( Utf8( p ) ) ) );
 					RefreshBaseInfo();
 				}
 			} else if ( id == IDC_OUT_BROWSE ) {
 				std::wstring p = GetText( IDC_OUT );
-				if ( BrowseFolder( L"Куда сохранить результат", p ) ) {
+				if ( BrowseFolder( L"Where to save the results", p ) ) {
 					// a folder picked as the place for it: the results go into outputDoom3 there
 					fs::path chosen( p );
 					if ( chosen.filename() != L"outputDoom3" ) {
@@ -761,7 +761,7 @@ static LRESULT CALLBACK WndProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp ) {
 				if ( running ) {
 					cancelRequested = true;
 					EnableWindow( Item( IDC_CANCEL ), FALSE );
-					SetText( IDC_STATUS, L"Останавливаю…" );
+					SetText( IDC_STATUS, L"Stopping…" );
 				}
 			} else if ( id == IDC_OPENOUT ) {
 				const std::wstring out = GetText( IDC_OUT );
@@ -769,7 +769,7 @@ static LRESULT CALLBACK WndProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp ) {
 				if ( !out.empty() && fs::is_directory( fs::path( out ), ec ) ) {
 					ShellExecuteW( hwnd, L"open", out.c_str(), NULL, NULL, SW_SHOWNORMAL );
 				} else {
-					MessageBoxW( hwnd, L"Папки результата ещё нет: она появится после конвертации.", L"n3dstex", MB_ICONINFORMATION );
+					MessageBoxW( hwnd, L"The output folder does not exist yet: it appears after converting.", L"n3dstex", MB_ICONINFORMATION );
 				}
 			}
 			return 0;
@@ -787,10 +787,10 @@ static LRESULT CALLBACK WndProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp ) {
 			return 0;
 		case WM_CLOSE:
 			if ( running ) {
-				if ( MessageBoxW( hwnd, L"Конвертация ещё идёт. Прервать и закрыть?", L"n3dstex", MB_YESNO | MB_ICONQUESTION ) == IDYES ) {
+				if ( MessageBoxW( hwnd, L"The conversion is still running. Stop it and close?", L"n3dstex", MB_YESNO | MB_ICONQUESTION ) == IDYES ) {
 					closeWhenDone = true;
 					cancelRequested = true;
-					SetText( IDC_STATUS, L"Останавливаю…" );
+					SetText( IDC_STATUS, L"Stopping…" );
 				}
 				return 0;
 			}
@@ -841,7 +841,7 @@ int RunGui() {
 	wc.hIconSm = wc.hIcon;
 	RegisterClassExW( &wc );
 
-	HWND hwnd = CreateWindowExW( 0, wc.lpszClassName, L"n3dstex — DOOM 3 BFG для New Nintendo 3DS: текстуры, звуки, ролики",
+	HWND hwnd = CreateWindowExW( 0, wc.lpszClassName, L"n3dstex — DOOM 3 BFG for New Nintendo 3DS: textures, sounds, videos",
 		WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, S( 780 ), S( 760 ), NULL, NULL, inst, NULL );
 	if ( hwnd == NULL ) {
 		return 1;
