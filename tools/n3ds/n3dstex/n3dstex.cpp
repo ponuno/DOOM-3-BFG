@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "rg_etc1.h"
+#include "n3dstex.h"
 #include "../../../neo/renderer/3DS/n3ds_pack.h"
 
 namespace fs = std::filesystem;
@@ -67,66 +68,7 @@ static const uint32_t BIMAGE_MAGIC = ( 'B' << 0 ) | ( 'I' << 8 ) | ( 'M' << 16 )
 	Options
 ================================================================================================
 */
-struct options_t {
-	std::string	baseDir;
-	std::string	output;
-	int			maxWorld = 256;
-	int			maxBump = 128;
-	int			maxSpecular = 128;
-	int			maxGui = 512;
-	int			maxFont = 1024;
-	int			maxLight = 128;
-	int			threads = 0;
-	int			quality = 1;		// rg_etc1: 0 low, 1 medium, 2 high
-	std::string	only;				// convert names containing this only (testing)
-	std::string	previewDir;			// write the converted level 0 as .tga here (with -only)
-	bool		list = false;
-	bool		verbose = false;
-};
-static options_t opt;
-
-static std::mutex logLock;
-static void Log( const char * fmt, ... ) {
-	char buf[2048];
-	va_list ap;
-	va_start( ap, fmt );
-	vsnprintf( buf, sizeof( buf ), fmt, ap );
-	va_end( ap );
-	std::lock_guard<std::mutex> lock( logLock );
-	fputs( buf, stdout );
-	fflush( stdout );
-}
-
-/*
-================================================================================================
-	Big-endian readers
-================================================================================================
-*/
-static inline uint32_t BE32( const byte * p ) {
-	return ( (uint32_t)p[0] << 24 ) | ( (uint32_t)p[1] << 16 ) | ( (uint32_t)p[2] << 8 ) | p[3];
-}
-static inline int64_t BE64( const byte * p ) {
-	return (int64_t)( ( (uint64_t)BE32( p ) << 32 ) | BE32( p + 4 ) );
-}
-static inline uint32_t LE32( const byte * p ) {
-	return (uint32_t)p[0] | ( (uint32_t)p[1] << 8 ) | ( (uint32_t)p[2] << 16 ) | ( (uint32_t)p[3] << 24 );
-}
-
-// 64-bit file positions (a long is 32 bits on Windows)
-#if defined( _WIN32 )
-#define FSeek64( f, o, w )	_fseeki64( f, o, w )
-#define FTell64( f )		_ftelli64( f )
-#else
-#define FSeek64( f, o, w )	fseeko( f, (off_t)( o ), w )
-#define FTell64( f )		( (int64_t)ftello( f ) )
-#endif
-
-static bool ReadAt( FILE * f, uint32_t offset, void * dst, uint32_t size ) {
-	if ( FSeek64( f, (int64_t)offset, SEEK_SET ) != 0 ) {
-		return false;
-	}
-	return fread( dst, 1, size, f ) == size;
-}
+options_t opt;
 
 /*
 ================================================================================================
@@ -143,7 +85,27 @@ struct imageSource_t {
 static std::vector<std::string>		containers;
 static std::vector<imageSource_t>	sources;
 
-static bool ReadContainerTable( const std::string & path, int index, std::map<std::string, int> & seen, int & added, int & total ) {
+std::mutex logLock;
+void Log( const char * fmt, ... ) {
+	char buf[2048];
+	va_list ap;
+	va_start( ap, fmt );
+	vsnprintf( buf, sizeof( buf ), fmt, ap );
+	va_end( ap );
+	std::lock_guard<std::mutex> lock( logLock );
+	fputs( buf, stdout );
+	fflush( stdout );
+}
+
+bool ReadAt( FILE * f, uint32_t offset, void * dst, uint32_t size ) {
+	if ( FSeek64( f, (int64_t)offset, SEEK_SET ) != 0 ) {
+		return false;
+	}
+	return fread( dst, 1, size, f ) == size;
+}
+
+bool ReadResourceTable( const std::string & path, std::vector<resourceEntry_t> & entries ) {
+	entries.clear();
 	FILE * f = fopen( path.c_str(), "rb" );
 	if ( f == NULL ) {
 		Log( "  cannot open %s\n", path.c_str() );
@@ -176,8 +138,6 @@ static bool ReadContainerTable( const std::string & path, int index, std::map<st
 	const byte * end = p + tableLength;
 	const uint32_t num = BE32( p );
 	p += 4;
-	added = 0;
-	total = 0;
 	for ( uint32_t i = 0; i < num; i++ ) {
 		if ( end - p < 4 ) {
 			Log( "  %s: table ends early (%u of %u entries)\n", path.c_str(), i, num );
@@ -189,14 +149,29 @@ static bool ReadContainerTable( const std::string & path, int index, std::map<st
 			Log( "  %s: table ends early (%u of %u entries)\n", path.c_str(), i, num );
 			return false;
 		}
-		std::string name( (const char *)p, len );
+		resourceEntry_t e;
+		e.name.assign( (const char *)p, len );
 		p += len;
-		const uint32_t offset = BE32( p );
-		const uint32_t length = BE32( p + 4 );
+		e.offset = BE32( p );
+		e.length = BE32( p + 4 );
 		p += 8;
-		for ( char & c : name ) {
+		for ( char & c : e.name ) {
 			c = ( c == '\\' ) ? '/' : (char)tolower( (unsigned char)c );
 		}
+		entries.push_back( e );
+	}
+	return true;
+}
+
+static bool ReadContainerTable( const std::string & path, int index, std::map<std::string, int> & seen, int & added, int & total ) {
+	std::vector<resourceEntry_t> entries;
+	added = 0;
+	total = 0;
+	if ( !ReadResourceTable( path, entries ) ) {
+		return false;
+	}
+	for ( const resourceEntry_t & e : entries ) {
+		const std::string & name = e.name;
 		if ( name.compare( 0, 17, "generated/images/" ) != 0 || name.size() < 7 || name.compare( name.size() - 7, 7, ".bimage" ) != 0 ) {
 			continue;
 		}
@@ -205,7 +180,7 @@ static bool ReadContainerTable( const std::string & path, int index, std::map<st
 			continue;
 		}
 		seen[name] = (int)sources.size();
-		sources.push_back( { name, index, offset, length } );
+		sources.push_back( { name, index, e.offset, e.length } );
 		added++;
 	}
 	return true;
@@ -999,11 +974,15 @@ static const char * FormatName( int fmt ) {
 
 static void Usage() {
 	printf(
-		"n3dstex - DOOM 3 BFG textures -> New 3DS texture pack\n\n"
+		"n3dstex - DOOM 3 BFG textures and sounds -> New 3DS texture and sound packs\n\n"
 		"usage: n3dstex <doom3 base folder> [options]\n"
-		"  the folder holding _common.resources and maps/ (the PC game's base, or the SD card's doom3/base)\n\n"
+		"  the folder holding _common.resources, _sound_pc*.resources and maps/ (the PC game's base,\n"
+		"  or the SD card's doom3/base). Writes _n3ds_textures.pak and _n3ds_sounds.pak there.\n\n"
 		"options:\n"
-		"  -o <file>      output (default: <base>/_n3ds_textures.pak)\n"
+		"  -tex           textures only\n"
+		"  -snd           sounds only\n"
+		"  -o <file>      texture pack (default: <base>/_n3ds_textures.pak)\n"
+		"  -sndout <file> sound pack (default: <base>/_n3ds_sounds.pak)\n"
 		"  -world <n>     largest world / diffuse texture (default 256)\n"
 		"  -bump <n>      largest normal map (default 128)\n"
 		"  -spec <n>      largest specular map (default 128)\n"
@@ -1058,6 +1037,14 @@ static bool ParseArgs( int argc, char ** argv ) {
 			opt.previewDir = argv[++i];
 		} else if ( a == "-list" ) {
 			opt.list = true;
+		} else if ( a == "-tex" ) {
+			opt.doTextures = true;
+			opt.doSounds = false;
+		} else if ( a == "-snd" ) {
+			opt.doSounds = true;
+			opt.doTextures = false;
+		} else if ( a == "-sndout" && i + 1 < argc ) {
+			opt.soundOutput = argv[++i];
 		} else if ( a == "-v" ) {
 			opt.verbose = true;
 		} else if ( a[0] == '-' ) {
@@ -1080,24 +1067,43 @@ static bool ParseArgs( int argc, char ** argv ) {
 	if ( opt.output.empty() ) {
 		opt.output = ( fs::path( opt.baseDir ) / "_n3ds_textures.pak" ).string();
 	}
+	if ( opt.soundOutput.empty() ) {
+		opt.soundOutput = ( fs::path( opt.baseDir ) / "_n3ds_sounds.pak" ).string();
+	}
 	return !opt.baseDir.empty();
 }
+
+static int ConvertTextures();
 
 int main( int argc, char ** argv ) {
 	if ( !ParseArgs( argc, argv ) ) {
 		Usage();
 		return 1;
 	}
-	const auto startTime = std::chrono::steady_clock::now();
-	Log( "n3dstex: %s -> %s\n", opt.baseDir.c_str(), opt.output.c_str() );
-	Log( "sizes: world %d, bump %d, specular %d, light %d, gui %d, font %d; ETC1 quality %d\n",
-		opt.maxWorld, opt.maxBump, opt.maxSpecular, opt.maxLight, opt.maxGui, opt.maxFont, opt.quality );
-
 	FindContainers();
 	if ( containers.empty() ) {
 		Log( "no .resources files under %s\n", opt.baseDir.c_str() );
 		return 1;
 	}
+	int rc = 0;
+	if ( opt.doTextures ) {
+		rc |= ConvertTextures();
+	}
+	if ( opt.doSounds ) {
+		if ( opt.doTextures ) {
+			Log( "\n" );
+		}
+		rc |= ConvertSounds( containers );
+	}
+	return rc;
+}
+
+static int ConvertTextures() {
+	const auto startTime = std::chrono::steady_clock::now();
+	Log( "n3dstex: textures %s -> %s\n", opt.baseDir.c_str(), opt.output.c_str() );
+	Log( "sizes: world %d, bump %d, specular %d, light %d, gui %d, font %d; ETC1 quality %d\n",
+		opt.maxWorld, opt.maxBump, opt.maxSpecular, opt.maxLight, opt.maxGui, opt.maxFont, opt.quality );
+
 	std::map<std::string, int> seen;
 	for ( size_t i = 0; i < containers.size(); i++ ) {
 		int added = 0, total = 0;
