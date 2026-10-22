@@ -24,6 +24,8 @@ static u64					reportStart = 0;
 
 // wave buffers and their data (linear memory: the DSP reads it)
 static ndspWaveBuf			waveBufs[N3DS_AUDIO_CHANNELS][N3DS_AUDIO_BUFFERS];
+// decoder state a DSP-ADPCM buffer starts with (read when NDSP hands the buffer to the DSP)
+static ndspAdpcmData		adpcmState[N3DS_AUDIO_CHANNELS][N3DS_AUDIO_BUFFERS];
 static short *				waveData = NULL;
 
 const char * N3DSAudio_LastError( void ) {
@@ -72,6 +74,20 @@ void N3DSAudio_ChnStart( int ch, int stereo, float rate ) {
 	}
 }
 
+void N3DSAudio_ChnStartAdpcm( int ch, float rate, const short * coefs ) {
+	ndspChnWaveBufClear( ch );
+	ndspChnReset( ch );
+	ndspChnSetInterp( ch, NDSP_INTERP_POLYPHASE );
+	ndspChnSetFormat( ch, NDSP_FORMAT_MONO_ADPCM );
+	ndspChnSetRate( ch, rate );
+	u16 c[16];
+	memcpy( c, coefs, sizeof( c ) );
+	ndspChnSetAdpcmCoefs( ch, c );
+	for ( int i = 0; i < N3DS_AUDIO_BUFFERS; i++ ) {
+		waveBufs[ch][i].status = NDSP_WBUF_FREE;
+	}
+}
+
 void N3DSAudio_ChnStop( int ch ) {
 	ndspChnWaveBufClear( ch );
 	ndspChnSetPaused( ch, false );
@@ -111,7 +127,28 @@ void N3DSAudio_BufQueue( int ch, int buf, int frames, int stereo ) {
 	wb->data_pcm16 = N3DSAudio_BufData( ch, buf );
 	wb->nsamples = frames;
 	wb->looping = false;
+	wb->adpcm_data = NULL;
 	DSP_FlushDataCache( wb->data_pcm16, frames * ( stereo ? 2 : 1 ) * sizeof( short ) );
+	ndspChnWaveBufAdd( ch, wb );
+}
+
+void N3DSAudio_BufQueueAdpcm( int ch, int buf, const void * frames, int bytes, int samples,
+		int setState, int index, int h0, int h1 ) {
+	ndspWaveBuf * wb = &waveBufs[ch][buf];
+	u8 * dst = (u8 *)N3DSAudio_BufData( ch, buf );
+	memcpy( dst, frames, bytes );
+	DSP_FlushDataCache( dst, bytes );
+	wb->data_adpcm = dst;
+	wb->nsamples = samples;
+	wb->looping = false;
+	if ( setState ) {
+		adpcmState[ch][buf].index = (u16)index;
+		adpcmState[ch][buf].history0 = (s16)h0;
+		adpcmState[ch][buf].history1 = (s16)h1;
+		wb->adpcm_data = &adpcmState[ch][buf];
+	} else {
+		wb->adpcm_data = NULL;
+	}
 	ndspChnWaveBufAdd( ch, wb );
 }
 

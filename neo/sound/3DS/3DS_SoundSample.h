@@ -35,6 +35,12 @@ int		N3DS_SoundDataKB();
 int		N3DS_SoundLoadsOnDemand();
 int		N3DS_SoundEvictions();
 
+// sound pack (_n3ds_sounds.pak, tools/n3ds/n3dstex): a sample found there has this format
+// tag and one DSP-ADPCM stream per channel in buffers[c] (numSamples = playLength each),
+// which the DSP decodes itself
+static const uint16 N3DS_FORMAT_DSPADPCM = 0x7D53;
+const short *	N3DS_SoundPackCoefs();		// the pack's 8 predictor pairs
+
 /*
 ================================================
 idSoundSample_3DS
@@ -109,6 +115,8 @@ protected:
 	void			CancelLoad();		// before the buffers list or the object goes away
 	void			FreeBuffers();
 	bool			ReadBuffers( idFile * f );
+	bool			ReadBuffersFromPack();		// main thread, own FILE
+	bool			N3DS_UsePack( const char * generatedFileName );
 	void			MakeRoom( int bytes );
 	void			N3DS_MarkResident();
 	idStr			generatedName;		// empty: data read whole, never dropped

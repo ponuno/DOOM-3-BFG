@@ -28,6 +28,8 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 #include "../../idlib/precompiled.h"
 #include "../snd_local.h"
+#include "../../renderer/3DS/n3ds_pack.h"
+#include "n3ds_soundpack.h"
 
 extern idCVar s_useCompression;
 extern idCVar s_noSound;
@@ -77,6 +79,7 @@ static void FreeBuffer( void * p ) {
 // budget can be small and only short sounds need to be there beforehand
 idCVar n3ds_soundMemoryKB( "n3ds_soundMemoryKB", "4096", CVAR_SOUND | CVAR_INTEGER, "New 3DS: memory for sound sample data; least recently played samples are dropped when it is full" );
 idCVar n3ds_soundPreloadKB( "n3ds_soundPreloadKB", "16", CVAR_SOUND | CVAR_INTEGER, "New 3DS: samples up to this size are read at level load, bigger ones when first played" );
+idCVar n3ds_soundPack( "n3ds_soundPack", "1", CVAR_SOUND | CVAR_BOOL | CVAR_INIT, "New 3DS: play samples from base/_n3ds_sounds.pak (DSP-ADPCM made by n3dstex, decoded by the DSP) when it is there" );
 
 static idList< idSoundSample_3DS *, TAG_AUDIO >	allSamples;
 static int										sampleDataBytes = 0;
@@ -207,6 +210,93 @@ public:
 };
 
 static idN3DSSoundLoader *	sndLoader = NULL;
+
+/*
+================================================================================================
+
+	Sound pack
+
+	The pack holds every sample re-encoded as DSP-ADPCM (tools/n3ds/n3dstex). A sample
+	found there keeps the header (format, length, amplitude) of its .idwav but takes its
+	data from the pack: one stream per channel, read by the loader thread like the .idwav
+	buffers, and played by the DSP as it is (3DS_SoundVoice.cpp).
+
+================================================================================================
+*/
+static bool						sndPackTried = false;
+static n3dsSoundPackEntry_t *	sndPackEntries = NULL;
+static int						sndPackNum = 0;
+static short					sndPackCoefs[16];
+static idStrStatic< MAX_OSPATH >	sndPackOSPath;
+static FILE *					sndPackMainFile = NULL;		// main thread reads (preload)
+static int						sndPackSamples = 0;
+
+const short * N3DS_SoundPackCoefs() {
+	return sndPackCoefs;
+}
+
+static void N3DS_SoundPackInit() {
+	sndPackTried = true;
+	if ( !n3ds_soundPack.GetBool() ) {
+		return;
+	}
+	const char * osPath = fileSystem->RelativePathToOSPath( "_n3ds_sounds.pak", "fs_basepath" );
+	FILE * f = fopen( osPath, "rb" );
+	if ( f == NULL ) {
+		idLib::Printf( "Sound: no sound pack (%s): samples are decoded by the CPU\n", osPath );
+		return;
+	}
+	n3dsSoundPackHeader_t header;
+	bool ok = fread( &header, sizeof( header ), 1, f ) == 1 && header.magic == N3DS_SOUNDPACK_MAGIC &&
+		header.version == N3DS_SOUNDPACK_VERSION && header.numEntries > 0 && header.numEntries < 1000000;
+	long fileLength = 0;
+	if ( ok && fseek( f, 0, SEEK_END ) == 0 ) {
+		fileLength = ftell( f );
+	}
+	ok = ok && (uint64)header.entryOffset + (uint64)header.numEntries * sizeof( n3dsSoundPackEntry_t ) <= (uint64)fileLength;
+	if ( ok ) {
+		sndPackEntries = (n3dsSoundPackEntry_t *)Mem_Alloc( header.numEntries * sizeof( n3dsSoundPackEntry_t ), TAG_AUDIO );
+		ok = fseek( f, header.entryOffset, SEEK_SET ) == 0 &&
+			fread( sndPackEntries, sizeof( n3dsSoundPackEntry_t ), header.numEntries, f ) == header.numEntries;
+		if ( !ok ) {
+			Mem_Free( sndPackEntries );
+			sndPackEntries = NULL;
+		}
+	}
+	fclose( f );
+	if ( !ok ) {
+		idLib::Warning( "Sound: %s is not a sound pack of version %d or is damaged (convert again with n3dstex)", osPath, N3DS_SOUNDPACK_VERSION );
+		return;
+	}
+	sndPackNum = header.numEntries;
+	memcpy( sndPackCoefs, header.coefs, sizeof( sndPackCoefs ) );
+	sndPackOSPath = osPath;
+	idLib::Printf( "Sound: sound pack %s: %d samples, %d MB (DSP-ADPCM, decoded by the DSP)\n", osPath, sndPackNum, (int)( fileLength >> 20 ) );
+}
+
+static const n3dsSoundPackEntry_t * N3DS_SoundPackFind( const char * generatedFileName ) {
+	if ( !sndPackTried ) {
+		N3DS_SoundPackInit();
+	}
+	if ( sndPackEntries == NULL ) {
+		return NULL;
+	}
+	const uint64 h = N3DS_PackHash( generatedFileName );
+	int lo = 0, hi = sndPackNum - 1;
+	while ( lo <= hi ) {
+		const int mid = ( lo + hi ) >> 1;
+		const uint64 m = sndPackEntries[mid].nameHash;
+		if ( m == h ) {
+			return &sndPackEntries[mid];
+		}
+		if ( m < h ) {
+			lo = mid + 1;
+		} else {
+			hi = mid - 1;
+		}
+	}
+	return NULL;
+}
 
 /*
 ========================
@@ -377,7 +467,8 @@ void idSoundSample_3DS::N3DS_LogMemory() {
 	}
 	for ( int k = 0; k < numFmts; k++ ) {
 		idLib::Printf( "    format %s %d Hz %d ch: %d samples, %d KB\n",
-			fmts[k].tag == idWaveFile::FORMAT_PCM ? "PCM16" : fmts[k].tag == idWaveFile::FORMAT_ADPCM ? "ADPCM" : "other",
+			fmts[k].tag == idWaveFile::FORMAT_PCM ? "PCM16" : fmts[k].tag == idWaveFile::FORMAT_ADPCM ? "ADPCM" :
+			fmts[k].tag == N3DS_FORMAT_DSPADPCM ? "DSP-ADPCM (pack)" : "other",
 			fmts[k].rate, fmts[k].channels, fmts[k].count, fmts[k].bytes / 1024 );
 	}
 	idLib::Printf( "    loader: %d reads %d KB, %d queued\n", sndReads, sndReadBytes / 1024, sndQueueCount );
@@ -458,6 +549,79 @@ bool idSoundSample_3DS::ReadBuffers( idFile * f ) {
 		}
 		void * data = AllocBuffer( buffers[i].bufferSize, GetName() );
 		if ( f->Read( data, buffers[i].bufferSize ) != buffers[i].bufferSize ) {
+			FreeBuffer( data );
+			return false;
+		}
+		N3DS_SoundLock();
+		buffers[i].buffer = data;
+		sampleDataBytes += buffers[i].bufferSize;
+		N3DS_SoundUnlock();
+	}
+	dataLoaded = true;
+	return true;
+}
+
+/*
+========================
+idSoundSample_3DS::N3DS_UsePack
+
+After the .idwav header is read: if the pack has this sample (same channels and
+length), its buffers become the pack's DSP-ADPCM streams, one per channel.
+========================
+*/
+bool idSoundSample_3DS::N3DS_UsePack( const char * generatedFileName ) {
+	const n3dsSoundPackEntry_t * e = N3DS_SoundPackFind( generatedFileName );
+	if ( e == NULL || e->channels < 1 || e->channels > 2 || e->channels != format.basic.numChannels ||
+			(int)e->numSamples != playLength || e->channelBytes != N3DS_DspAdpcmBytes( e->numSamples ) ) {
+		return false;
+	}
+	const uint64 base = (uint64)e->dataOffset * N3DS_SOUNDPACK_ALIGN;
+	if ( base + (uint64)e->channels * e->channelBytes > 0x7FFFFFFF ) {
+		return false;
+	}
+	sndLoadLock.Lock();
+	const int pathIndex = N3DS_SoundPathIndex( sndPackOSPath.c_str() );
+	sndLoadLock.Unlock();
+	if ( pathIndex < 0 ) {
+		return false;
+	}
+	format.basic.formatTag = N3DS_FORMAT_DSPADPCM;
+	format.basic.samplesPerSec = e->sampleRate;
+	playBegin = 0;
+	buffers.SetNum( e->channels );
+	totalBufferSize = 0;
+	for ( int c = 0; c < e->channels; c++ ) {
+		buffers[c].buffer = NULL;
+		buffers[c].bufferSize = e->channelBytes;
+		buffers[c].numSamples = playLength;
+		buffers[c].fileOffset = 0;
+		buffers[c].osOffset = (int)( base + (uint64)c * e->channelBytes );
+		totalBufferSize += e->channelBytes;
+	}
+	streamPath = pathIndex;
+	sndPackSamples++;
+	return true;
+}
+
+/*
+========================
+idSoundSample_3DS::ReadBuffersFromPack
+
+Main thread (small samples at level load): straight from the pack.
+========================
+*/
+bool idSoundSample_3DS::ReadBuffersFromPack() {
+	if ( sndPackMainFile == NULL ) {
+		sndPackMainFile = fopen( sndPackOSPath.c_str(), "rb" );
+		if ( sndPackMainFile == NULL ) {
+			return false;
+		}
+	}
+	MakeRoom( totalBufferSize );
+	for ( int i = 0; i < buffers.Num(); i++ ) {
+		void * data = AllocBuffer( buffers[i].bufferSize, GetName() );
+		if ( fseek( sndPackMainFile, buffers[i].osOffset, SEEK_SET ) != 0 ||
+				(int)fread( data, 1, buffers[i].bufferSize, sndPackMainFile ) != buffers[i].bufferSize ) {
 			FreeBuffer( data );
 			return false;
 		}
@@ -625,6 +789,15 @@ bool idSoundSample_3DS::LoadGeneratedSample( const idStr &filename ) {
 	generatedName = filename;
 	dataLoaded = false;
 	streamPath = -1;
+	// converted on the PC: the DSP plays the pack's DSP-ADPCM, nothing is decoded here
+	if ( N3DS_UsePack( filename ) ) {
+		if ( totalBufferSize <= n3ds_soundPreloadKB.GetInteger() * 1024 ) {
+			if ( !ReadBuffersFromPack() ) {
+				FreeBuffers();
+			}
+		}
+		return true;
+	}
 	if ( streamable && num > 0 ) {
 		sndLoadLock.Lock();
 		streamPath = N3DS_SoundPathIndex( osPath );

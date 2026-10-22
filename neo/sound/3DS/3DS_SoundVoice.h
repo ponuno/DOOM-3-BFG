@@ -29,6 +29,11 @@ looping sample (if any) forever, like the XAudio2 voice. Stereo samples get thei
 2x2 level matrix (CalculateSurround) applied while filling, mono ones use the DSP's
 levels directly.
 
+Samples from the sound pack (N3DS_FORMAT_DSPADPCM) are not decoded at all: the voice
+copies their DSP-ADPCM frames into the channel's wave buffers and the DSP decodes them.
+DSP-ADPCM channels are mono, so a stereo sample takes two DSP channels, and its 2x2
+level matrix becomes the two channels' left/right levels.
+
 The main thread sets it up (Create/Start/Update/Stop); the feeder thread refills it
 (Feed). Both under the mixer lock.
 ================================================
@@ -85,6 +90,9 @@ private:
 	// up to 'frames' frames of the sample data from the play position on (PCM16, the
 	// sample's channels); NULL if the data is not there
 	const short *			SourceRun( int & frames );
+	// sound pack samples: queue DSP-ADPCM frames, advance without output
+	void					FeedDsp();
+	void					AdvanceSilent( int frames );
 	// fills dst (NULL: just skips) with up to 'frames' output frames, returns how many
 	int						Produce( short * dst, int frames, int & peak );
 	void					ApplyLevels();
@@ -108,9 +116,15 @@ private:
 	int						pendingFlags;
 	int						pendingSince;
 	void					StartNow( int offsetMS, int ssFlags );
+	void					StartDsp( int offsetMS );
 
 	// playback state (under the mixer lock)
 	int						channel;			// DSP channel, -1 if none
+	int						channel2;			// DSP-ADPCM stereo: the right source channel's DSP channel
+	bool					dsp;				// playing sound pack (DSP-ADPCM) data
+	bool					dspNewStream;		// the next buffer starts a stream (decoder state reset)
+	const idSoundSample_3DS * bufSample[N3DS_AUDIO_BUFFERS];	// DSP-ADPCM: what each wave buffer holds
+	int						bufFrame[N3DS_AUDIO_BUFFERS];
 	bool					stereo;				// output (and source) is stereo
 	bool					sourceDone;			// everything is queued
 	idSoundSample_3DS *		current;			// leadin or looping

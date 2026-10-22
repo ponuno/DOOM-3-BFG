@@ -16,6 +16,7 @@ the Free Software Foundation, either version 3 of the License, or
 #pragma hdrstop
 #include "../../idlib/precompiled.h"
 #include "../snd_local.h"
+#include "n3ds_soundpack.h"
 
 /*
 ========================
@@ -124,6 +125,9 @@ idSoundVoice_3DS::idSoundVoice_3DS()
 		pendingFlags( 0 ),
 		pendingSince( 0 ),
 		channel( -1 ),
+		channel2( -1 ),
+		dsp( false ),
+		dspNewStream( false ),
 		stereo( false ),
 		sourceDone( true ),
 		current( NULL ),
@@ -135,6 +139,8 @@ idSoundVoice_3DS::idSoundVoice_3DS()
 		adpcmSize( 0 ) {
 	memset( levels, 0, sizeof( levels ) );
 	memset( bufferPeak, 0, sizeof( bufferPeak ) );
+	memset( bufSample, 0, sizeof( bufSample ) );
+	memset( bufFrame, 0, sizeof( bufFrame ) );
 }
 
 /*
@@ -170,6 +176,11 @@ void idSoundVoice_3DS::StopLocked() {
 		N3DSAudio_ChnStop( channel );
 		soundSystemLocal.hardware.FreeChannel( channel );
 		channel = -1;
+	}
+	if ( channel2 >= 0 ) {
+		N3DSAudio_ChnStop( channel2 );
+		soundSystemLocal.hardware.FreeChannel( channel2 );
+		channel2 = -1;
 	}
 	playing = false;
 	paused = true;
@@ -287,7 +298,12 @@ void idSoundVoice_3DS::StartNow( int offsetMS, int ssFlags ) {
 	if ( leadinSample == NULL ) {
 		return;
 	}
-	if ( leadinSample->format.basic.formatTag != idWaveFile::FORMAT_PCM && leadinSample->format.basic.formatTag != idWaveFile::FORMAT_ADPCM ) {
+	const int tag = leadinSample->format.basic.formatTag;
+	if ( tag != idWaveFile::FORMAT_PCM && tag != idWaveFile::FORMAT_ADPCM && tag != N3DS_FORMAT_DSPADPCM ) {
+		return;
+	}
+	if ( tag == N3DS_FORMAT_DSPADPCM ) {
+		StartDsp( offsetMS );
 		return;
 	}
 
@@ -319,6 +335,7 @@ void idSoundVoice_3DS::StartNow( int offsetMS, int ssFlags ) {
 	}
 	adpcmSample = NULL;
 	adpcmBlock = -1;
+	dsp = false;
 	current = sample;
 	frame = offsetSamples;
 	stereo = leadinSample->NumChannels() > 1;
@@ -350,6 +367,74 @@ void idSoundVoice_3DS::StartNow( int offsetMS, int ssFlags ) {
 
 /*
 ========================
+idSoundVoice_3DS::StartDsp
+
+StartNow() for a sound pack sample: one mono DSP-ADPCM channel per source channel.
+The start is moved back to a frame boundary (14 samples, under 1 ms).
+========================
+*/
+void idSoundVoice_3DS::StartDsp( int offsetMS ) {
+	if ( loopingSample != NULL && loopingSample->format.basic.formatTag != N3DS_FORMAT_DSPADPCM ) {
+		SetSamples( leadinSample, NULL );		// AllocateVoice drops mismatched pairs already
+	}
+	int offsetSamples = MsecToSamples( Max( offsetMS, 0 ), leadinSample->SampleRate() );
+	idSoundSample_3DS * sample = leadinSample;
+	if ( offsetSamples >= leadinSample->playLength ) {
+		if ( loopingSample == NULL || loopingSample->playLength <= 0 ) {
+			return;
+		}
+		offsetSamples %= loopingSample->playLength;
+		sample = loopingSample;
+	}
+	offsetSamples -= offsetSamples % N3DS_DSPADPCM_FRAME_SAMPLES;
+
+	N3DS_SoundLock();
+	StopLocked();
+	adpcmSample = NULL;
+	adpcmBlock = -1;
+	dsp = true;
+	dspNewStream = true;
+	current = sample;
+	frame = offsetSamples;
+	stereo = leadinSample->NumChannels() > 1;
+	sourceDone = false;
+	memset( bufferPeak, 0, sizeof( bufferPeak ) );
+	memset( bufSample, 0, sizeof( bufSample ) );
+	playing = true;
+	paused = false;
+	if ( soundSystemLocal.hardware.AudioRunning() ) {
+		channel = soundSystemLocal.hardware.AllocChannel();
+		if ( channel >= 0 && stereo ) {
+			channel2 = soundSystemLocal.hardware.AllocChannel();
+			if ( channel2 < 0 ) {
+				soundSystemLocal.hardware.FreeChannel( channel );
+				channel = -1;
+			}
+		}
+		if ( channel < 0 ) {
+			soundSystemLocal.hardware.CountDropped();
+			playing = false;
+			sourceDone = true;
+			current = NULL;
+			N3DS_SoundUnlock();
+			return;
+		}
+		N3DSAudio_ChnStartAdpcm( channel, (float)sampleRate, N3DS_SoundPackCoefs() );
+		if ( channel2 >= 0 ) {
+			N3DSAudio_ChnStartAdpcm( channel2, (float)sampleRate, N3DS_SoundPackCoefs() );
+		}
+	}
+	N3DS_SoundUnlock();
+
+	Update();		// levels and rate before the first buffer plays
+
+	N3DS_SoundLock();
+	Feed();
+	N3DS_SoundUnlock();
+}
+
+/*
+========================
 idSoundVoice_3DS::ApplyLevels
 
 Mixer lock held.
@@ -359,7 +444,11 @@ void idSoundVoice_3DS::ApplyLevels() {
 	if ( channel < 0 ) {
 		return;
 	}
-	if ( stereo ) {
+	if ( dsp && stereo && channel2 >= 0 ) {
+		// one mono channel per source channel: each gets its row of the matrix
+		N3DSAudio_ChnSetMix( channel, levels[0][0] * ( 1.0f / 65536.0f ), levels[0][1] * ( 1.0f / 65536.0f ) );
+		N3DSAudio_ChnSetMix( channel2, levels[1][0] * ( 1.0f / 65536.0f ), levels[1][1] * ( 1.0f / 65536.0f ) );
+	} else if ( stereo ) {
 		// the matrix is applied while filling (the DSP has no cross terms for stereo)
 		N3DSAudio_ChnSetMix( channel, 1.0f, 1.0f );
 	} else {
@@ -367,6 +456,9 @@ void idSoundVoice_3DS::ApplyLevels() {
 	}
 	if ( current != NULL ) {
 		N3DSAudio_ChnSetRate( channel, (float)current->SampleRate() * pitchScale );
+		if ( channel2 >= 0 ) {
+			N3DSAudio_ChnSetRate( channel2, (float)current->SampleRate() * pitchScale );
+		}
 	}
 }
 
@@ -573,6 +665,10 @@ void idSoundVoice_3DS::Feed() {
 	if ( !playing || channel < 0 || current == NULL ) {
 		return;
 	}
+	if ( dsp ) {
+		FeedDsp();
+		return;
+	}
 	if ( !sourceDone ) {
 		bool busy = N3DSAudio_ChnBusy( channel ) != 0;
 		bool queuedAny = false;
@@ -603,6 +699,84 @@ void idSoundVoice_3DS::Feed() {
 
 /*
 ========================
+idSoundVoice_3DS::FeedDsp
+
+Feeder thread, mixer lock held: queues the next DSP-ADPCM frames of every source
+channel into the free wave buffers (the same buffer index on both channels of a stereo
+voice). A stream (the start, or the looping sample from its first sample) starts with
+the decoder state the encoder started from: the first frame's header, no history.
+========================
+*/
+void idSoundVoice_3DS::FeedDsp() {
+	if ( !sourceDone ) {
+		const bool busy = N3DSAudio_ChnBusy( channel ) != 0;
+		bool queuedAny = false;
+		for ( int b = 0; b < N3DS_AUDIO_BUFFERS && !sourceDone; b++ ) {
+			if ( !N3DSAudio_BufFree( channel, b ) || ( channel2 >= 0 && !N3DSAudio_BufFree( channel2, b ) ) ) {
+				continue;
+			}
+			// at the end of the sample: on to the looping sample, from its start
+			while ( frame >= current->playLength ) {
+				if ( loopingSample == NULL || loopingSample->playLength <= 0 ) {
+					sourceDone = true;
+					break;
+				}
+				current = loopingSample;
+				frame = 0;
+				dspNewStream = true;
+			}
+			if ( sourceDone ) {
+				break;
+			}
+			const int run = Min( current->playLength - frame, N3DS_AUDIO_ADPCM_FRAMES * N3DS_DSPADPCM_FRAME_SAMPLES );
+			const int firstFrame = frame / N3DS_DSPADPCM_FRAME_SAMPLES;
+			const int bytes = ( ( run + N3DS_DSPADPCM_FRAME_SAMPLES - 1 ) / N3DS_DSPADPCM_FRAME_SAMPLES ) * 8;
+			const int sources = ( channel2 >= 0 ) ? 2 : 1;
+			bool ok = current->buffers.Num() >= sources;
+			for ( int c = 0; ok && c < sources; c++ ) {
+				const idSoundSample_3DS::sampleBuffer_t & buf = current->buffers[c];
+				ok = buf.buffer != NULL && ( firstFrame * 8 + bytes ) <= buf.bufferSize;
+			}
+			if ( !ok ) {
+				sourceDone = true;		// the data is gone (should not happen while the voice holds the sample)
+				break;
+			}
+			for ( int c = 0; c < sources; c++ ) {
+				const byte * src = (const byte *)current->buffers[c].buffer + firstFrame * 8;
+				N3DSAudio_BufQueueAdpcm( c == 0 ? channel : channel2, b, src, bytes, run, dspNewStream ? 1 : 0, src[0], 0, 0 );
+			}
+			bufSample[b] = current;
+			bufFrame[b] = frame;
+			dspNewStream = false;
+			frame += run;
+			queuedAny = true;
+		}
+		if ( !busy && queuedAny && soundSystemLocal.hardware.ChannelStarted( channel ) ) {
+			soundSystemLocal.hardware.CountUnderrun();
+		}
+		soundSystemLocal.hardware.SetChannelStarted( channel );
+		return;
+	}
+	if ( !N3DSAudio_ChnBusy( channel ) && ( channel2 < 0 || !N3DSAudio_ChnBusy( channel2 ) ) ) {
+		StopLocked();
+	}
+}
+
+// no output: move the play position on (sound pack samples)
+void idSoundVoice_3DS::AdvanceSilent( int frames ) {
+	frame += frames;
+	while ( frame >= current->playLength ) {
+		if ( loopingSample == NULL || loopingSample->playLength <= 0 ) {
+			sourceDone = true;
+			return;
+		}
+		frame -= current->playLength;
+		current = loopingSample;
+	}
+}
+
+/*
+========================
 idSoundVoice_3DS::RunSilent
 
 No DSP: the voice advances by the clock so that sounds still end.
@@ -615,7 +789,11 @@ void idSoundVoice_3DS::RunSilent( int ms ) {
 	const int frames = (int)( (int64)ms * (int)( current->SampleRate() * pitchScale ) / 1000 );
 	int peak = 0;
 	if ( frames > 0 ) {
-		Produce( NULL, frames, peak );
+		if ( dsp ) {
+			AdvanceSilent( frames );
+		} else {
+			Produce( NULL, frames, peak );
+		}
 	}
 	if ( sourceDone ) {
 		StopLocked();
@@ -650,6 +828,9 @@ void idSoundVoice_3DS::Pause() {
 	if ( channel >= 0 ) {
 		N3DSAudio_ChnSetPaused( channel, 1 );
 	}
+	if ( channel2 >= 0 ) {
+		N3DSAudio_ChnSetPaused( channel2, 1 );
+	}
 	N3DS_SoundUnlock();
 }
 
@@ -664,6 +845,9 @@ void idSoundVoice_3DS::UnPause() {
 		paused = false;
 		if ( channel >= 0 ) {
 			N3DSAudio_ChnSetPaused( channel, 0 );
+		}
+		if ( channel2 >= 0 ) {
+			N3DSAudio_ChnSetPaused( channel2, 0 );
 		}
 	}
 	N3DS_SoundUnlock();
@@ -693,15 +877,29 @@ float idSoundVoice_3DS::GetAmplitude() {
 		return 1.0f;
 	}
 	int peak = 0;
+	float amplitude = -1.0f;
 	N3DS_SoundLock();
 	if ( channel >= 0 ) {
 		for ( int b = 0; b < N3DS_AUDIO_BUFFERS; b++ ) {
 			if ( N3DSAudio_BufPlaying( channel, b ) ) {
-				peak = bufferPeak[b];
+				if ( dsp ) {
+					// nothing is decoded here: the sample's amplitude table (60 per second,
+					// as lip sync uses it) at the start of the buffer being played
+					const idSoundSample_3DS * s = bufSample[b];
+					if ( s != NULL && s->SampleRate() > 0 ) {
+						// no table: full level, as for sounds without a VU meter
+						amplitude = ( s->amplitude.Num() > 0 ) ? s->GetAmplitude( (int)( (int64)bufFrame[b] * 1000 / s->SampleRate() ) ) : 1.0f;
+					}
+				} else {
+					peak = bufferPeak[b];
+				}
 				break;
 			}
 		}
 	}
 	N3DS_SoundUnlock();
+	if ( amplitude >= 0.0f ) {
+		return amplitude;
+	}
 	return peak * ( 1.0f / 32768.0f );
 }
