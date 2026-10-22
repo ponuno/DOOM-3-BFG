@@ -23,6 +23,12 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 	in linear memory - the other one may still be sampled by the frame the GPU draws.
 	Nothing is decoded: a frame costs a short SD read and a 32 KB copy.
 
+	File handles: a level can hold dozens of videos (Mars City: every screen), and every
+	open file is an FS object of the system's shared pool - with all of them open the
+	HOME menu could not open its own files (ErrDisp 0xD860466C in "menu"). The .n3v is
+	read at InitFromFile and closed; while playing it is reopened, and at most
+	VIDEO_MAX_OPEN videos keep their file open (the least recently drawn one is closed).
+
 	The PC source of BFG has no video player at all (Bink is not open source); without
 	the .n3v files the stages stay undrawn as before.
 
@@ -50,12 +56,17 @@ public:
 	virtual void *		N3DS_GpuTexture( int milliseconds );
 
 private:
+	bool				OpenFile();
+	void				CloseFile();
 	bool				ApplyRecord( int frame );
 	bool				GoToFrame( int frame );
 	int					FrameForTime( int milliseconds );
 
 	idStr				name;
-	FILE *				file;
+	idStr				osPath;
+	bool				valid;			// header and index read
+	FILE *				file;			// open while playing (see OpenFile)
+	int					lastUse;
 	n3dsVideoHeader_t	header;
 	n3dsVideoFrame_t *	index;
 	byte *				frameData;		// the current frame, as the GPU wants it
@@ -72,8 +83,14 @@ private:
 
 static int videoOpenLogs = 0;
 
+static const int		VIDEO_MAX_OPEN = 3;
+static idCinematic_3DS *	videoOpen[VIDEO_MAX_OPEN];	// videos holding an open file
+static int				videoUseCounter = 0;
+
 idCinematic_3DS::idCinematic_3DS() {
+	valid = false;
 	file = NULL;
+	lastUse = 0;
 	memset( &header, 0, sizeof( header ) );
 	index = NULL;
 	frameData = NULL;
@@ -92,11 +109,50 @@ idCinematic_3DS::~idCinematic_3DS() {
 	Close();
 }
 
-void idCinematic_3DS::Close() {
+bool idCinematic_3DS::OpenFile() {
+	lastUse = ++videoUseCounter;
+	if ( file != NULL ) {
+		return true;
+	}
+	int slot = -1;
+	for ( int i = 0; i < VIDEO_MAX_OPEN; i++ ) {
+		if ( videoOpen[i] == NULL ) {
+			slot = i;
+			break;
+		}
+	}
+	if ( slot < 0 ) {
+		slot = 0;
+		for ( int i = 1; i < VIDEO_MAX_OPEN; i++ ) {
+			if ( videoOpen[i]->lastUse < videoOpen[slot]->lastUse ) {
+				slot = i;
+			}
+		}
+		videoOpen[slot]->CloseFile();
+	}
+	file = fopen( osPath.c_str(), "rb" );
+	if ( file == NULL ) {
+		return false;
+	}
+	videoOpen[slot] = this;
+	return true;
+}
+
+void idCinematic_3DS::CloseFile() {
 	if ( file != NULL ) {
 		fclose( file );
 		file = NULL;
 	}
+	for ( int i = 0; i < VIDEO_MAX_OPEN; i++ ) {
+		if ( videoOpen[i] == this ) {
+			videoOpen[i] = NULL;
+		}
+	}
+}
+
+void idCinematic_3DS::Close() {
+	CloseFile();
+	valid = false;
 	Mem_Free( index );
 	index = NULL;
 	Mem_Free( frameData );
@@ -125,11 +181,11 @@ bool idCinematic_3DS::InitFromFile( const char * qpath, bool looping_ ) {
 	path.BackSlashesToSlashes();
 	path.SetFileExtension( "n3v" );
 	name = path;
-	const char * osPath = fileSystem->RelativePathToOSPath( path.c_str(), "fs_basepath" );
-	file = fopen( osPath, "rb" );
+	osPath = fileSystem->RelativePathToOSPath( path.c_str(), "fs_basepath" );
+	file = fopen( osPath.c_str(), "rb" );		// read the header and index, closed below
 	if ( file == NULL ) {
 		if ( videoOpenLogs++ < 16 ) {
-			common->Printf( "video: no %s (convert the .bik with n3dstex): not drawn\n", osPath );
+			common->Printf( "video: no %s (convert the .bik with n3dstex): not drawn\n", osPath.c_str() );
 		}
 		return false;
 	}
@@ -143,10 +199,13 @@ bool idCinematic_3DS::InitFromFile( const char * qpath, bool looping_ ) {
 			fread( index, sizeof( n3dsVideoFrame_t ), header.numFrames, file ) == header.numFrames;
 	}
 	if ( !ok ) {
-		common->Warning( "video: %s is not a .n3v of version %d (convert again with n3dstex)", osPath, N3DS_VIDEO_VERSION );
+		common->Warning( "video: %s is not a .n3v of version %d (convert again with n3dstex)", osPath.c_str(), N3DS_VIDEO_VERSION );
 		Close();
 		return false;
 	}
+	fclose( file );
+	file = NULL;
+	valid = true;
 	frameData = (byte *)Mem_Alloc( header.frameBytes, TAG_CINEMATIC );
 	memset( frameData, 0, header.frameBytes );
 	if ( videoOpenLogs++ < 16 ) {
@@ -157,14 +216,14 @@ bool idCinematic_3DS::InitFromFile( const char * qpath, bool looping_ ) {
 }
 
 int idCinematic_3DS::AnimationLength() {
-	if ( file == NULL ) {
+	if ( !valid ) {
 		return 0;
 	}
 	return (int)( (int64)header.numFrames * 1000000 / header.fpsMilli );
 }
 
 float idCinematic_3DS::GetFrameRate() const {
-	return ( file != NULL ) ? header.fpsMilli * 0.001f : 30.0f;
+	return valid ? header.fpsMilli * 0.001f : 30.0f;
 }
 
 void idCinematic_3DS::ResetTime( int time ) {
@@ -204,7 +263,7 @@ bool idCinematic_3DS::ApplyRecord( int frame ) {
 		recordSize = fr.size;
 		record = (byte *)Mem_Alloc( recordSize, TAG_CINEMATIC );
 	}
-	if ( fseek( file, fr.offset, SEEK_SET ) != 0 || fread( record, 1, fr.size, file ) != fr.size ) {
+	if ( !OpenFile() || fseek( file, fr.offset, SEEK_SET ) != 0 || fread( record, 1, fr.size, file ) != fr.size ) {
 		return false;
 	}
 	const int blocks = header.frameBytes / 8;
@@ -267,7 +326,7 @@ Backend: the GPU texture showing the frame at 'milliseconds', NULL if there is n
 ========================
 */
 void * idCinematic_3DS::N3DS_GpuTexture( int milliseconds ) {
-	if ( file == NULL ) {
+	if ( !valid ) {
 		return NULL;
 	}
 	const int frame = FrameForTime( milliseconds );
@@ -294,7 +353,7 @@ void * idCinematic_3DS::N3DS_GpuTexture( int milliseconds ) {
 cinData_t idCinematic_3DS::ImageForTime( int milliseconds ) {
 	cinData_t c;
 	memset( &c, 0, sizeof( c ) );
-	if ( file != NULL ) {
+	if ( valid ) {
 		FrameForTime( milliseconds );
 		c.imageWidth = header.width;
 		c.imageHeight = header.height;
