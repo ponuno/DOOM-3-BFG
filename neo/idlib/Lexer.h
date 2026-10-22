@@ -60,7 +60,8 @@ typedef enum {
 	LEXFL_ALLOWFLOATEXCEPTIONS			= BIT(10),	// allow float exceptions like 1.#INF or 1.#IND to be parsed
 	LEXFL_ALLOWMULTICHARLITERALS		= BIT(11),	// allow multi character literals
 	LEXFL_ALLOWBACKSLASHSTRINGCONCAT	= BIT(12),	// allow multiple strings seperated by '\' to be concatenated
-	LEXFL_ONLYSTRINGS					= BIT(13)	// parse as whitespace deliminated strings (quoted strings keep quotes)
+	LEXFL_ONLYSTRINGS					= BIT(13),	// parse as whitespace deliminated strings (quoted strings keep quotes)
+	LEXFL_STREAMFILE					= BIT(14)	// LoadFile: read a big file through a window instead of whole (tokens only)
 } lexerFlags_t;
 
 // punctuation ids
@@ -268,6 +269,12 @@ private:
 	idLexer *		next;					// next script in a chain
 	bool			hadError;				// set by idLexer::Error, even if the error is supressed
 
+	// LEXFL_STREAMFILE: buffer is a window of the file, refilled as tokens are read
+	idFile *		streamFile;				// open while there is more to read
+	char *			streamWindow;			// the window (buffer points to it)
+	int				streamBase;				// file offset of buffer[0]
+	int				streamCapacity;			// size of the window (grows only for white space longer than it)
+
 	static char		baseFolder[ 256 ];		// base folder to load files from
 
 private:
@@ -281,6 +288,8 @@ private:
 	int				ReadPrimitive( idToken *token );
 	int				CheckString( const char *str ) const;
 	int				NumLinesCrossed();
+	bool			StreamRefill( const char *keepFrom );
+	bool			StreamMore();
 };
 
 ID_INLINE const char *idLexer::GetFileName() {
@@ -288,7 +297,7 @@ ID_INLINE const char *idLexer::GetFileName() {
 }
 
 ID_INLINE const int idLexer::GetFileOffset() {
-	return idLexer::script_p - idLexer::buffer;
+	return idLexer::streamBase + (int)( idLexer::script_p - idLexer::buffer );
 }
 
 ID_INLINE const ID_TIME_T idLexer::GetFileTime() {

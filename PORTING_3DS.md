@@ -180,6 +180,11 @@ stacks), newlib (FILE buffers). Use `Mem_MallInfo()` instead of `mallinfo()`: ma
 the skipped address space between the regions as in use. The MEM report shows
 `second heap: malloc has taken N KB of M KB`; the tour counts the region as part of the heap.
 
+No load step needs one block of a whole big text file: `.map` files (up to 10+ MB) are
+read by `idLexer` through a 256 KB window (`LEXFL_STREAMFILE`, set by `idMapFile::Parse`),
+refilled as tokens are read. After a few level changes the heap has plenty free but not
+one 10 MB piece (le_exis2 failed with 52 MB free, largest 9.4 MB).
+
 A map whose static geometry does not fit the static caches still loads to the end (the
 surfaces that do not fit get no static handle) and then stops with
 `static vertex/index cache too small for this map: needs N KB of vertexes (have M KB), ...`,

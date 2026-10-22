@@ -752,7 +752,8 @@ idMapFile::Parse
 */
 bool idMapFile::Parse( const char *filename, bool ignoreRegion, bool osPath ) {
 	// no string concatenation for epairs and allow path names for materials
-	idLexer src( LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES );
+	// streamed: a .map is up to 10+ MB of text, one heap block of that size may not exist
+	idLexer src( LEXFL_NOSTRINGCONCAT | LEXFL_NOSTRINGESCAPECHARS | LEXFL_ALLOWPATHNAMES | LEXFL_STREAMFILE );
 	idToken token;
 	idStr fullName;
 	idMapEntity *mapEnt;
