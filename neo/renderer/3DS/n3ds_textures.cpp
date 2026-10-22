@@ -629,6 +629,9 @@ static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & lay
 static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 	const uint64 start = Sys_Microseconds();
 
+	if ( t->data == NULL ) {
+		return false;		// nothing to decode (a streamed level not in memory): not "unsupported"
+	}
 	idTempArray<byte> rgba( t->width * t->height * 4 );
 	if ( !N3DS_DecodeLevel( t->format, t->colorFormat, t->width, t->height, t->data, t->dataSize, rgba.Ptr() ) ) {
 		t->unsupported = true;
@@ -734,25 +737,28 @@ void * N3DS_TexForImage( idImage * image ) {
 		if ( texFrame < t->retryFrame ) {
 			return NULL;
 		}
-		if ( t->streamPath >= 0 && t->data == NULL ) {
-			// streamed: take a finished read, or ask for one
+		if ( t->streamPath >= 0 ) {
+			// streamed: take a finished read - always, also when the data turned up before
+			// this frame looked. A READY left behind once made a later re-upload (after the
+			// RAM cache had freed the data) decode NULL and mark the texture unsupported.
 			texLoadLock.Lock();
 			const int state = t->loadState;
 			if ( state == TEX_READY || state == TEX_FAILED ) {
 				t->loadState = TEX_IDLE;
 			}
 			texLoadLock.Unlock();
-			if ( state == TEX_FAILED ) {
-				t->retryFrame = texFrame + 120;
-				if ( failuresLogged < 12 ) {
-					failuresLogged++;
-					common->Printf( "citro3d: texture %s: reading %d bytes at %d of %s failed\n", t->image->GetName(),
-						t->dataSize, t->streamOffset, texPaths[t->streamPath].path.c_str() );
+			if ( t->data == NULL ) {
+				if ( state == TEX_FAILED ) {
+					t->retryFrame = texFrame + 120;
+					if ( failuresLogged < 12 ) {
+						failuresLogged++;
+						common->Printf( "citro3d: texture %s: reading %d bytes at %d of %s failed\n", t->image->GetName(),
+							t->dataSize, t->streamOffset, texPaths[t->streamPath].path.c_str() );
+					}
+					return NULL;
 				}
-				return NULL;
-			}
-			if ( state != TEX_READY ) {
-				if ( state == TEX_IDLE ) {
+				// not read yet, being read, or read and dropped by the RAM cache since
+				if ( state != TEX_QUEUED && state != TEX_LOADING ) {
 					N3DS_TexRequest( t );
 				}
 				statStreamWaits++;
