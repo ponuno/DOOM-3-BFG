@@ -46,7 +46,7 @@ void * NullGL_BufferStorage( GLuint name, bool * linear );	// gl_null.cpp
 bool r_n3dsC3D = false;
 
 idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: draw at most this many surfaces per frame (0 = all), for bisecting GPU hangs" );
-idCVar n3ds_c3dHangRegs( "n3ds_c3dHangRegs", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: when the GPU hangs, also read its registers into sdmc:/doom3/gpuhang.bin" );
+idCVar n3ds_c3dHangRegs( "n3ds_c3dHangRegs", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: when the GPU hangs, also read its registers into sdmc:/doom3/gpuhang.bin" );
 idCVar n3ds_c3dHangHunt( "n3ds_c3dHangHunt", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: from this 3D frame on, wait for the GPU after every draw and name the draw it never finishes (slow; 0 = off)" );
 static bool c3dHangFound = false;
 idCVar n3ds_c3dFullFlush( "n3ds_c3dFullFlush", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: clean the data cache over all linear memory at every frame end (old behaviour, ~69 MB per frame in the 178 MB mode)" );
@@ -532,6 +532,13 @@ static void N3DS_Draw( const drawSurf_t * surf, const byte * verts, const unsign
 			common->Printf( "HANG HUNT: draws before it in this frame (all finished):\n" );
 			for ( int i = Max( 0, n - 9 ); i < n - 1; i++ ) {
 				N3DS_PrintRecord( i, c3dRecords[c3dRecordSet][i] );
+			}
+			// the stuck command list holds just this draw (and the state set for it)
+			static char report[4096];
+			N3DSGPU_HangQueueReport( report, sizeof( report ) );
+			common->Printf( "%s", report );
+			if ( N3DSGPU_HangDump( "sdmc:/doom3/gpuhang_hunt.bin", 0 ) ) {
+				common->Printf( "HANG HUNT: sdmc:/doom3/gpuhang_hunt.bin written: send it with log.txt\n" );
 			}
 		}
 	}

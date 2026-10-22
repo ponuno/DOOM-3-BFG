@@ -293,7 +293,7 @@ or linear), then where citro3d's GX queue stands: every entry (clear, texture co
 texture they fill, command list, display transfer), which are done, and the one the GPU is
 stuck on (a transfer or the command list), and the GPU status register. Then
 `sdmc:/doom3/gpuhang.bin` is written: the queue, the frame's command list(s) as sent, and (cvar
-`n3ds_c3dHangRegs`, on by default; appended last, after the rest is safely on the card) the PICA
+`n3ds_c3dHangRegs`, off by default: reading them froze the console in a real hang; appended last) the PICA
 registers as they stand. On the PC:
 
     python3 tools/n3ds/gpuhang.py gpuhang.bin [-v]
@@ -302,7 +302,8 @@ decodes every draw's state (vertex / index buffers, texture units, lighting and 
 flags impossible ones (addresses outside VRAM / FCRAM, textures running past memory, mip levels
 under 8 pixels, a bump map from a disabled unit, ...) and names the draws whose state matches
 the registers at the hang. Draw numbers are those of the log's list. `n3ds_c3dHangHunt <frame>`
-(slow) still waits for the GPU after every draw from that frame on.
+(slow) waits for the GPU after every draw from that frame on; the draw it never finishes is logged
+and its command list (that draw alone) written to `sdmc:/doom3/gpuhang_hunt.bin` (same format).
 
 ## Memory modes and the second heap
 
@@ -424,7 +425,7 @@ turns it off.
 | `n3ds_specular` | 1 | lighting 2: specular maps x highlights |
 | `n3ds_specularPower` | 10 | lighting 2: highlight exponent (D0 table, uploaded when it changes) |
 | `n3ds_hwMaxLights` | 8 | lighting 2: most lights per surface, the brightest kept (fragment lighting costs GPU time per light per pixel) |
-| `n3ds_c3dHangRegs` | 1 | on a GPU hang, also read the GPU's registers into `gpuhang.bin` |
+| `n3ds_c3dHangRegs` | 0 | on a GPU hang, also read the GPU's registers into `gpuhang.bin` |
 | `n3ds_c3dHangHunt` | 0 | from this 3D frame on, wait for the GPU after every draw and log the one it never finishes (slow) |
 | `n3ds_c3dFullFlush` | 0 | 1 = clean the data cache over all linear memory at every frame end (citro3d's default; 69 MB per frame in the 178 MB mode). Off: only the command list; everything else the GPU reads is flushed where it is written |
 | `n3ds_soundMemoryKB` | 4096 | sound sample data budget |
