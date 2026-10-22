@@ -72,8 +72,11 @@ void *			N3DSGPU_TexData( void * tex );
 void			N3DSGPU_TexFlush( void * tex, unsigned int size );
 // room for another texture copy in this frame (the GX queue is small)
 int				N3DSGPU_CanQueueTexture( void );
-// copies the whole chain from staging (linear memory, takes ownership) to VRAM
+// copies the whole chain from staging (linear memory, takes ownership) to VRAM; during a
+// frame the copy is done at the next N3DSGPU_BeginFrame, before anything is drawn
 int				N3DSGPU_TexUpload( void * tex, void * staging, unsigned int size );
+// 1 while the texture's copy has not been done: it must not be drawn yet
+int				N3DSGPU_TexPending( void * tex );
 void			N3DSGPU_TexFree( void * tex );
 // wrap modes for N3DSGPU_TexCreate
 enum {

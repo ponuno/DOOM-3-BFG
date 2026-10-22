@@ -1020,6 +1020,9 @@ void * N3DS_TexForImage( idImage * image ) {
 		LRU_PushFront( t );
 	}
 	t->lastFrame = texFrame;
+	if ( N3DSGPU_TexPending( t->gpu ) ) {
+		return NULL;		// its copy to VRAM is done at the next frame start
+	}
 	return t->gpu;
 }
 

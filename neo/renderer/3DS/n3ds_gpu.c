@@ -64,16 +64,21 @@ static int					stageStateKey = -1;
 static int					texEnvMode = -1;		// texture combiner setup of the current pass
 static int					alphaTestOn = -1;
 
-// staging buffers of texture copies queued in this frame: freed once the GPU is done.
-// citro3d's GX command queue holds 32 entries per frame; the frame itself needs a
-// few (clear, command list, display transfer), so at most this many copies per frame
-#define MAX_PENDING_STAGING	24
-static void *				pendingStaging[2][MAX_PENDING_STAGING];
 // textures released while a frame that may sample them is still being built or drawn:
 // deleted once that frame is finished (with the staging buffers)
 #define MAX_PENDING_FREE	512
 static C3D_Tex *			pendingFree[2][MAX_PENDING_FREE];
 static int					numPendingFree[2];
+// texture copies asked for while a frame is being built: done at the next BeginFrame,
+// alone on the GPU, before that frame's command list. Queued into the frame itself
+// they were submitted together with its command list (libctru runs up to three GX
+// commands at once), so the GPU could draw with a texture still being copied into
+// VRAM. A texture with its copy pending is not handed out (N3DSGPU_TexPending).
+#define MAX_DEFERRED_COPIES	24
+static C3D_Tex *			deferredTex[MAX_DEFERRED_COPIES];
+static void *				deferredStaging[MAX_DEFERRED_COPIES];
+static u32					deferredSize[MAX_DEFERRED_COPIES];
+static int					numDeferred = 0;
 // what each texture unit has bound (citro3d keeps the pointer and reads the C3D_Tex
 // again whenever it re-emits the unit's registers, e.g. after a home menu visit)
 static C3D_Tex *			boundTex[3];
@@ -105,7 +110,6 @@ static void N3DS_DeleteTex( C3D_Tex * tex ) {
 	C3D_TexDelete( tex );
 	free( tex );
 }
-static int					numPendingStaging[2];
 static int					pendingSet = 0;
 static C3D_RenderTarget *	topTarget = NULL;
 static void					( *hangCallback )( unsigned int ) = NULL;
@@ -273,6 +277,8 @@ void N3DSGPU_Shutdown( void ) {
 	initialized = 0;
 }
 
+static void N3DS_RunDeferredCopies( void );
+
 void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 	if ( !initialized || inFrame ) {
 		return;
@@ -290,12 +296,10 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 		}
 		svcSleepThread( 1000LL * 1000 );
 	}
-	// the previous frame (and its texture copies) is finished: free its staging buffers
+	// the previous frame is finished: the copies asked for while it was built, on their own
+	N3DS_RunDeferredCopies();
+	// staging buffers and textures released while the previous frame was built
 	pendingSet ^= 1;
-	for ( int i = 0; i < numPendingStaging[pendingSet]; i++ ) {
-		linearFree( pendingStaging[pendingSet][i] );
-	}
-	numPendingStaging[pendingSet] = 0;
 	for ( int i = 0; i < numPendingFree[pendingSet]; i++ ) {
 		N3DS_DeleteTex( pendingFree[pendingSet][i] );
 	}
@@ -347,6 +351,36 @@ typedef struct {
 	size_t			cmdBufSize;
 } n3dsC3DContextHead_t;
 extern n3dsC3DContextHead_t __C3D_Context;
+
+// the GX queue is idle (C3D_FrameBegin cleared it, nothing of this frame is queued yet):
+// the deferred texture copies run alone, and the frame starts once they are done
+static void N3DS_RunDeferredCopies( void ) {
+	if ( numDeferred == 0 ) {
+		return;
+	}
+	gxCmdQueue_s * q = &__C3D_Context.gxQueue;
+	for ( int i = 0; i < numDeferred; i++ ) {
+		GX_TextureCopy( (u32 *)deferredStaging[i], 0, (u32 *)deferredTex[i]->data, 0, deferredSize[i], 8 );
+	}
+	gxCmdQueueRun( q );
+	const u64 start = osGetTime();
+	int reported = 0;
+	while ( !gxCmdQueueWait( q, 0 ) ) {
+		if ( !reported && osGetTime() - start > 2000 ) {
+			reported = 1;
+			if ( hangCallback != NULL ) {
+				hangCallback( (unsigned int)( osGetTime() - start ) );
+			}
+		}
+		svcSleepThread( 200LL * 1000 );
+	}
+	gxCmdQueueStop( q );
+	gxCmdQueueClear( q );
+	for ( int i = 0; i < numDeferred; i++ ) {
+		linearFree( deferredStaging[i] );
+	}
+	numDeferred = 0;
+}
 extern u32 __ctru_linear_heap;
 extern u32 __ctru_linear_heap_size;
 
@@ -657,7 +691,16 @@ void N3DSGPU_FlushRange( const void * p, unsigned int size ) {
 */
 
 int N3DSGPU_CanQueueTexture( void ) {
-	return !inFrame || numPendingStaging[pendingSet] < MAX_PENDING_STAGING;
+	return !inFrame || numDeferred < MAX_DEFERRED_COPIES;
+}
+
+int N3DSGPU_TexPending( void * handle ) {
+	for ( int i = 0; i < numDeferred; i++ ) {
+		if ( deferredTex[i] == (C3D_Tex *)handle ) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 unsigned int N3DSGPU_VRAMFree( void ) {
@@ -746,18 +789,16 @@ int N3DSGPU_TexUpload( void * handle, void * staging, unsigned int size ) {
 		linearFree( staging );
 		return 0;
 	}
-	if ( inFrame && numPendingStaging[pendingSet] >= MAX_PENDING_STAGING ) {
-		linearFree( staging );		// too many copies in one frame: try again next frame
-		return 0;
-	}
 	GSPGPU_FlushDataCache( staging, size );
 	if ( inFrame ) {
-		// Queued without splitting the frame: this frame's draws are only submitted
-		// at C3D_FrameEnd, behind the copy, and no draw recorded so far uses this
-		// (new) texture. One queue entry per copy (a split would take another).
-		// The staging buffer must live until the frame is done.
-		GX_TextureCopy( (u32 *)staging, 0, (u32 *)tex->data, 0, size, 8 );
-		pendingStaging[pendingSet][numPendingStaging[pendingSet]++] = staging;
+		if ( numDeferred >= MAX_DEFERRED_COPIES ) {
+			linearFree( staging );		// too many copies this frame: tried again later
+			return 0;
+		}
+		deferredTex[numDeferred] = tex;
+		deferredStaging[numDeferred] = staging;
+		deferredSize[numDeferred] = size;
+		numDeferred++;
 	} else {
 		// whole mip chain in one copy (the levels are contiguous in both buffers)
 		C3D_SyncTextureCopy( (u32 *)staging, 0, (u32 *)tex->data, 0, size, 8 );
@@ -770,6 +811,17 @@ void N3DSGPU_TexFree( void * handle ) {
 	C3D_Tex * tex = (C3D_Tex *)handle;
 	if ( tex == NULL ) {
 		return;
+	}
+	// a copy not done yet: dropped (the texture was never handed out)
+	for ( int i = 0; i < numDeferred; i++ ) {
+		if ( deferredTex[i] == tex ) {
+			linearFree( deferredStaging[i] );
+			numDeferred--;
+			deferredTex[i] = deferredTex[numDeferred];
+			deferredStaging[i] = deferredStaging[numDeferred];
+			deferredSize[i] = deferredSize[numDeferred];
+			break;
+		}
 	}
 	// no unit may keep pointing at it
 	for ( int unit = 0; unit < 3; unit++ ) {
