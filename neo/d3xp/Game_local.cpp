@@ -2328,6 +2328,7 @@ bool idGameLocal::SkipCinematic() {
 	}
 	soundSystem->SetMute( true );
 	if ( !skipCinematic ) {
+		Printf( "skipping cinematic (camera %s)\n", camera != NULL ? camera->GetName() : "none" );
 		skipCinematic = true;
 		cinematicSkipTime = time + SEC2MS( g_cinematicMaxSkipTime.GetFloat() );
 	}
@@ -4317,6 +4318,7 @@ void idGameLocal::SetCamera( idCamera *cam ) {
 	camera = cam;
 	if ( camera ) {
 		inCinematic = true;
+		Printf( "cinematic: camera %s\n", camera->GetName() );
 
 		// set r_znear so that transitioning into/out of the player's head doesn't clip through the view
 		cvarSystem->SetCVarFloat( "r_znear", 1.0f );

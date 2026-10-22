@@ -405,7 +405,7 @@ void idPlayerProfile::ExecConfig( bool save, bool forceDefault ) {
 		"bind JOY_STICK2_RIGHT _right\n"
 		"bind JOY_TRIGGER2 _attack\n"				// ZR: fire
 		"bind JOY_TRIGGER1 _impulse16\n"			// ZL: flashlight
-		"bind JOY1 _jump\n"						// A
+		"bind JOY1 _moveUp\n"						// A: jump (_moveUp is the jump action; there is no "_jump")
 		"bind JOY2 _moveDown\n"					// B: crouch
 		"bind JOY3 _impulse13\n"					// X: reload
 		"bind JOY4 _impulse14\n"					// Y: next weapon
@@ -417,6 +417,14 @@ void idPlayerProfile::ExecConfig( bool save, bool forceDefault ) {
 #endif
 
 	cmdSystem->ExecuteCommandBuffer();
+
+#if defined( ID_3DS )
+	// what the pad's look and move depend on (a settings menu or a saved profile can change them)
+	idLib::Printf( "controls: in_useJoystick %d joy_newCode %d joy_yawSpeed %.1f joy_pitchSpeed %.1f joy_deadZone %.2f joy_range %.2f in_invertLook %d leftyFlip %d customConfig %d\n",
+		cvarSystem->GetCVarInteger( "in_useJoystick" ), cvarSystem->GetCVarInteger( "joy_newCode" ), cvarSystem->GetCVarFloat( "joy_yawSpeed" ),
+		cvarSystem->GetCVarFloat( "joy_pitchSpeed" ), cvarSystem->GetCVarFloat( "joy_deadZone" ), cvarSystem->GetCVarFloat( "joy_range" ),
+		cvarSystem->GetCVarInteger( "in_invertLook" ), leftyFlip ? 1 : 0, customConfig ? 1 : 0 );
+#endif
 	
 	if ( !save ) {
 		cvarSystem->ClearModifiedFlags( CVAR_ARCHIVE );
