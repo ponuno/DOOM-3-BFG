@@ -227,7 +227,7 @@ image load; `idBinaryImage::LoadFromGeneratedFile` looks every 2D image up by th
 generated file name. A packed image is streamed from the pack by the texture loader thread when
 first drawn, like the kept levels of the old path, and uploaded with one copy. The chain is cut to
 `n3ds_texWorldMaxSize` (256), `n3ds_texBumpMaxSize` (128), `n3ds_texSpecMaxSize` (128),
-`n3ds_texGuiMaxSize`, `n3ds_texFontMaxSize` by starting further down it. Images the pack does not
+`n3ds_texGuiMaxSize`, `n3ds_texFontPackSize` (512) by starting further down it. Images the pack does not
 have, and everything with `+set n3ds_texPack 0`, take the old path (`n3ds_texMaxSize`, decoded on
 the console). The log says `citro3d: texture pack ...: N textures` or `no texture pack`, and the
 `PERF citro3d: tex` line counts uploads from the pack and packed textures.
@@ -370,6 +370,7 @@ turns it off.
 | `n3ds_texWorldMaxSize` | 256 | texture pack: largest world texture (the top of the chain is skipped) |
 | `n3ds_texBumpMaxSize` | 128 | texture pack: largest normal map |
 | `n3ds_texSpecMaxSize` | 128 | texture pack: largest specular map |
+| `n3ds_texFontPackSize` | 512 | texture pack: largest font atlas on the GPU (A8; 512 as the console path) |
 | `n3ds_texFontMaxSize` | 1024 | largest font atlas level kept (A8) |
 | `n3ds_texLinearKB` | 3072 | textures that do not fit in VRAM go to linear memory (FCRAM) up to this much; the GPU samples them from there |
 | `n3ds_texLinearReserveKB` | 2048 | linear memory the texture cache always leaves free |

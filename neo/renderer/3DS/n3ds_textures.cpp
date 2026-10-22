@@ -70,6 +70,9 @@ idCVar n3ds_texPack( "n3ds_texPack", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT,
 idCVar n3ds_texWorldMaxSize( "n3ds_texWorldMaxSize", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest world texture (larger pack levels are skipped)", 8, 1024 );
 idCVar n3ds_texBumpMaxSize( "n3ds_texBumpMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest normal map", 8, 1024 );
 idCVar n3ds_texSpecMaxSize( "n3ds_texSpecMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest specular map", 8, 1024 );
+// the console path keeps a font level up to n3ds_texFontMaxSize (1024: 512x640 of a 1024x1280
+// atlas) and fits it into 512x512 on the GPU; the pack's chain starts at 1024x1024, 1.3 MB
+idCVar n3ds_texFontPackSize( "n3ds_texFontPackSize", "512", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest font atlas on the GPU (A8)", 8, 1024 );
 
 struct n3dsTexture_t {
 	idImage *			image;
@@ -623,7 +626,7 @@ void RB_N3DS_ImagePacked( idImage * image, const n3dsPackEntry_t * e, int wrap )
 	} else if ( e->usage == TD_SPECULAR ) {
 		cap = n3ds_texSpecMaxSize.GetInteger();
 	} else if ( e->usage == TD_FONT ) {
-		cap = n3ds_texFontMaxSize.GetInteger();
+		cap = n3ds_texFontPackSize.GetInteger();
 	} else if ( N3DS_IsGuiImage( image->GetName() ) || ( e->usage >= TD_LOOKUP_TABLE_MONO && e->usage <= TD_LOOKUP_TABLE_RGBA ) ) {
 		cap = n3ds_texGuiMaxSize.GetInteger();
 	}
