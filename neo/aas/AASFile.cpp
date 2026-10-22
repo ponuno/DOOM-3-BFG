@@ -1098,7 +1098,8 @@ idAASFileLocal::Load
 ================
 */
 bool idAASFileLocal::Load( const idStr &fileName, unsigned int mapFileCRC ) {
-	idLexer src( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGESCAPECHARS | LEXFL_NOSTRINGCONCAT | LEXFL_ALLOWPATHNAMES );
+	// streamed: .aas files are several MB of text (erebus5.aas48: 5.5 MB)
+	idLexer src( LEXFL_NOFATALERRORS | LEXFL_NOSTRINGESCAPECHARS | LEXFL_NOSTRINGCONCAT | LEXFL_ALLOWPATHNAMES | LEXFL_STREAMFILE );
 	idToken token;
 	int depth;
 	unsigned int c;
