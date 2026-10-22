@@ -414,7 +414,7 @@ turns it off.
 | `n3ds_renderer` | 1 | 0 = null GL (nothing drawn), 1 = citro3d (stage 3: diffuse textures, per-vertex lights) |
 | `n3ds_textures` | 1 | citro3d: 0 = flat colour per material |
 | `n3ds_texMaxSize` | 128 | largest texture side; set at startup (the kept level is chosen at load) |
-| `n3ds_texUploadsPerFrame` | 4 | textures decoded and copied to VRAM per frame |
+| `n3ds_texUploadsPerFrame` | 8 | textures decoded and copied to VRAM per frame |
 | `n3ds_texFlip` | 1 | texture rows stored bottom-up; toggle if textures are upside down |
 | `n3ds_texMips` | 1 | mip maps |
 | `n3ds_texUploadsAfterLoad` | 256 | upload limit for the first 20 frames after a map load (at most 24 copies fit in one frame) |
@@ -457,7 +457,7 @@ turns it off.
 | `n3ds_texLinearKB` | 3072 | textures that do not fit in VRAM go to linear memory (FCRAM) up to this much; the GPU samples them from there |
 | `n3ds_texLinearReserveKB` | 2048 | linear memory the texture cache always leaves free |
 | `n3ds_texStream` | 1 | texture levels read from SD when first drawn instead of all kept in RAM (applies to images loaded afterwards) |
-| `n3ds_texRAMCacheKB` | 1024 | RAM for already uploaded streamed levels, so VRAM evictions come back without a read |
+| `n3ds_texRAMCacheKB` | 4096 | RAM for already uploaded streamed levels, so VRAM evictions come back without a read |
 | `n3ds_tourFrames` | 600 | map tour: frames each map runs before the next |
 | `n3ds_hudScale` | 1.8 | HUD size relative to fitting the 720-line SWF stage to the 240-line screen; edge-anchored elements stay at the edges |
 | `n3ds_uiScale` | 1.35 | same for menus, PDA, loading screen and dialogs; too large crops unanchored elements |

@@ -58,11 +58,11 @@ idCVar n3ds_texFontA8( "n3ds_texFontA8", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_I
 idCVar n3ds_texFontMaxSize( "n3ds_texFontMaxSize", "1024", CVAR_RENDERER | CVAR_INTEGER, "citro3d: largest font atlas size (fonts are alpha-only A8 textures)", 8, 1024 );
 idCVar n3ds_texGuiMaxSize( "n3ds_texGuiMaxSize", "512", CVAR_RENDERER | CVAR_INTEGER, "citro3d: largest texture size for GUI / HUD / font images (guis/, generated/swf/, newfonts/, fonts/)", 8, 1024 );
 idCVar n3ds_texMips( "n3ds_texMips", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: build mip maps" );
-idCVar n3ds_texUploadsPerFrame( "n3ds_texUploadsPerFrame", "4", CVAR_RENDERER | CVAR_INTEGER, "citro3d: textures decoded and copied to VRAM per frame at most", 1, 64 );
+idCVar n3ds_texUploadsPerFrame( "n3ds_texUploadsPerFrame", "8", CVAR_RENDERER | CVAR_INTEGER, "citro3d: textures decoded and copied to VRAM per frame at most", 1, 64 );
 idCVar n3ds_texUploadsAfterLoad( "n3ds_texUploadsAfterLoad", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d: texture upload limit for the first 20 3D frames after a map load (the GX queue caps it at 24)" );
 idCVar n3ds_texFlip( "n3ds_texFlip", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: store texture rows bottom-up (the PICA samples t = 0 at the last row); toggle if textures are upside down" );
 idCVar n3ds_texStream( "n3ds_texStream", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: read texture levels from disk when first drawn instead of keeping them all in RAM (set at startup; applies to images loaded afterwards)" );
-idCVar n3ds_texRAMCacheKB( "n3ds_texRAMCacheKB", "1024", CVAR_RENDERER | CVAR_INTEGER, "citro3d: RAM kept for streamed texture levels already uploaded, so that textures evicted from VRAM come back without a read" );
+idCVar n3ds_texRAMCacheKB( "n3ds_texRAMCacheKB", "4096", CVAR_RENDERER | CVAR_INTEGER, "citro3d: RAM kept for streamed texture levels already uploaded, so that textures evicted from VRAM come back without a read" );
 idCVar n3ds_texLinearKB( "n3ds_texLinearKB", "3072", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory (FCRAM) for textures that do not fit in VRAM; the GPU samples them from there" );
 idCVar n3ds_texLinearReserveKB( "n3ds_texLinearReserveKB", "2048", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory the texture cache always leaves free (citro3d, staging copies)" );
 idCVar n3ds_texVRAMReserveKB( "n3ds_texVRAMReserveKB", "64", CVAR_RENDERER | CVAR_INTEGER, "citro3d: VRAM left free by the texture cache" );
@@ -1069,6 +1069,21 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 			if ( gpu != NULL ) {
 				break;
 			}
+			// enough VRAM in total but no block that large (fragmented): an eviction only
+			// shows once its memory is back, so one victim now and linear memory meanwhile
+			n3dsTexture_t * victim = NULL;
+			for ( n3dsTexture_t * v = lruTail; v != NULL && v->lastFrame < texFrame; v = v->lruPrev ) {
+				if ( !v->inLinear ) {
+					victim = v;
+					break;
+				}
+			}
+			if ( victim != NULL ) {
+				N3DS_TexDropGPU( victim );
+				statEvictions++;
+				vramComing = true;
+			}
+			break;
 		}
 		// an evicted texture's VRAM is only given back once the GPU has finished the frames
 		// that may sample it, so evicting more now frees nothing more now: before this, the
@@ -1093,12 +1108,6 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		N3DS_TexDropGPU( victim );
 		statEvictions++;
 	}
-	if ( gpu == NULL && vramComing ) {
-		// tried again next frame, when the released VRAM is back
-		t->retryFrame = texFrame + 1;
-		statDeferred++;
-		return false;
-	}
 	if ( gpu == NULL ) {
 		// VRAM is full of textures this frame draws (a world in view behind a menu, a
 		// cutscene with many screens): the GPU can sample from linear memory too
@@ -1109,7 +1118,8 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 			statUploadUs += Sys_Microseconds() - start;
 			return true;
 		}
-		if ( linearComing ) {
+		if ( linearComing || vramComing ) {
+			// memory released this frame comes back in a frame or two
 			t->retryFrame = texFrame + 1;
 			statDeferred++;
 			return false;
