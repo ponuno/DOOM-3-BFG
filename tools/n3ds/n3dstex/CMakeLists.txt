@@ -1,0 +1,15 @@
+# n3dstex: host tool (PC), not part of the 3DS build.
+#   cmake -S tools/n3ds/n3dstex -B build-n3dstex && cmake --build build-n3dstex
+cmake_minimum_required(VERSION 3.10)
+project(n3dstex CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(NOT CMAKE_BUILD_TYPE)
+	set(CMAKE_BUILD_TYPE Release)
+endif()
+add_executable(n3dstex n3dstex.cpp rg_etc1.cpp)
+find_package(Threads REQUIRED)
+target_link_libraries(n3dstex PRIVATE Threads::Threads)
+if(MINGW)
+	target_link_options(n3dstex PRIVATE -static)
+endif()
