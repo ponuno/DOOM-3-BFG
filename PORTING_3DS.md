@@ -48,6 +48,7 @@ Target: armv6k / MPCore, VFPv2, hard-float, C++14 (gnu), exceptions ON
     sdmc:/doom3/base/_sound_pc.resources
     sdmc:/doom3/base/_sound_pc_<language>.resources   (e.g. _sound_pc_en.resources)
     sdmc:/doom3/base/maps/<map>.resources
+    sdmc:/doom3/base/_n3ds_textures.pak  (optional, made on the PC by n3dstex: see "Texture pack")
     sdmc:/doom3/cmdline.txt          (optional: extra command line, e.g. "+map game/mars_city1")
     sdmc:/doom3/log.txt              (written by the game)
     sdmc:/doom3/save/                (fs_savepath)
@@ -165,6 +166,44 @@ away from any frame still on the GPU. The GUI model's block is 32768 vertexes / 
 (16-bit indexes; the PC's 80000 vertexes could not all be addressed). Released textures are
 deleted only once the frames that may sample them are finished, and are unbound first.
 
+## Texture pack (tools/n3ds/n3dstex)
+
+`n3dstex` converts every 2D image of the game's `.resources` files on the PC into what the
+PICA200 samples directly, and writes them into one file, `_n3ds_textures.pak`
+(format: `neo/renderer/3DS/n3ds_pack.h`). Each texture is its whole mip chain (down to 8 on the
+short side), flipped and tiled as the backend lays textures out, so the console copies it to
+VRAM as it is. With the pack the console decodes no DXT, resamples and tiles nothing, and does not
+open the `.bimage` files at all at map load (the pack entry carries the header fields).
+
+| image (usage from the `#__UUCC` in the name) | pack format | default size |
+|---|---|---|
+| diffuse, default, light, specular | ETC1 (4 bpp), ETC1A4 (8 bpp) when the alpha is used | world 256, specular 128, light 128 |
+| bump (normal maps; BFG: DXT5 with x in alpha, y in green) | HILO8 (x hi, y lo; z rebuilt by the GPU) | 128 |
+| coverage (alpha-test masks) | A4 | world |
+| fonts | A8 | 1024 |
+| GUI art (`guis/`, `generated/swf/`), lookup tables | RGB565 / RGBA5551 / RGBA4 | 512 / 256 |
+
+Cube maps are left out (the backend does not draw them). Normal maps are renormalized on
+every mip level; the ETC1 blocks come from rg_etc1 (zlib licence), medium quality by default.
+
+    n3dstex <base folder> [-o file] [-world 256] [-bump 128] [-spec 128] [-light 128] [-gui 512]
+            [-font 1024] [-q 0|1|2] [-j threads] [-only text] [-preview dir] [-list] [-v]
+
+`<base folder>`: the one with `_common.resources` and `maps/` (the PC game's `base`, or a copy
+of the SD card's `doom3/base`); the pack is written there unless `-o` says otherwise and goes to
+`sdmc:/doom3/base/`. It must stay under 2 GB. `tools/n3ds/n3dstex/build.sh` builds the Linux
+binary and, with llvm-mingw, a static `n3dstex.exe`; `CMakeLists.txt` there builds it on any PC.
+
+On the console (`n3ds_textures.cpp`): the pack index (40 bytes per texture) is read at the first
+image load; `idBinaryImage::LoadFromGeneratedFile` looks every 2D image up by the hash of its
+generated file name. A packed image is streamed from the pack by the texture loader thread when
+first drawn, like the kept levels of the old path, and uploaded with one copy. The chain is cut to
+`n3ds_texWorldMaxSize` (256), `n3ds_texBumpMaxSize` (128), `n3ds_texSpecMaxSize` (128),
+`n3ds_texGuiMaxSize`, `n3ds_texFontMaxSize` by starting further down it. Images the pack does not
+have, and everything with `+set n3ds_texPack 0`, take the old path (`n3ds_texMaxSize`, decoded on
+the console). The log says `citro3d: texture pack ...: N textures` or `no texture pack`, and the
+`PERF citro3d: tex` line counts uploads from the pack and packed textures.
+
 ## Memory modes and the second heap
 
 | | .3dsx (124 MB) | CIA (178 MB) |
@@ -273,6 +312,10 @@ turns it off.
 | `n3ds_soundVolume` | 1 | DSP master volume |
 | `n3ds_ambientStages` | 1 | ambient/blended stages and fullscreen GUIs |
 | `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD texture |
+| `n3ds_texPack` | 1 | take textures from `base/_n3ds_textures.pak` (n3dstex) when it is there |
+| `n3ds_texWorldMaxSize` | 256 | texture pack: largest world texture (the top of the chain is skipped) |
+| `n3ds_texBumpMaxSize` | 128 | texture pack: largest normal map |
+| `n3ds_texSpecMaxSize` | 128 | texture pack: largest specular map |
 | `n3ds_texFontMaxSize` | 1024 | largest font atlas level kept (A8) |
 | `n3ds_texLinearKB` | 3072 | textures that do not fit in VRAM go to linear memory (FCRAM) up to this much; the GPU samples them from there |
 | `n3ds_texLinearReserveKB` | 2048 | linear memory the texture cache always leaves free |

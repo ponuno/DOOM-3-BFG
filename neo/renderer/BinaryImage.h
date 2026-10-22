@@ -63,6 +63,11 @@ public:
 	static int			keptLevelIndex;
 	static idStr		keptLevelPath;
 	static int			keptLevelOffset;
+						// New 3DS texture pack (_n3ds_textures.pak): with usePack set, an image
+						// the pack holds is not read at all; its header comes from the pack and
+						// packEntry (an n3dsPackEntry_t) says where its GPU data is
+	static bool			usePack;
+	static const void *	packEntry;
 	ID_TIME_T			WriteGeneratedFile( ID_TIME_T sourceFileTime );
 
 	const bimageFile_t &	GetFileHeader() { return fileData; }

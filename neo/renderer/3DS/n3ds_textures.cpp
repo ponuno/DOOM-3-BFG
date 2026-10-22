@@ -33,6 +33,14 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 	cache: textures not used in the current frame are evicted when space runs out,
 	and come back from the kept level when they are seen again.
 
+	Texture pack (_n3ds_textures.pak, made on the PC by tools/n3ds/n3dstex): an image the
+	pack holds is not read from its .bimage at all. Its GPU data - ETC1 / ETC1A4 world
+	textures, HILO8 normal maps, A4 / A8 masks and fonts, 16-bit GUI art, whole mip
+	chains already tiled - is streamed from the pack like the kept levels above and
+	copied to VRAM as it is: no decoding, no resampling, a quarter of the VRAM of RGB565
+	for world textures. The n3ds_tex*MaxSize cvars cut the top levels off the chain.
+	Images the pack lacks take the old path.
+
 ================================================================================================
 */
 
@@ -42,6 +50,7 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 #include "n3ds_gpu.h"
 #include "n3ds_texconv.h"
 #include "n3ds_textures.h"
+#include "n3ds_pack.h"
 
 idCVar n3ds_textures( "n3ds_textures", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: draw textures (0 = flat colours)" );
 idCVar n3ds_texMaxSize( "n3ds_texMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d: largest texture size; the level kept at load is the largest one not over this", 8, 512 );
@@ -57,6 +66,10 @@ idCVar n3ds_texRAMCacheKB( "n3ds_texRAMCacheKB", "1024", CVAR_RENDERER | CVAR_IN
 idCVar n3ds_texLinearKB( "n3ds_texLinearKB", "3072", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory (FCRAM) for textures that do not fit in VRAM; the GPU samples them from there" );
 idCVar n3ds_texLinearReserveKB( "n3ds_texLinearReserveKB", "2048", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory the texture cache always leaves free (citro3d, staging copies)" );
 idCVar n3ds_texVRAMReserveKB( "n3ds_texVRAMReserveKB", "64", CVAR_RENDERER | CVAR_INTEGER, "citro3d: VRAM left free by the texture cache" );
+idCVar n3ds_texPack( "n3ds_texPack", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT, "citro3d: take textures from base/_n3ds_textures.pak (converted on the PC by n3dstex) when it is there" );
+idCVar n3ds_texWorldMaxSize( "n3ds_texWorldMaxSize", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest world texture (larger pack levels are skipped)", 8, 1024 );
+idCVar n3ds_texBumpMaxSize( "n3ds_texBumpMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest normal map", 8, 1024 );
+idCVar n3ds_texSpecMaxSize( "n3ds_texSpecMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest specular map", 8, 1024 );
 
 struct n3dsTexture_t {
 	idImage *			image;
@@ -71,6 +84,13 @@ struct n3dsTexture_t {
 	bool				alphaOnly;		// coverage images: only the alpha is used
 	int					maxSize;		// largest side on the GPU
 	bool				unsupported;	// the level cannot be decoded
+	// from the texture pack: data is the GPU chain itself (width / height / packMaxLevel,
+	// gpuFormat N3DS_TEX_*), copied as it is
+	bool				packed;
+	int					gpuFormat;
+	int					packMaxLevel;
+	bool				packHasAlpha;
+	int					usage;			// textureUsage_t (packed images)
 	// on the GPU
 	void *				gpu;
 	int					gpuBytes;
@@ -494,6 +514,166 @@ void RB_N3DS_ImageLevelStreamed( idImage * image, int format, int colorFormat, i
 }
 
 /*
+================================================================================================
+
+	Texture pack
+
+================================================================================================
+*/
+static bool					packTried = false;
+static n3dsPackEntry_t *	packEntries = NULL;
+static int					packNum = 0;
+static idStrStatic< MAX_OSPATH >	packOSPath;
+static int					statPackedUploads = 0;
+static int					packedCount = 0;		// textures from the pack (loaded images)
+
+static void N3DS_PackInit() {
+	packTried = true;
+	if ( !r_n3dsC3D || !n3ds_texPack.GetBool() ) {
+		return;
+	}
+	const char * osPath = fileSystem->RelativePathToOSPath( "_n3ds_textures.pak", "fs_basepath" );
+	FILE * f = fopen( osPath, "rb" );
+	if ( f == NULL ) {
+		common->Printf( "citro3d: no texture pack (%s): textures are converted on the console\n", osPath );
+		return;
+	}
+	n3dsPackHeader_t header;
+	bool ok = fread( &header, sizeof( header ), 1, f ) == 1 && header.magic == N3DS_PACK_MAGIC && header.version == N3DS_PACK_VERSION;
+	long fileLength = 0;
+	if ( ok && fseek( f, 0, SEEK_END ) == 0 ) {
+		fileLength = ftell( f );
+	}
+	ok = ok && header.numEntries > 0 && header.numEntries < 1000000 &&
+		(uint64)header.entryOffset + (uint64)header.numEntries * sizeof( n3dsPackEntry_t ) <= (uint64)fileLength;
+	if ( ok ) {
+		packEntries = (n3dsPackEntry_t *)Mem_Alloc( header.numEntries * sizeof( n3dsPackEntry_t ), TAG_IMAGE );
+		ok = fseek( f, header.entryOffset, SEEK_SET ) == 0 &&
+			fread( packEntries, sizeof( n3dsPackEntry_t ), header.numEntries, f ) == header.numEntries;
+		if ( !ok ) {
+			Mem_Free( packEntries );
+			packEntries = NULL;
+		}
+	}
+	fclose( f );
+	if ( !ok ) {
+		common->Warning( "citro3d: %s is not a texture pack of version %d or is damaged (convert again with n3dstex)", osPath, N3DS_PACK_VERSION );
+		return;
+	}
+	packNum = header.numEntries;
+	packOSPath = osPath;
+	common->Printf( "citro3d: texture pack %s: %d textures, %d MB (converted with world %d, bump %d, specular %d, gui %d)\n",
+		osPath, packNum, (int)( fileLength >> 20 ), header.maxWorld, header.maxBump, header.maxSpecular, header.maxGui );
+}
+
+const n3dsPackEntry_t * RB_N3DS_PackFind( const char * generatedFileName ) {
+	if ( !packTried ) {
+		N3DS_PackInit();
+	}
+	if ( packEntries == NULL || generatedFileName == NULL ) {
+		return NULL;
+	}
+	const uint64 h = N3DS_PackHash( generatedFileName );
+	int lo = 0, hi = packNum - 1;
+	while ( lo <= hi ) {
+		const int mid = ( lo + hi ) >> 1;
+		const uint64 m = packEntries[mid].nameHash;
+		if ( m == h ) {
+			return &packEntries[mid];
+		}
+		if ( m < h ) {
+			lo = mid + 1;
+		} else {
+			hi = mid - 1;
+		}
+	}
+	return NULL;
+}
+
+static int N3DS_PackFormat( int packFormat ) {
+	switch ( packFormat ) {
+		case N3DS_PACKFMT_RGB565:	return N3DS_TEX_RGB565;
+		case N3DS_PACKFMT_RGBA5551:	return N3DS_TEX_RGBA5551;
+		case N3DS_PACKFMT_RGBA4:	return N3DS_TEX_RGBA4;
+		case N3DS_PACKFMT_A8:		return N3DS_TEX_A8;
+		case N3DS_PACKFMT_ETC1:		return N3DS_TEX_ETC1;
+		case N3DS_PACKFMT_ETC1A4:	return N3DS_TEX_ETC1A4;
+		case N3DS_PACKFMT_HILO8:	return N3DS_TEX_HILO8;
+		case N3DS_PACKFMT_A4:		return N3DS_TEX_A4;
+		default:					return -1;
+	}
+}
+
+/*
+========================
+RB_N3DS_ImagePacked
+
+The image is in the texture pack: its chain is read from there when it is first drawn.
+========================
+*/
+void RB_N3DS_ImagePacked( idImage * image, const n3dsPackEntry_t * e, int wrap ) {
+	RB_N3DS_ImagePurged( image );
+	const int gpuFormat = N3DS_PackFormat( e->gpuFormat );
+	if ( gpuFormat < 0 || e->width < 8 || e->height < 8 ) {
+		return;
+	}
+	int cap = n3ds_texWorldMaxSize.GetInteger();
+	if ( e->usage == TD_BUMP ) {
+		cap = n3ds_texBumpMaxSize.GetInteger();
+	} else if ( e->usage == TD_SPECULAR ) {
+		cap = n3ds_texSpecMaxSize.GetInteger();
+	} else if ( e->usage == TD_FONT ) {
+		cap = n3ds_texFontMaxSize.GetInteger();
+	} else if ( N3DS_IsGuiImage( image->GetName() ) || ( e->usage >= TD_LOOKUP_TABLE_MONO && e->usage <= TD_LOOKUP_TABLE_RGBA ) ) {
+		cap = n3ds_texGuiMaxSize.GetInteger();
+	}
+	// the chain from the first level that fits (each level is half the one before)
+	int level = 0;
+	while ( level < e->maxLevel && ( ( e->width >> level ) > cap || ( e->height >> level ) > cap ) ) {
+		level++;
+	}
+	const uint32 skip = N3DS_PackLevelOffset( e->gpuFormat, e->width, e->height, level );
+	const uint64 offset = (uint64)e->dataOffset * N3DS_PACK_ALIGN + skip;
+	if ( skip >= e->dataSize || offset > 0x7FFFFFFF ) {
+		return;
+	}
+	texLoadLock.Lock();
+	const int pathIndex = N3DS_TexPathIndex( packOSPath.c_str() );
+	if ( pathIndex >= 0 ) {
+		texPaths[pathIndex].refs++;
+		streamedCount++;
+		streamedBytes += e->dataSize - skip;
+	}
+	texLoadLock.Unlock();
+	if ( pathIndex < 0 ) {
+		common->Warning( "citro3d: more than %d texture source files, %s is not drawn", TEX_MAX_PATHS, image->GetName() );
+		return;
+	}
+	n3dsTexture_t * t = new (TAG_IMAGE) n3dsTexture_t;
+	memset( t, 0, sizeof( *t ) );
+	t->image = image;
+	t->format = e->srcFormat;
+	t->colorFormat = e->srcColorFormat;
+	t->width = e->width >> level;
+	t->height = e->height >> level;
+	t->dataSize = e->dataSize - skip;
+	t->data = NULL;
+	t->wrap = wrap;
+	t->alphaOnly = ( e->flags & N3DS_PACKFLAG_ALPHAONLY ) != 0;
+	t->maxSize = cap;
+	t->packed = true;
+	t->gpuFormat = gpuFormat;
+	t->packMaxLevel = e->maxLevel - level;
+	t->packHasAlpha = ( e->flags & N3DS_PACKFLAG_ALPHA ) != 0;
+	t->usage = e->usage;
+	t->streamPath = pathIndex;
+	t->streamOffset = (int)offset;
+	t->loadState = TEX_IDLE;
+	image->n3dsTex = t;
+	packedCount++;
+}
+
+/*
 ========================
 RB_N3DS_ImagePurged
 ========================
@@ -506,6 +686,9 @@ void RB_N3DS_ImagePurged( idImage * image ) {
 	N3DS_TexDropGPU( t );
 	image->n3dsTex = NULL;
 	RAM_Unlink( t );
+	if ( t->packed ) {
+		packedCount--;
+	}
 	texLoadLock.Lock();
 	if ( t->loadState == TEX_LOADING ) {
 		t->orphan = true;		// the loader thread is writing into it: it deletes it when done
@@ -584,6 +767,19 @@ static void N3DS_TexFailed( n3dsTexture_t * t, const n3dsTexLayout_t & layout, c
 N3DS_TexUpload
 ========================
 */
+// the GPU chain: from the pack as it is, else built from the decoded level
+static void N3DS_TexFill( const n3dsTexture_t * t, const n3dsTexLayout_t & layout, const byte * rgba, byte * dst ) {
+	if ( t->packed ) {
+		memcpy( dst, t->data, layout.bytes );
+	} else {
+		N3DS_BuildTexture( rgba, t->width, t->height, layout, n3ds_texFlip.GetBool(), dst );
+	}
+}
+
+static bool N3DS_TexHasAlpha( const n3dsTexture_t * t, const n3dsTexLayout_t & layout ) {
+	return t->packed ? t->packHasAlpha : ( layout.format != N3DS_TEXCONV_RGB565 );
+}
+
 // VRAM full: the texture goes to linear memory, within n3ds_texLinearKB, evicting linear
 // textures this frame does not use. Written in place, no copy.
 static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & layout, const byte * rgba ) {
@@ -611,13 +807,13 @@ static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & lay
 		N3DS_TexDropGPU( victim );
 		statEvictions++;
 	}
-	N3DS_BuildTexture( rgba, t->width, t->height, layout, n3ds_texFlip.GetBool(), (byte *)N3DSGPU_TexData( gpu ) );
+	N3DS_TexFill( t, layout, rgba, (byte *)N3DSGPU_TexData( gpu ) );
 	N3DSGPU_TexFlush( gpu, layout.bytes );
 	t->gpu = gpu;
 	t->gpuBytes = layout.bytes;
 	t->inLinear = true;
 	t->everUploaded = true;
-	t->gpuHasAlpha = ( layout.format != N3DS_TEXCONV_RGB565 );
+	t->gpuHasAlpha = N3DS_TexHasAlpha( t, layout );
 	residentCount++;
 	residentBytes += layout.bytes;
 	linearTexBytes += layout.bytes;
@@ -632,8 +828,16 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 	if ( t->data == NULL ) {
 		return false;		// nothing to decode (a streamed level not in memory): not "unsupported"
 	}
-	idTempArray<byte> rgba( t->width * t->height * 4 );
-	if ( !N3DS_DecodeLevel( t->format, t->colorFormat, t->width, t->height, t->data, t->dataSize, rgba.Ptr() ) ) {
+	n3dsTexLayout_t layout;
+	idTempArray<byte> rgba( t->packed ? 4 : t->width * t->height * 4 );
+	if ( t->packed ) {
+		// converted on the PC: the data is the chain
+		layout.width = t->width;
+		layout.height = t->height;
+		layout.maxLevel = t->packMaxLevel;
+		layout.format = t->gpuFormat;
+		layout.bytes = t->dataSize;
+	} else if ( !N3DS_DecodeLevel( t->format, t->colorFormat, t->width, t->height, t->data, t->dataSize, rgba.Ptr() ) ) {
 		t->unsupported = true;
 		statFailed++;
 		static int undecodableLogged = 0;
@@ -643,9 +847,9 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 				t->image->GetName(), t->width, t->height, t->format, t->colorFormat, t->dataSize );
 		}
 		return false;
+	} else {
+		N3DS_ChooseLayout( rgba.Ptr(), t->width, t->height, t->maxSize, n3ds_texMips.GetBool(), t->alphaOnly, layout );
 	}
-	n3dsTexLayout_t layout;
-	N3DS_ChooseLayout( rgba.Ptr(), t->width, t->height, t->maxSize, n3ds_texMips.GetBool(), t->alphaOnly, layout );
 
 	// room in VRAM: evict textures that the current frame does not use
 	const unsigned int reserve = (unsigned int)Max( 0, n3ds_texVRAMReserveKB.GetInteger() ) * 1024;
@@ -676,6 +880,7 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		// cutscene with many screens): the GPU can sample from linear memory too
 		if ( N3DS_TexUploadLinear( t, layout, rgba.Ptr() ) ) {
 			statUploads++;
+			statPackedUploads += t->packed ? 1 : 0;
 			statUploadUs += Sys_Microseconds() - start;
 			return true;
 		}
@@ -689,7 +894,7 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		N3DS_TexFailed( t, layout, "no linear memory for the staging copy" );
 		return false;
 	}
-	N3DS_BuildTexture( rgba.Ptr(), t->width, t->height, layout, n3ds_texFlip.GetBool(), staging );
+	N3DS_TexFill( t, layout, rgba.Ptr(), staging );
 	if ( !N3DSGPU_TexUpload( gpu, staging, layout.bytes ) ) {		// takes the staging buffer
 		N3DSGPU_TexFree( gpu );
 		N3DS_TexFailed( t, layout, "copy refused (size mismatch or GX queue full)" );
@@ -699,11 +904,12 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 	t->gpu = gpu;
 	t->gpuBytes = layout.bytes;
 	t->everUploaded = true;
-	t->gpuHasAlpha = ( layout.format != N3DS_TEXCONV_RGB565 );
+	t->gpuHasAlpha = N3DS_TexHasAlpha( t, layout );
 	residentCount++;
 	residentBytes += layout.bytes;
 	LRU_PushFront( t );
 	statUploads++;
+	statPackedUploads += t->packed ? 1 : 0;
 	statUploadUs += Sys_Microseconds() - start;
 	return true;
 }
@@ -797,12 +1003,12 @@ void N3DS_TexStatsLine( idStr & line ) {
 	statReadUs = 0;
 	const int queued = texQueueCount;
 	texLoadLock.Unlock();
-	line.Format( "tex %d resident %d KB (%d KB in linear memory, %d put there), VRAM free %u KB, %d uploads (%.1f ms each), %d evictions, %d waiting, %d undecodable | kept %d levels %d KB | streamed %d levels %d KB, %d reads %d KB (%.1f ms each), %d failed, %d waits, %d queued, RAM cache %d KB",
-		residentCount, residentBytes / 1024, linearTexBytes / 1024, statLinearUploads, N3DSGPU_VRAMFree() / 1024, statUploads,
+	line.Format( "tex %d resident %d KB (%d KB in linear memory, %d put there), VRAM free %u KB, %d uploads (%d from the pack, %.1f ms each), %d evictions, %d waiting, %d undecodable | kept %d levels %d KB | streamed %d levels %d KB (%d packed), %d reads %d KB (%.1f ms each), %d failed, %d waits, %d queued, RAM cache %d KB",
+		residentCount, residentBytes / 1024, linearTexBytes / 1024, statLinearUploads, N3DSGPU_VRAMFree() / 1024, statUploads, statPackedUploads,
 		statUploads > 0 ? statUploadUs * 0.001f / statUploads : 0.0f, statEvictions, statDeferred, statFailed,
-		keptCount, keptBytes / 1024, streamedCount, streamedBytes / 1024, reads, readBytes / 1024,
+		keptCount, keptBytes / 1024, streamedCount, streamedBytes / 1024, packedCount, reads, readBytes / 1024,
 		reads > 0 ? readUs * 0.001f / reads : 0.0f, readFailures, statStreamWaits, queued, ramBytes / 1024 );
-	statUploads = statEvictions = statDeferred = statFailed = statStreamWaits = statLinearUploads = 0;
+	statUploads = statEvictions = statDeferred = statFailed = statStreamWaits = statLinearUploads = statPackedUploads = 0;
 	statUploadUs = 0;
 }
 

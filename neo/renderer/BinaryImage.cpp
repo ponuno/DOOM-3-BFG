@@ -349,6 +349,29 @@ Load the preprocessed image from the generated folder.
 ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime ) {
 	idStr binaryFileName;
 	MakeGeneratedFileName( binaryFileName );
+#if defined( ID_3DS )
+	packEntry = NULL;
+	if ( usePack ) {
+		// converted on the PC: the pack has the header fields and the GPU data, the
+		// .bimage is not opened
+		const n3dsPackEntry_t * e = RB_N3DS_PackFind( binaryFileName.c_str() );
+		if ( e != NULL ) {
+			memset( &fileData, 0, sizeof( fileData ) );
+			fileData.sourceFileTime = (ID_TIME_T)e->sourceFileTime;
+			fileData.headerMagic = BIMAGE_MAGIC;
+			fileData.textureType = TT_2D;
+			fileData.format = e->srcFormat;
+			fileData.colorFormat = e->srcColorFormat;
+			fileData.width = e->srcWidth;
+			fileData.height = e->srcHeight;
+			fileData.numLevels = e->srcNumLevels;
+			images.Clear();
+			packEntry = e;
+			const ID_TIME_T t = (ID_TIME_T)e->sourceFileTime;
+			return ( t == FILE_NOT_FOUND_TIMESTAMP ) ? 0 : t;
+		}
+	}
+#endif
 	idFileLocal bFile = fileSystem->OpenFileRead( binaryFileName );
 	if ( bFile == NULL ) {
 		return FILE_NOT_FOUND_TIMESTAMP;
@@ -360,6 +383,8 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime ) {
 }
 
 bool idBinaryImage::skipPixelData = false;
+bool idBinaryImage::usePack = false;
+const void * idBinaryImage::packEntry = NULL;
 int idBinaryImage::keepLevelMaxSize = 0;
 bool idBinaryImage::streamKeptLevel = false;
 int idBinaryImage::keptLevelIndex = -1;

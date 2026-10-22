@@ -177,6 +177,10 @@ void RB_N3DS_ImageLevelStreamed( idImage * image, int format, int colorFormat, i
 bool RB_N3DS_TexStreaming();		// kept levels are read from disk when drawn, not kept in RAM
 void RB_N3DS_ImagePurged( idImage * image );
 void RB_N3DS_TexLevelLoaded();		// raises the texture upload limit for the first frames
+// texture pack converted on the PC (tools/n3ds/n3dstex, renderer/3DS/n3ds_pack.h)
+#include "3DS/n3ds_pack.h"
+const n3dsPackEntry_t * RB_N3DS_PackFind( const char * generatedFileName );	// NULL: not in the pack
+void RB_N3DS_ImagePacked( idImage * image, const n3dsPackEntry_t * entry, int wrap );
 #endif
 
 class idRenderLightLocal : public idRenderLight {

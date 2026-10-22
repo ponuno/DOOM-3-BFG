@@ -48,12 +48,17 @@ float			N3DSGPU_DrawingTimeMs( void );
 // make CPU writes in linear memory visible to the GPU
 void			N3DSGPU_FlushRange( const void * p, unsigned int size );
 
-// textures: 16-bit formats in VRAM, PICA tiled layout, mip levels contiguous
+// textures: PICA tiled layout, mip levels contiguous. 0-3 are built on the console
+// (n3ds_texconv), the rest only come from the texture pack (tools/n3ds/n3dstex)
 enum {
 	N3DS_TEX_RGB565		= 0,
 	N3DS_TEX_RGBA5551	= 1,
 	N3DS_TEX_RGBA4		= 2,
-	N3DS_TEX_A8			= 3
+	N3DS_TEX_A8			= 3,
+	N3DS_TEX_ETC1		= 4,
+	N3DS_TEX_ETC1A4		= 5,
+	N3DS_TEX_HILO8		= 6,		// normal maps: x in hi, y in lo
+	N3DS_TEX_A4			= 7
 };
 unsigned int	N3DSGPU_VRAMFree( void );
 unsigned int	N3DSGPU_LinearFree( void );

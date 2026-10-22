@@ -188,6 +188,7 @@ public:
 private:
 	void				N3DS_KeepLevel( class idBinaryImage & im, int keepSize, int streamIndex = -1,
 										const char * streamPath = NULL, int streamOffset = 0 );
+	int					N3DS_Wrap() const;
 #endif
 
 	// we could derive these in subImageUpload each time if necessary

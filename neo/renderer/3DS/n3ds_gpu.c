@@ -499,12 +499,15 @@ static void * N3DS_TexCreateIn( int width, int height, int format, int maxLevel,
 		return NULL;
 	}
 	GPU_TEXCOLOR fmt = GPU_RGB565;
-	if ( format == N3DS_TEX_RGBA5551 ) {
-		fmt = GPU_RGBA5551;
-	} else if ( format == N3DS_TEX_RGBA4 ) {
-		fmt = GPU_RGBA4;
-	} else if ( format == N3DS_TEX_A8 ) {
-		fmt = GPU_A8;		// alpha-test masks (coverage images)
+	switch ( format ) {
+		case N3DS_TEX_RGBA5551:	fmt = GPU_RGBA5551; break;
+		case N3DS_TEX_RGBA4:	fmt = GPU_RGBA4; break;
+		case N3DS_TEX_A8:		fmt = GPU_A8; break;		// alpha-test masks, fonts
+		case N3DS_TEX_ETC1:		fmt = GPU_ETC1; break;
+		case N3DS_TEX_ETC1A4:	fmt = GPU_ETC1A4; break;
+		case N3DS_TEX_HILO8:	fmt = GPU_HILO8; break;
+		case N3DS_TEX_A4:		fmt = GPU_A4; break;
+		default:				break;
 	}
 	C3D_TexInitParams params;
 	memset( &params, 0, sizeof( params ) );
