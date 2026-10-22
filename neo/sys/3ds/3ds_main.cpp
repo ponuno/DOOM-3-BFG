@@ -95,7 +95,7 @@ static const u32 N3DS_MIN_LINEAR_HEAP = 8 * 1024 * 1024;
 #define N3DS_APP_HEAP_MB 86
 #endif
 static const u32 N3DS_APP_HEAP_MAX = (u32)N3DS_APP_HEAP_MB * 1024 * 1024;
-// extended memory mode: the linear heap must hold the GPU buffers (frame caches 8 MB,
+// extended memory mode: the linear heap must hold the GPU buffers (frame caches 7.5 MB,
 // static caches 26 MB, citro3d ~1.5 MB) plus a second heap worth having
 static const u32 N3DS_EXT_MIN_LINEAR = 48 * 1024 * 1024;
 // linear memory left to citro3d after common->Init: every long-lived GPU buffer is

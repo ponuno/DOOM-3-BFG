@@ -34,15 +34,28 @@ If you have questions concerning this license or the applicable additional terms
 // index: 1 MB overflowed in mars_city1 only while interactions were built per frame
 // (n3ds_lazyInteractions 1); with static interactions the busiest delta4 fights peak at
 // 255 KB (PERF "frame cache peak idx"), and an overflow only drops a surface for a frame
-const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 1 * 1024 * 1024;
-const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 3 * 1024 * 1024;
+// The GUI model takes a fixed block of each (idGuiModel::MAX_VERTS / MAX_INDEXES: 1 MB of
+// vertexes, 96 KB of indexes); the rest of a frame's dynamic geometry was under 300 KB.
+const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 512 * 1024;
+const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 2 * 1024 * 1024;
 #else
 const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
 const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
 #endif
 const int VERTCACHE_JOINT_MEMORY_PER_FRAME = 256 * 1024;
 
+#if defined( ID_3DS )
+// Three sets, not two. The frontend of frame N+2 (game thread) runs while the backend of
+// N+1 is being built and the GPU may still be drawing frame N: with two sets it overwrote
+// the vertexes and indexes frame N was drawn from (the PC waits for the GPU in
+// GL_BlockingSwapBuffers first; the null GL does not). In the Mars City intro this hit the
+// GUI blocks at the start of the set: garbage on the terminal screens, then a GPU that
+// never finished the frame. With three, set (N+2) % 3 was last used by frame N-1, which
+// the backend of N waited for (C3D_FrameBegin) before it started.
+const int VERTCACHE_NUM_FRAMES = 3;
+#else
 const int VERTCACHE_NUM_FRAMES = 2;
+#endif
 
 // there are a lot more static indexes than vertexes, because interactions are just new
 // index lists that reference existing vertexes

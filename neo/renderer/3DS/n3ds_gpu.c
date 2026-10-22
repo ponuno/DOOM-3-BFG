@@ -76,6 +76,10 @@ static int					numPendingFree[2];
 // what each texture unit has bound (citro3d keeps the pointer and reads the C3D_Tex
 // again whenever it re-emits the unit's registers, e.g. after a home menu visit)
 static C3D_Tex *			boundTex[3];
+// what a unit gets when its texture is released: citro3d cannot bind NULL to units 1
+// and 2 (C3D_TexBind reads the texture's type), and a unit must never hold a freed one
+static C3D_Tex				placeholderTex;
+static int					placeholderOk = 0;
 
 static void N3DS_BindTex( int unit, C3D_Tex * tex ) {
 	boundTex[unit] = tex;
@@ -209,6 +213,13 @@ int N3DSGPU_Init( void ) {
 	C3D_CullFace( GPU_CULL_NONE );
 	C3D_AlphaBlend( GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO );
 
+	// 8x8 black placeholder (linear memory)
+	if ( C3D_TexInit( &placeholderTex, 8, 8, GPU_RGB565 ) ) {
+		memset( placeholderTex.data, 0, placeholderTex.size );
+		GSPGPU_FlushDataCache( placeholderTex.data, placeholderTex.size );
+		placeholderOk = 1;
+	}
+
 	initialized = 1;
 	return 1;
 }
@@ -237,6 +248,10 @@ void N3DSGPU_Shutdown( void ) {
 	}
 	litOk = 0;
 	activeLit = 0;
+	if ( placeholderOk ) {
+		C3D_TexDelete( &placeholderTex );
+		placeholderOk = 0;
+	}
 	C3D_RenderTargetDelete( topTarget );
 	C3D_Fini();
 	initialized = 0;
@@ -520,7 +535,7 @@ void N3DSGPU_TexFree( void * handle ) {
 	// no unit may keep pointing at it
 	for ( int unit = 0; unit < 3; unit++ ) {
 		if ( boundTex[unit] == tex ) {
-			N3DS_BindTex( unit, NULL );
+			N3DS_BindTex( unit, placeholderOk ? &placeholderTex : NULL );
 		}
 	}
 	// the frame being built, or the one the GPU is drawing, may still sample it: its VRAM

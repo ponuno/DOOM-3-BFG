@@ -158,6 +158,12 @@ below (nearest sampling used to drop whole rows of glyphs). SWF stages are laid 
 they shrink to a third, so `n3ds_hudScale`/`n3ds_uiScale` enlarge them (edge-anchored sprites such as
 `_bottomLeft` stay pinned to the screen edges); the log prints every SWF's stage size at load. Not yet: TG_SCREEN/cube texgens, cinematics, program stages, scissor.
 Skinned models are skinned on the CPU (`r_useGPUSkinning` forced to 0 with citro3d).
+Frame vertex cache: three sets of 2 MB vertexes + 512 KB indexes (PC: two). The game thread's
+frontend of frame N+2 fills its set while the GPU may still draw frame N; the PC waits for the
+GPU in `GL_BlockingSwapBuffers`, the null GL cannot, so a third set keeps the one being filled
+away from any frame still on the GPU. The GUI model's block is 32768 vertexes / 49152 indexes
+(16-bit indexes; the PC's 80000 vertexes could not all be addressed). Released textures are
+deleted only once the frames that may sample them are finished, and are unbound first.
 
 ## Memory modes and the second heap
 
