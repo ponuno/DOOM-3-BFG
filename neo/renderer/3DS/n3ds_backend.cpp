@@ -1429,7 +1429,9 @@ static void N3DS_DrawAmbientStages( const viewDef_t * viewDef, bool gui ) {
 			}
 			const bool alphaTex = tex != NULL && N3DS_TexIsAlphaOnly( pStage->texture.image );
 			N3DSGPU_SetStageTexEnv( tex, swf ? 1 : 0, swfAdd, alphaTex ? 1 : 0 );
-			record.texName = ( tex != NULL ) ? pStage->texture.image->GetName() : NULL;
+			// a video stage has no image (texture.cinematic instead)
+			record.texName = ( tex == NULL ) ? NULL : ( pStage->texture.image != NULL ? pStage->texture.image->GetName() :
+				( pStage->texture.cinematic != NULL ? "(video)" : "?" ) );
 			record.flags = C3D_REC_STAGE | ( alphaTex ? C3D_REC_A8 : 0 ) | ( swf ? C3D_REC_SWF : 0 ) | ( alphaRef >= 0 ? C3D_REC_ALPHATEST : 0 ) |
 				( gui ? C3D_REC_GUIVIEW : 0 ) | ( ( n3ds_guiStencil.GetBool() && ( stageGLState & ( GLS_STENCIL_FUNC_BITS | GLS_STENCIL_OP_FAIL_BITS | GLS_STENCIL_OP_ZFAIL_BITS | GLS_STENCIL_OP_PASS_BITS ) ) != 0 ) ? C3D_REC_STENCIL : 0 );
 			N3DS_Draw( surf, verts, indexes, record, test );
