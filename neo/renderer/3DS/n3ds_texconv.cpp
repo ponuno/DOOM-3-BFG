@@ -22,6 +22,7 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 #include "../ImageOpts.h"
 #include "../DXT/DXTCodec.h"
 #include "n3ds_texconv.h"
+#include "n3ds_gpu.h"
 
 static inline byte N3DS_ClampByte( int v ) {
 	return (byte)( v < 0 ? 0 : ( v > 255 ? 255 : v ) );
@@ -416,4 +417,135 @@ void N3DS_BuildTexture( const byte * rgba, int width, int height, const n3dsTexL
 
 	Mem_Free( bufA );
 	Mem_Free( bufB );
+}
+
+
+/*
+================================================================================================
+
+	N3DS_DecodePackLevel
+
+	For bisecting GPU trouble with the pack's formats: the PICA ETC1 layout is 8x8 tiles in
+	row order, each four 4x4 blocks (top-left, top-right, bottom-left, bottom-right), each
+	block a little-endian 64-bit ETC1 block (ETC1A4: 8 bytes of 4-bit alpha first, x and
+	y swapped, even rows in the low nibble). A4 is tiled texel by texel (Morton order in a
+	tile), two texels per byte, the even one in the low nibble. Row 0 of the data is the
+	bottom row of the image (n3dstex flips before tiling).
+
+================================================================================================
+*/
+static const int etc1Modifiers[8][2] = { { 2, 8 }, { 5, 17 }, { 9, 29 }, { 13, 42 }, { 18, 60 }, { 24, 80 }, { 33, 106 }, { 47, 183 } };
+
+static inline int Etc1Clamp( int v ) {
+	return v < 0 ? 0 : ( v > 255 ? 255 : v );
+}
+
+// a standard (big-endian bit numbering) ETC1 block into 16 RGB pixels, pixel (x, y) at y * 4 + x
+static void N3DS_DecodeEtc1Block( uint64 b, byte out[16][3] ) {
+	const bool diff = ( b >> 33 ) & 1;
+	const bool flip = ( b >> 32 ) & 1;
+	int base[2][3];
+	for ( int c = 0; c < 3; c++ ) {
+		const int shift = 59 - c * 8;		// R at 63.., G at 55.., B at 47..
+		if ( diff ) {
+			const int v5 = (int)( ( b >> shift ) & 31 );
+			int d = (int)( ( b >> ( shift - 3 ) ) & 7 );
+			if ( d >= 4 ) {
+				d -= 8;
+			}
+			const int v5b = ( v5 + d ) & 31;
+			base[0][c] = ( v5 << 3 ) | ( v5 >> 2 );
+			base[1][c] = ( v5b << 3 ) | ( v5b >> 2 );
+		} else {
+			const int a = (int)( ( b >> ( shift + 1 ) ) & 15 );
+			const int c2 = (int)( ( b >> ( shift - 3 ) ) & 15 );
+			base[0][c] = a * 17;
+			base[1][c] = c2 * 17;
+		}
+	}
+	const int table[2] = { (int)( ( b >> 37 ) & 7 ), (int)( ( b >> 34 ) & 7 ) };
+	for ( int x = 0; x < 4; x++ ) {
+		for ( int y = 0; y < 4; y++ ) {
+			const int i = x * 4 + y;
+			const int msb = (int)( ( b >> ( 16 + i ) ) & 1 );
+			const int lsb = (int)( ( b >> i ) & 1 );
+			const int sub = flip ? ( y >= 2 ) : ( x >= 2 );
+			const int mod = etc1Modifiers[table[sub]][lsb];
+			const int delta = msb ? -mod : mod;
+			for ( int c = 0; c < 3; c++ ) {
+				out[y * 4 + x][c] = (byte)Etc1Clamp( base[sub][c] + delta );
+			}
+		}
+	}
+}
+
+static const byte decMortonX[8] = { 0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15 };
+static const byte decMortonY[8] = { 0x00, 0x02, 0x08, 0x0a, 0x20, 0x22, 0x28, 0x2a };
+
+bool N3DS_DecodePackLevel( int gpuFormat, int width, int height, const byte * data, byte * rgba ) {
+	if ( width < 8 || height < 8 || data == NULL ) {
+		return false;
+	}
+	// into the stored (bottom-up) orientation first, flipped at the end
+	if ( gpuFormat == N3DS_TEX_ETC1 || gpuFormat == N3DS_TEX_ETC1A4 ) {
+		const bool alpha = ( gpuFormat == N3DS_TEX_ETC1A4 );
+		const byte * p = data;
+		for ( int ty = 0; ty < height; ty += 8 ) {
+			for ( int tx = 0; tx < width; tx += 8 ) {
+				for ( int by = 0; by < 8; by += 4 ) {
+					for ( int bx = 0; bx < 8; bx += 4 ) {
+						const byte * alphaBlock = NULL;
+						if ( alpha ) {
+							alphaBlock = p;
+							p += 8;
+						}
+						uint64 b = 0;
+						for ( int k = 7; k >= 0; k-- ) {
+							b = ( b << 8 ) | p[k];		// little-endian in memory
+						}
+						p += 8;
+						byte px[16][3];
+						N3DS_DecodeEtc1Block( b, px );
+						for ( int y = 0; y < 4; y++ ) {
+							for ( int x = 0; x < 4; x++ ) {
+								byte * o = rgba + ( ( ty + by + y ) * width + tx + bx + x ) * 4;
+								o[0] = px[y * 4 + x][0];
+								o[1] = px[y * 4 + x][1];
+								o[2] = px[y * 4 + x][2];
+								int a = 255;
+								if ( alphaBlock != NULL ) {
+									const byte v = alphaBlock[2 * x + y / 2];
+									a = ( ( y & 1 ) ? ( v >> 4 ) : ( v & 15 ) ) * 17;
+								}
+								o[3] = (byte)a;
+							}
+						}
+					}
+				}
+			}
+		}
+	} else if ( gpuFormat == N3DS_TEX_A4 ) {
+		for ( int y = 0; y < height; y++ ) {
+			for ( int x = 0; x < width; x++ ) {
+				const int t = ( y & ~7 ) * width + ( x & ~7 ) * 8 + decMortonX[x & 7] + decMortonY[y & 7];
+				const byte v = data[t >> 1];
+				byte * o = rgba + ( y * width + x ) * 4;
+				o[0] = o[1] = o[2] = 255;
+				o[3] = (byte)( ( ( t & 1 ) ? ( v >> 4 ) : ( v & 15 ) ) * 17 );
+			}
+		}
+	} else {
+		return false;
+	}
+	// stored bottom-up: rows back to top-down
+	for ( int y = 0; y < height / 2; y++ ) {
+		byte * a = rgba + y * width * 4;
+		byte * b = rgba + ( height - 1 - y ) * width * 4;
+		for ( int i = 0; i < width * 4; i++ ) {
+			const byte t = a[i];
+			a[i] = b[i];
+			b[i] = t;
+		}
+	}
+	return true;
 }

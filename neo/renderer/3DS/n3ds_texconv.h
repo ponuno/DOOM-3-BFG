@@ -43,6 +43,11 @@ void	N3DS_ChooseLayout( const byte * rgba, int width, int height, int maxSize, b
 void	N3DS_BuildTexture( const byte * rgba, int width, int height, const n3dsTexLayout_t & layout,
 						   bool flip, byte * dst );
 
+// diagnostics (n3ds_texPackDecode): level 0 of a texture pack chain in ETC1 / ETC1A4 /
+// A4 (N3DS_TEX_*, tiled and flipped as the GPU takes it) back to RGBA8, rows top-down
+// as N3DS_BuildTexture expects; false for other formats
+bool	N3DS_DecodePackLevel( int gpuFormat, int width, int height, const byte * data, byte * rgba );
+
 // size in bytes of one level (level 0 = width x height)
 int		N3DS_LevelBytes( const n3dsTexLayout_t & layout, int level );
 

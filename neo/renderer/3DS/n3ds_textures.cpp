@@ -67,6 +67,7 @@ idCVar n3ds_texLinearKB( "n3ds_texLinearKB", "3072", CVAR_RENDERER | CVAR_INTEGE
 idCVar n3ds_texLinearReserveKB( "n3ds_texLinearReserveKB", "2048", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory the texture cache always leaves free (citro3d, staging copies)" );
 idCVar n3ds_texVRAMReserveKB( "n3ds_texVRAMReserveKB", "64", CVAR_RENDERER | CVAR_INTEGER, "citro3d: VRAM left free by the texture cache" );
 idCVar n3ds_texVerify( "n3ds_texVerify", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: 1 = check textures in VRAM against what was copied there (a few per frame) and log changed ones; 2 = also compare every packed upload with a fresh read of the pack" );
+idCVar n3ds_texPackDecode( "n3ds_texPackDecode", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d diagnostics: decode the pack's ETC1 / ETC1A4 / A4 textures on the console and upload them as RGB565 / RGBA4 / A8 like the old path (the GPU then never samples those formats)" );
 idCVar n3ds_texPack( "n3ds_texPack", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT, "citro3d: take textures from base/_n3ds_textures.pak (converted on the PC by n3dstex) when it is there" );
 idCVar n3ds_texWorldMaxSize( "n3ds_texWorldMaxSize", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest world texture (larger pack levels are skipped)", 8, 1024 );
 idCVar n3ds_texBumpMaxSize( "n3ds_texBumpMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest normal map", 8, 1024 );
@@ -917,9 +918,20 @@ static void N3DS_TexFailed( n3dsTexture_t * t, const n3dsTexLayout_t & layout, c
 N3DS_TexUpload
 ========================
 */
+// the pack's data goes to the GPU as it is (else: decoded, then built like the old path)
+static bool N3DS_TexDirectPack( const n3dsTexture_t * t ) {
+	if ( !t->packed ) {
+		return false;
+	}
+	if ( n3ds_texPackDecode.GetBool() && ( t->gpuFormat == N3DS_TEX_ETC1 || t->gpuFormat == N3DS_TEX_ETC1A4 || t->gpuFormat == N3DS_TEX_A4 ) ) {
+		return false;
+	}
+	return true;
+}
+
 // the GPU chain: from the pack as it is, else built from the decoded level
 static void N3DS_TexFill( const n3dsTexture_t * t, const n3dsTexLayout_t & layout, const byte * rgba, byte * dst ) {
-	if ( t->packed ) {
+	if ( N3DS_TexDirectPack( t ) ) {
 		memcpy( dst, t->data, layout.bytes );
 	} else {
 		N3DS_BuildTexture( rgba, t->width, t->height, layout, n3ds_texFlip.GetBool(), dst );
@@ -927,7 +939,7 @@ static void N3DS_TexFill( const n3dsTexture_t * t, const n3dsTexLayout_t & layou
 }
 
 static bool N3DS_TexHasAlpha( const n3dsTexture_t * t, const n3dsTexLayout_t & layout ) {
-	return t->packed ? t->packHasAlpha : ( layout.format != N3DS_TEXCONV_RGB565 );
+	return N3DS_TexDirectPack( t ) ? t->packHasAlpha : ( layout.format != N3DS_TEXCONV_RGB565 );
 }
 
 // VRAM full: the texture goes to linear memory, within n3ds_texLinearKB, evicting linear
@@ -982,8 +994,17 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		return false;		// nothing to decode (a streamed level not in memory): not "unsupported"
 	}
 	n3dsTexLayout_t layout;
-	idTempArray<byte> rgba( t->packed ? 4 : t->width * t->height * 4 );
-	if ( t->packed ) {
+	const bool direct = N3DS_TexDirectPack( t );
+	idTempArray<byte> rgba( direct ? 4 : t->width * t->height * 4 );
+	if ( t->packed && !direct ) {
+		// diagnostics: back to RGBA and through the old path
+		if ( !N3DS_DecodePackLevel( t->gpuFormat, t->width, t->height, t->data, rgba.Ptr() ) ) {
+			t->unsupported = true;
+			statFailed++;
+			return false;
+		}
+		N3DS_ChooseLayout( rgba.Ptr(), t->width, t->height, t->maxSize, n3ds_texMips.GetBool(), t->alphaOnly, layout );
+	} else if ( direct ) {
 		// converted on the PC: the data is the chain
 		layout.width = t->width;
 		layout.height = t->height;
