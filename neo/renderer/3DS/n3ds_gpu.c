@@ -98,6 +98,10 @@ static int					hwFlatUnit1 = 0;		// diagnostics (n3ds_hwFlatUnit1)
 // (frame vertex cache at BeginBackEnd, static cache and textures on upload, sound
 // buffers), so only the command list needs it. fullFlush: the old behaviour.
 static int					fullFlush = 0;
+extern u32 __ctru_linear_heap;
+extern u32 __ctru_linear_heap_size;
+// citro3d's GX queue holds 32 entries: the clear, the command list parts, the display transfer
+#define N3DS_MAX_KICKS		16
 
 void N3DSGPU_SetFullFlush( int enable ) {
 	fullFlush = enable;
@@ -117,6 +121,14 @@ static void N3DS_DeleteTex( C3D_Tex * tex ) {
 	free( tex );
 }
 static int					pendingSet = 0;
+static int					queueStarted = 0;
+static u64					frameEndTick = 0;		// this frame's GX queue runs (N3DSGPU_Kick)
+static int					kicksThisFrame = 0;
+static int					kickDraws = 0;			// draws per part handed to the GPU (0: the whole frame at its end)
+static int					drawsSinceKick = 0;
+static u64					firstKickTick = 0;		// when the GPU got the first part of the frame
+static float				gpuSpanMs = 0.0f;		// first part submitted -> last finished, previous frame
+static int					fillProbe = 0;			// scissor everything to a small box (see N3DSGPU_SetFillProbe)
 static u32					frameVBlankCount = 0;	// top screen vblanks counted at the last frame start
 static u64					statWaitGpuTicks = 0;	// waiting for the previous frame's GPU work
 static u64					statWaitVBlankTicks = 0;	// waiting for a vblank before submitting
@@ -350,6 +362,15 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 		svcSleepThread( 200LL * 1000 );
 	}
 	statWaitGpuTicks += svcGetSystemTick() - waitStart;
+	// citro3d's drawing time runs from C3D_FrameEnd; the frame started on the GPU earlier
+	if ( queueStarted ) {
+		gpuSpanMs = C3D_GetDrawingTime() + (float)( frameEndTick - firstKickTick ) * 1000.0f / (float)SYSCLOCK_ARM11;
+	} else {
+		gpuSpanMs = C3D_GetDrawingTime();
+	}
+	queueStarted = 0;
+	kicksThisFrame = 0;
+	drawsSinceKick = 0;
 	// the previous frame's swap was asked for when its commands finished (before this point)
 	frameVBlankCount = C3D_FrameCounter( 0 );
 	// the previous frame is finished: the copies asked for while it was built, on their own
@@ -365,7 +386,46 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 	N3DS_WritePendingColorBuffer();
 	C3D_RenderTargetClear( topTarget, C3D_CLEAR_ALL, clearRGBA, 128u << 24 );
 	C3D_FrameDrawOn( topTarget );
+	if ( fillProbe ) {
+		C3D_SetScissor( GPU_SCISSOR_NORMAL, 0, 0, 30, 50 );
+	}
 	inFrame = 1;
+}
+
+/*
+========================
+N3DSGPU_Kick
+
+Hands what has been recorded of the frame so far to the GPU and lets the GX queue run, so
+the GPU draws while the CPU records the rest. Without this the queue only ran at
+C3D_FrameEnd: the GPU idled while the frame was recorded and the CPU idled while it was
+drawn. Later parts join the running queue (gxCmdQueueAdd restarts an active queue that
+ran dry). Nothing recorded earlier in the frame is changed afterwards: textures uploaded
+during a frame are copied at the next frame start, frame vertex data is double buffered.
+========================
+*/
+static void N3DS_QueueRun( void );
+
+void N3DSGPU_Kick( void ) {
+	if ( !inFrame || kicksThisFrame >= N3DS_MAX_KICKS ) {
+		return;
+	}
+	if ( fullFlush ) {
+		// the old behaviour flushed all of linear memory at C3D_FrameEnd; data drawn now must
+		// be flushed now
+		GSPGPU_FlushDataCache( (void *)__ctru_linear_heap, __ctru_linear_heap_size );
+	}
+	C3D_FrameSplit( N3DS_FrameEndFlags() );
+	kicksThisFrame++;
+	if ( !queueStarted ) {
+		queueStarted = 1;
+		firstKickTick = svcGetSystemTick();
+		N3DS_QueueRun();
+	}
+}
+
+void N3DSGPU_SetFillProbe( int enable ) {
+	fillProbe = enable;
 }
 
 // hang hunting: submit what was drawn so far and wait for the GPU to finish it
@@ -394,6 +454,9 @@ int N3DSGPU_DebugSync( unsigned int timeoutMs ) {
 		}
 		svcSleepThread( 200LL * 1000 );
 	}
+	queueStarted = 0;
+	kicksThisFrame = 0;
+	drawsSinceKick = 0;
 	C3D_FrameDrawOn( topTarget );	// no clear: the frame goes on
 	return result;
 }
@@ -421,6 +484,10 @@ typedef struct {
 	size_t			cmdBufSize;
 } n3dsC3DContextHead_t;
 extern n3dsC3DContextHead_t __C3D_Context;
+
+static void N3DS_QueueRun( void ) {
+	gxCmdQueueRun( &__C3D_Context.gxQueue );
+}
 
 // libctru counts the GX queue's completion interrupts (gxqueue.c); the queue waits for the
 // next one forever if it never comes
@@ -516,8 +583,6 @@ static void N3DS_RunDeferredCopies( void ) {
 	}
 	numDeferred = 0;
 }
-extern u32 __ctru_linear_heap;
-extern u32 __ctru_linear_heap_size;
 
 static const char * N3DS_GxCommandName( u32 id ) {
 	switch ( id & 0xFF ) {
@@ -885,11 +950,17 @@ void N3DSGPU_EndFrame( void ) {
 	// frame's swap only takes effect at a vblank: until one has passed since that swap, the
 	// buffer about to be written is still on screen (tearing). Building a frame takes longer
 	// than a vblank interval, so this almost never waits.
+	// the GPU draws the rest of the frame meanwhile
+	N3DSGPU_Kick();
 	const u64 waitStart = svcGetSystemTick();
 	while ( C3D_FrameCounter( 0 ) == frameVBlankCount ) {
 		gspWaitForAnyEvent();
 	}
 	statWaitVBlankTicks += svcGetSystemTick() - waitStart;
+	// If the queue ran dry, the display transfer starts the moment C3D_FrameEnd queues it,
+	// and C3D_FrameEnd sets needSwapTop right after: the transfer (~0.5 ms of PPF work)
+	// finishes long after that, so the swap is not missed.
+	frameEndTick = svcGetSystemTick();
 	C3D_FrameEnd( N3DS_FrameEndFlags() );
 	inFrame = 0;
 }
@@ -927,6 +998,14 @@ void N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short *
 	// colour (attr 3, 4) | colour2 (pad 4 = 0xC)
 	BufInfo_Add( bufInfo, verts, stride, 6, 0xC34120 );
 	C3D_DrawElements( GPU_TRIANGLES, numIndexes, C3D_UNSIGNED_SHORT, indexes );
+	if ( kickDraws > 0 && ++drawsSinceKick >= kickDraws ) {
+		drawsSinceKick = 0;
+		N3DSGPU_Kick();
+	}
+}
+
+void N3DSGPU_SetKickDraws( int draws ) {
+	kickDraws = draws;
 }
 
 typedef struct {
@@ -1012,7 +1091,8 @@ float N3DSGPU_CmdBufUsage( void ) {
 }
 
 float N3DSGPU_DrawingTimeMs( void ) {
-	return initialized ? C3D_GetDrawingTime() : 0.0f;
+	// first part of the frame handed over -> last part finished (GPU idle gaps included)
+	return initialized ? gpuSpanMs : 0.0f;
 }
 
 void N3DSGPU_FlushRange( const void * p, unsigned int size ) {
@@ -1347,6 +1427,10 @@ void N3DSGPU_SetLightUniforms( const float * origin, const float * s, const floa
 }
 
 void N3DSGPU_SetScissor( int enable, int left, int top, int right, int bottom ) {
+	if ( fillProbe ) {
+		C3D_SetScissor( GPU_SCISSOR_NORMAL, 0, 0, 30, 50 );
+		return;
+	}
 	if ( !enable ) {
 		C3D_SetScissor( GPU_SCISSOR_DISABLE, 0, 0, 0, 0 );
 		return;

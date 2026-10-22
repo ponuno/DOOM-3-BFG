@@ -49,6 +49,8 @@ idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, 
 idCVar n3ds_c3dHangRegs( "n3ds_c3dHangRegs", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: when the GPU hangs, also read its registers into sdmc:/doom3/gpuhang.bin" );
 idCVar n3ds_c3dHangHunt( "n3ds_c3dHangHunt", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: from this 3D frame on, wait for the GPU after every draw and name the draw it never finishes (slow; 0 = off)" );
 static bool c3dHangFound = false;
+idCVar n3ds_c3dKickDraws( "n3ds_c3dKickDraws", "48", CVAR_RENDERER | CVAR_INTEGER, "citro3d: hand the frame to the GPU in parts of this many draws, so it draws while the rest is recorded (0 = only at the frame end, before the vblank wait)", 0, 1000 );
+idCVar n3ds_gpuFillProbe( "n3ds_gpuFillProbe", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d diagnostics: draw everything into a 30x50 pixel box. Pixel work drops to ~1/64, vertex work stays: if the GPU time in the PERF lines drops a lot, the GPU is limited by pixels, otherwise by vertices" );
 idCVar n3ds_c3dFullFlush( "n3ds_c3dFullFlush", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: clean the data cache over all linear memory at every frame end (old behaviour, ~69 MB per frame in the 178 MB mode)" );
 idCVar n3ds_hwMaxLights( "n3ds_hwMaxLights", "24", CVAR_RENDERER | CVAR_INTEGER, "citro3d lighting 2: most lights per surface (the brightest are kept); beyond 8 the surface is drawn again, adding the next 8; each light costs GPU time on every pixel of the surface", 1, 24 );
 idCVar n3ds_guiStencil( "n3ds_guiStencil", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: stencil for SWF masks (0 = ignore the stencil state, for bisecting)" );
@@ -1854,6 +1856,8 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: waiting for GPU" );
 	N3DSGPU_SetFullFlush( n3ds_c3dFullFlush.GetBool() ? 1 : 0 );
+	N3DSGPU_SetKickDraws( n3ds_c3dKickDraws.GetInteger() );
+	N3DSGPU_SetFillProbe( n3ds_gpuFillProbe.GetBool() ? 1 : 0 );
 	N3DSGPU_BeginFrame( 0x000000FF );
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: drawing" );
 	N3DS_TexBeginFrame( has3D );
@@ -1979,7 +1983,7 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		const float f = (float)Max( c3dStatFrames, 1 );
 		float waitGpuMs, waitVBlankMs;
 		N3DSGPU_WaitStats( &waitGpuMs, &waitVBlankMs );
-		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights, light area %.1f screens) %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d | waited for the GPU %.1f ms, for vblank %.1f ms per frame\n",
+		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights, light area %.1f screens) %.0f tris per frame, GPU span %.1f ms, cmdbuf peak %.0f%%, bad draws %d | waited for the GPU %.1f ms, for vblank %.1f ms per frame\n",
 			c3dStatDraws / f, c3dStatTextured / f, c3dStatLightDraws / f, c3dStatLights / f, c3dStatScissorPixels / ( f * 96000.0f ),
 			c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad, waitGpuMs / f, waitVBlankMs / f );
 		common->Printf( "PERF   citro3d stages: %.0f ambient/GUI stage draws per frame (%.0f video), %.0f skipped (texgen, video without .n3v, program, not loaded)\n",

@@ -443,6 +443,8 @@ turns it off.
 | `n3ds_ambientStages` | 1 | ambient/blended stages and fullscreen GUIs |
 | `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD texture |
 | `n3ds_soundPack` | 1 | play samples from `base/_n3ds_sounds.pak` (DSP-ADPCM, decoded by the DSP) when it is there |
+| `n3ds_c3dKickDraws` | 48 | the frame goes to the GPU in parts of this many draws (`N3DSGPU_Kick`: `C3D_FrameSplit` + the GX queue started at the first part), so the GPU draws while the CPU records the rest; the last part goes before the vblank wait. 0 = only at the frame end |
+| `n3ds_gpuFillProbe` | 0 | diagnostics: everything drawn into a 30x50 box. If `GPU span` drops a lot, the GPU is limited by pixel work, otherwise by vertex work |
 | `n3ds_showFPS` | 1 | frame counter in the top right corner of the top screen (green 30+, yellow 20+, red below; refreshed twice a second) |
 | `com_engineHz` | 30 | game ticks per second (engine default 60). A frame is drawn only after a tick, so this also caps the frame rate; 60 costs two or three 4-6 ms ticks per drawn frame |
 | `n3ds_configVersion` | 0 | config migrations applied: the config stores every archived cvar, so changed defaults reach old configs only through this (1: `com_engineHz` 30) |
