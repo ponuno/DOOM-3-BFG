@@ -1637,6 +1637,8 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		} else {
 			N3DS_DrawView( viewDef );
 		}
+		// after the draws: the reads the view asked for are queued first
+		N3DS_TexPrefetch( viewDef->n3dsPrefetch, viewDef->n3dsNumPrefetch );
 		if ( n3ds_c3dTest.GetInteger() == 0 ) {
 			N3DS_DrawAmbientStages( viewDef, false );
 		}

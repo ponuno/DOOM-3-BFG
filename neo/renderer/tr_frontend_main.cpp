@@ -409,6 +409,11 @@ void R_RenderView( viewDef_t *parms ) {
 	// for all the the entityDefs and lightDefs that are in the visible portal areas
 	static_cast<idRenderWorldLocal *>(parms->renderWorld)->FindViewLightsAndEntities();
 
+	// New 3DS: textures of this area and the next ones are read before they come into view
+	if ( r_n3dsC3D ) {
+		R_N3DS_BuildPrefetch( tr.viewDef );
+	}
+
 	// wait for any shadow volume jobs from the previous frame to finish
 	tr.frontEndJobList->Wait();
 

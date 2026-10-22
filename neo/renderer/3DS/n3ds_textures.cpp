@@ -62,7 +62,8 @@ idCVar n3ds_texUploadsPerFrame( "n3ds_texUploadsPerFrame", "8", CVAR_RENDERER | 
 idCVar n3ds_texUploadsAfterLoad( "n3ds_texUploadsAfterLoad", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d: texture upload limit for the first 20 3D frames after a map load (the GX queue caps it at 24)" );
 idCVar n3ds_texFlip( "n3ds_texFlip", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: store texture rows bottom-up (the PICA samples t = 0 at the last row); toggle if textures are upside down" );
 idCVar n3ds_texStream( "n3ds_texStream", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: read texture levels from disk when first drawn instead of keeping them all in RAM (set at startup; applies to images loaded afterwards)" );
-idCVar n3ds_texRAMCacheKB( "n3ds_texRAMCacheKB", "4096", CVAR_RENDERER | CVAR_INTEGER, "citro3d: RAM kept for streamed texture levels already uploaded, so that textures evicted from VRAM come back without a read" );
+idCVar n3ds_texPrefetch( "n3ds_texPrefetch", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: read the textures of the view's area and the areas next to it (through any portal, open or not) from the pack before they come into view" );
+idCVar n3ds_texRAMCacheKB( "n3ds_texRAMCacheKB", "6144", CVAR_RENDERER | CVAR_INTEGER, "citro3d: RAM kept for streamed texture levels already uploaded, so that textures evicted from VRAM come back without a read" );
 idCVar n3ds_texLinearKB( "n3ds_texLinearKB", "3072", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory (FCRAM) for textures that do not fit in VRAM; the GPU samples them from there" );
 idCVar n3ds_texLinearReserveKB( "n3ds_texLinearReserveKB", "2048", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory the texture cache always leaves free (citro3d, staging copies)" );
 idCVar n3ds_texVRAMReserveKB( "n3ds_texVRAMReserveKB", "64", CVAR_RENDERER | CVAR_INTEGER, "citro3d: VRAM left free by the texture cache" );
@@ -106,6 +107,7 @@ struct n3dsTexture_t {
 	int					retryFrame;		// after a failed upload: not before this frame
 	bool				everUploaded;	// diagnostics: drawn at least once since load
 	int					uploadFrame;	// diagnostics: texFrame of the last upload
+	int					prefetchFrame;	// texFrame of the last read-ahead request (0: never)
 	uint32 *			verifyCrc;		// n3ds_texVerify: CRC of every 1 KB of what was copied to the GPU
 	int					verifyChunks;
 	bool				verifyBad;		// reported once
@@ -386,6 +388,56 @@ static void N3DS_TexRamKeep( n3dsTexture_t * t ) {
 	ramHead = t;
 	t->inRamCache = true;
 	ramBytes += t->dataSize;
+}
+
+/*
+========================
+N3DS_TexPrefetch
+
+Backend, once per main view, before its draws: images of the areas around the view
+(R_N3DS_BuildPrefetch) are read from the pack into the RAM cache while the SD card has
+nothing else to do, so a room entered next is uploaded from RAM (~1 ms a texture)
+instead of waiting for reads (~10 ms each, one at a time). At most two reads are queued
+behind the visible ones (called after the view's draws); a texture is read ahead at most once every 600 frames, so
+neighbours that do not all fit in the RAM cache do not keep the card busy.
+========================
+*/
+void N3DS_TexPrefetch( idImage ** images, int count ) {
+	if ( images == NULL || count <= 0 || !n3ds_texPrefetch.GetBool() || !n3ds_textures.GetBool() ) {
+		return;
+	}
+	const int budget = Max( 0, n3ds_texRAMCacheKB.GetInteger() ) * 1024;
+	for ( int i = 0; i < count; i++ ) {
+		n3dsTexture_t * t = ( images[i] != NULL ) ? (n3dsTexture_t *)images[i]->n3dsTex : NULL;
+		if ( t == NULL || t->unsupported || t->streamPath < 0 || t->gpu != NULL ) {
+			continue;
+		}
+		texLoadLock.Lock();
+		const int state = t->loadState;
+		const int queued = texQueueCount;
+		if ( state == TEX_READY ) {
+			t->loadState = TEX_IDLE;
+		}
+		texLoadLock.Unlock();
+		if ( state == TEX_READY ) {
+			// read ahead and not drawn yet: into the RAM cache, which bounds it
+			if ( t->data != NULL && !t->inRamCache ) {
+				N3DS_TexRamKeep( t );
+			}
+			continue;
+		}
+		if ( state != TEX_IDLE || t->data != NULL || texFrame < t->retryFrame ) {
+			continue;
+		}
+		if ( t->prefetchFrame != 0 && texFrame - t->prefetchFrame < 600 ) {
+			continue;
+		}
+		if ( queued >= 2 || ramBytes + t->dataSize > budget ) {
+			break;
+		}
+		t->prefetchFrame = texFrame;
+		N3DS_TexRequest( t );
+	}
 }
 
 bool RB_N3DS_TexStreaming() {
@@ -1387,4 +1439,122 @@ void N3DS_TexLogMemory() {
 			N3DS_FormatName( top[k]->format ), top[k]->everUploaded ? "" : " (not drawn)",
 			top[k]->data != NULL ? "" : " (on disk)", top[k]->image->GetName() );
 	}
+}
+
+
+/*
+================================================================================================
+
+	Read-ahead list (frontend)
+
+	The images used by the entities in the view's area and in every area one portal away,
+	closed doors included (opening one is the moment a new room has to be there). Rebuilt
+	for an area every 120 frames; entities moving between areas are picked up then.
+
+================================================================================================
+*/
+struct n3dsAreaImages_t {
+	const idRenderWorldLocal *	world;
+	const portalArea_t *		portalAreas;	// a new map may get the same world pointer
+	int							area;
+	int							builtFrame;
+	int							usedFrame;
+	idList<idImage *>			images;
+};
+static const int N3DS_AREA_CACHE = 16;
+static n3dsAreaImages_t	areaImageCache[N3DS_AREA_CACHE];
+
+static void N3DS_AddMaterialImages( const idMaterial * material, idList<idImage *> & out ) {
+	if ( material == NULL ) {
+		return;
+	}
+	for ( int i = 0; i < material->GetNumStages(); i++ ) {
+		const shaderStage_t * stage = material->GetStage( i );
+		if ( stage->texture.image != NULL && stage->texture.cinematic == NULL ) {
+			out.AddUnique( stage->texture.image );
+		}
+	}
+}
+
+static const idList<idImage *> & N3DS_AreaImages( const idRenderWorldLocal * world, int area ) {
+	n3dsAreaImages_t * entry = NULL;
+	n3dsAreaImages_t * oldest = &areaImageCache[0];
+	for ( int i = 0; i < N3DS_AREA_CACHE; i++ ) {
+		n3dsAreaImages_t & e = areaImageCache[i];
+		if ( e.world == world && e.portalAreas == world->portalAreas && e.area == area ) {
+			entry = &e;
+			break;
+		}
+		if ( e.usedFrame < oldest->usedFrame ) {
+			oldest = &e;
+		}
+	}
+	if ( entry != NULL && tr.frameCount - entry->builtFrame < 120 ) {
+		entry->usedFrame = tr.frameCount;
+		return entry->images;
+	}
+	if ( entry == NULL ) {
+		entry = oldest;
+	}
+	entry->world = world;
+	entry->portalAreas = world->portalAreas;
+	entry->area = area;
+	entry->builtFrame = tr.frameCount;
+	entry->usedFrame = tr.frameCount;
+	entry->images.SetNum( 0 );
+	const portalArea_t * pa = &world->portalAreas[area];
+	for ( const areaReference_t * ref = pa->entityRefs.areaNext; ref != &pa->entityRefs; ref = ref->areaNext ) {
+		const idRenderEntityLocal * e = ref->entity;
+		if ( e == NULL || e->parms.hModel == NULL ) {
+			continue;
+		}
+		const idRenderModel * model = e->parms.hModel;
+		for ( int s = 0; s < model->NumSurfaces(); s++ ) {
+			const modelSurface_t * surf = model->Surface( s );
+			const idMaterial * shader = surf->shader;
+			if ( e->parms.customShader != NULL ) {
+				shader = e->parms.customShader;
+			} else if ( e->parms.customSkin != NULL ) {
+				shader = e->parms.customSkin->RemapShaderBySkin( shader );
+			}
+			N3DS_AddMaterialImages( shader, entry->images );
+		}
+	}
+	return entry->images;
+}
+
+void R_N3DS_BuildPrefetch( viewDef_t * viewDef ) {
+	viewDef->n3dsPrefetch = NULL;
+	viewDef->n3dsNumPrefetch = 0;
+	if ( viewDef->isSubview || viewDef->areaNum < 0 || viewDef->renderWorld == NULL || !n3ds_texPrefetch.GetBool() ) {
+		return;
+	}
+	const idRenderWorldLocal * world = viewDef->renderWorld;
+	if ( viewDef->areaNum >= world->numPortalAreas ) {
+		return;
+	}
+	static const int MAX_PREFETCH = 1024;
+	idImage ** list = (idImage **)R_FrameAlloc( MAX_PREFETCH * sizeof( idImage * ) );
+	int count = 0;
+	// the view's own area first: its textures are the ones needed soonest
+	int areas[32];
+	int numAreas = 0;
+	areas[numAreas++] = viewDef->areaNum;
+	for ( const portal_t * p = world->portalAreas[viewDef->areaNum].portals; p != NULL && numAreas < 32; p = p->next ) {
+		bool seen = false;
+		for ( int k = 0; k < numAreas; k++ ) {
+			seen |= ( areas[k] == p->intoArea );
+		}
+		if ( !seen && p->intoArea >= 0 && p->intoArea < world->numPortalAreas ) {
+			areas[numAreas++] = p->intoArea;
+		}
+	}
+	for ( int a = 0; a < numAreas && count < MAX_PREFETCH; a++ ) {
+		const idList<idImage *> & images = N3DS_AreaImages( world, areas[a] );
+		for ( int i = 0; i < images.Num() && count < MAX_PREFETCH; i++ ) {
+			list[count++] = images[i];
+		}
+	}
+	viewDef->n3dsPrefetch = list;
+	viewDef->n3dsNumPrefetch = count;
 }

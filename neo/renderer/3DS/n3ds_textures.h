@@ -12,6 +12,7 @@
 
 void		N3DS_TexBeginFrame( bool has3D );
 void *		N3DS_TexForImage( idImage * image );		// GPU texture or NULL
+void		N3DS_TexPrefetch( idImage ** images, int count );	// read ahead (backend, once per main view)
 bool		N3DS_TexIsAlphaOnly( idImage * image );	// A8 on the GPU (fonts, coverage): no colour
 bool		N3DS_TexIsNormalMap( idImage * image );	// HILO8 from the texture pack: usable by the bump unit
 void		N3DS_TexStatsLine( idStr & line );

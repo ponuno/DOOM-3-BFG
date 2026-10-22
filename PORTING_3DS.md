@@ -457,7 +457,8 @@ turns it off.
 | `n3ds_texLinearKB` | 3072 | textures that do not fit in VRAM go to linear memory (FCRAM) up to this much; the GPU samples them from there |
 | `n3ds_texLinearReserveKB` | 2048 | linear memory the texture cache always leaves free |
 | `n3ds_texStream` | 1 | texture levels read from SD when first drawn instead of all kept in RAM (applies to images loaded afterwards) |
-| `n3ds_texRAMCacheKB` | 4096 | RAM for already uploaded streamed levels, so VRAM evictions come back without a read |
+| `n3ds_texRAMCacheKB` | 6144 | RAM for already uploaded streamed levels, so VRAM evictions come back without a read |
+| `n3ds_texPrefetch` | 1 | read the textures of the view's area and of every area one portal away (closed doors too) from the pack into the RAM cache while the SD card is idle, so a room entered next uploads from RAM |
 | `n3ds_tourFrames` | 600 | map tour: frames each map runs before the next |
 | `n3ds_hudScale` | 1.8 | HUD size relative to fitting the 720-line SWF stage to the 240-line screen; edge-anchored elements stay at the edges |
 | `n3ds_uiScale` | 1.35 | same for menus, PDA, loading screen and dialogs; too large crops unanchored elements |

@@ -169,7 +169,9 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds );
 void RB_N3DS_FlushForGPU( const void * p, int size );
 // textures (renderer/3DS/n3ds_textures.cpp): one small level per colour image is kept at load
 int RB_N3DS_TexKeepSize( textureUsage_t usage, const char * name );		// 0 = keep nothing
-bool N3DS_FontsAlphaOnly();											// n3ds_texFontA8
+bool N3DS_FontsAlphaOnly();
+struct viewDef_t;
+void R_N3DS_BuildPrefetch( viewDef_t * viewDef );						// frontend, main view											// n3ds_texFontA8
 void RB_N3DS_ImageLevel( idImage * image, int format, int colorFormat, int width, int height,
 						 const byte * data, int dataSize, int wrap, bool alphaOnly, int maxSize );
 void RB_N3DS_ImageLevelStreamed( idImage * image, int format, int colorFormat, int width, int height,
@@ -457,6 +459,11 @@ struct viewDef_t {
 	// crossing a closed door.  This is used to avoid drawing interactions
 	// when the light is behind a closed door.
 	bool *				connectedAreas;
+
+	// New 3DS: images of the view's area and the areas next to it, read from the texture
+	// pack ahead of being seen (R_N3DS_BuildPrefetch, frame memory)
+	idImage **			n3dsPrefetch;
+	int					n3dsNumPrefetch;
 };
 
 
