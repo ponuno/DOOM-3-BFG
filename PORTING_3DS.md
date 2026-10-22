@@ -430,6 +430,7 @@ turns it off.
 | `n3ds_specular` | 1 | lighting 2: specular maps x highlights |
 | `n3ds_specularPower` | 10 | lighting 2: highlight exponent (D0 table, uploaded when it changes) |
 | `n3ds_hwMaxLights` | 8 | lighting 2: most lights per surface, the brightest kept (fragment lighting costs GPU time per light per pixel) |
+| `n3ds_texVerify` | 0 | diagnostics: 1 = re-read textures from VRAM a few per frame and log any that changed after upload (with overlapping textures); 2 = also compare each packed upload with a fresh read of the pack |
 | `n3ds_c3dHangRegs` | 0 | on a GPU hang, also read the GPU's registers into `gpuhang.bin` |
 | `n3ds_c3dHangHunt` | 0 | from this 3D frame on, wait for the GPU after every draw and log the one it never finishes (slow) |
 | `n3ds_c3dFullFlush` | 0 | 1 = clean the data cache over all linear memory at every frame end (citro3d's default; 69 MB per frame in the 178 MB mode). Off: only the command list; everything else the GPU reads is flushed where it is written |

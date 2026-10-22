@@ -66,6 +66,7 @@ idCVar n3ds_texRAMCacheKB( "n3ds_texRAMCacheKB", "1024", CVAR_RENDERER | CVAR_IN
 idCVar n3ds_texLinearKB( "n3ds_texLinearKB", "3072", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory (FCRAM) for textures that do not fit in VRAM; the GPU samples them from there" );
 idCVar n3ds_texLinearReserveKB( "n3ds_texLinearReserveKB", "2048", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory the texture cache always leaves free (citro3d, staging copies)" );
 idCVar n3ds_texVRAMReserveKB( "n3ds_texVRAMReserveKB", "64", CVAR_RENDERER | CVAR_INTEGER, "citro3d: VRAM left free by the texture cache" );
+idCVar n3ds_texVerify( "n3ds_texVerify", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: 1 = check textures in VRAM against what was copied there (a few per frame) and log changed ones; 2 = also compare every packed upload with a fresh read of the pack" );
 idCVar n3ds_texPack( "n3ds_texPack", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT, "citro3d: take textures from base/_n3ds_textures.pak (converted on the PC by n3dstex) when it is there" );
 idCVar n3ds_texWorldMaxSize( "n3ds_texWorldMaxSize", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest world texture (larger pack levels are skipped)", 8, 1024 );
 idCVar n3ds_texBumpMaxSize( "n3ds_texBumpMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest normal map", 8, 1024 );
@@ -103,6 +104,9 @@ struct n3dsTexture_t {
 	int					retryFrame;		// after a failed upload: not before this frame
 	bool				everUploaded;	// diagnostics: drawn at least once since load
 	int					uploadFrame;	// diagnostics: texFrame of the last upload
+	uint32 *			verifyCrc;		// n3ds_texVerify: CRC of every 1 KB of what was copied to the GPU
+	int					verifyChunks;
+	bool				verifyBad;		// reported once
 	// streaming: the level is read from streamPath at streamOffset (streamPath < 0: data is
 	// owned for the image's lifetime). loadState and handing over data are under texLoadLock.
 	int					streamPath;
@@ -216,6 +220,7 @@ static void N3DS_TexDelete( n3dsTexture_t * t ) {
 		keptCount--;
 		keptBytes -= t->dataSize;
 	}
+	Mem_Free( t->verifyCrc );
 	delete t;
 }
 
@@ -721,8 +726,149 @@ void RB_N3DS_TexLevelLoaded() {
 	boostFrames = 20;		// 3D frames; at most 24 copies fit in one frame
 }
 
+
+/*
+================================================================================================
+
+	Texture verification (n3ds_texVerify, diagnostics for blocky colour artifacts)
+
+	At upload the data copied to the GPU is summed per 1 KB (CRC32); a few textures per
+	frame are read back from VRAM and summed again. A texture whose VRAM changed after its
+	upload is logged with the changed ranges and any other resident texture overlapping
+	it. Level 2 also reads every packed texture's bytes from the pack file again at upload
+	and compares (streaming / RAM cache corruption). VRAM overlaps between resident
+	textures are checked at every upload, verification on or not.
+
+================================================================================================
+*/
+static uint32 N3DS_Crc32( const byte * p, int n ) {
+	uint32 c = 0xFFFFFFFFu;
+	for ( int i = 0; i < n; i++ ) {
+		c ^= p[i];
+		for ( int k = 0; k < 8; k++ ) {
+			c = ( c >> 1 ) ^ ( 0xEDB88320u & ( 0u - ( c & 1u ) ) );
+		}
+	}
+	return ~c;
+}
+
+static int verifyLogged = 0;
+
+static void N3DS_VerifyRecord( n3dsTexture_t * t, const byte * data, int bytes ) {
+	Mem_Free( t->verifyCrc );
+	t->verifyCrc = NULL;
+	t->verifyChunks = 0;
+	t->verifyBad = false;
+	if ( n3ds_texVerify.GetInteger() <= 0 || data == NULL ) {
+		return;
+	}
+	const int chunks = ( bytes + 1023 ) / 1024;
+	t->verifyCrc = (uint32 *)Mem_Alloc( chunks * sizeof( uint32 ), TAG_IMAGE );
+	t->verifyChunks = chunks;
+	for ( int i = 0; i < chunks; i++ ) {
+		t->verifyCrc[i] = N3DS_Crc32( data + i * 1024, Min( 1024, bytes - i * 1024 ) );
+	}
+	// level 2: the bytes as they are in the pack file
+	if ( n3ds_texVerify.GetInteger() >= 2 && t->packed && t->streamPath >= 0 ) {
+		FILE * f = fopen( texPaths[t->streamPath].path.c_str(), "rb" );
+		if ( f != NULL ) {
+			byte * fresh = (byte *)Mem_Alloc( bytes, TAG_IMAGE );
+			const bool ok = fseek( f, t->streamOffset, SEEK_SET ) == 0 && (int)fread( fresh, 1, bytes, f ) == bytes;
+			fclose( f );
+			if ( ok && memcmp( fresh, data, bytes ) != 0 && verifyLogged < 40 ) {
+				verifyLogged++;
+				int first = 0;
+				while ( first < bytes && fresh[first] == data[first] ) {
+					first++;
+				}
+				int diff = 0;
+				for ( int i = 0; i < bytes; i++ ) {
+					diff += ( fresh[i] != data[i] );
+				}
+				common->Printf( "TEXVERIFY: %s: the data uploaded differs from the pack file (%d of %d bytes, first at %d)\n",
+					t->image->GetName(), diff, bytes, first );
+			}
+			Mem_Free( fresh );
+		}
+	}
+}
+
+// resident textures whose VRAM / linear ranges overlap t's
+static void N3DS_ReportOverlaps( const n3dsTexture_t * t, const char * when ) {
+	if ( t->gpu == NULL ) {
+		return;
+	}
+	const uintptr_t a0 = (uintptr_t)N3DSGPU_TexData( t->gpu ), a1 = a0 + t->gpuBytes;
+	for ( const n3dsTexture_t * o = lruHead; o != NULL; o = o->lruNext ) {
+		if ( o == t || o->gpu == NULL ) {
+			continue;
+		}
+		const uintptr_t b0 = (uintptr_t)N3DSGPU_TexData( o->gpu ), b1 = b0 + o->gpuBytes;
+		if ( a0 < b1 && b0 < a1 && verifyLogged < 40 ) {
+			verifyLogged++;
+			common->Printf( "TEXVERIFY: %s: %s at %08x-%08x overlaps %s at %08x-%08x\n", when, t->image->GetName(),
+				(unsigned)a0, (unsigned)a1, o->image->GetName(), (unsigned)b0, (unsigned)b1 );
+		}
+	}
+}
+
+static n3dsTexture_t *	verifyCursor = NULL;
+
+static void N3DS_VerifySome( int count ) {
+	if ( n3ds_texVerify.GetInteger() <= 0 ) {
+		return;
+	}
+	for ( int n = 0; n < count; n++ ) {
+		n3dsTexture_t * t = verifyCursor;
+		// the cursor may have left the list: start over from the head when unsure
+		bool inList = false;
+		for ( n3dsTexture_t * o = lruHead; o != NULL && t != NULL; o = o->lruNext ) {
+			if ( o == t ) {
+				inList = true;
+				break;
+			}
+		}
+		if ( !inList ) {
+			t = lruHead;
+		}
+		if ( t == NULL ) {
+			return;
+		}
+		verifyCursor = t->lruNext;
+		if ( t->gpu == NULL || t->verifyCrc == NULL || t->verifyBad || N3DSGPU_TexPending( t->gpu ) || texFrame - t->uploadFrame < 3 ) {
+			continue;
+		}
+		byte * data = (byte *)N3DSGPU_TexData( t->gpu );
+		N3DSGPU_InvalidateRange( data, t->gpuBytes );
+		int badFirst = -1, badLast = -1, badChunks = 0;
+		for ( int i = 0; i < t->verifyChunks; i++ ) {
+			const int len = Min( 1024, t->gpuBytes - i * 1024 );
+			if ( N3DS_Crc32( data + i * 1024, len ) != t->verifyCrc[i] ) {
+				if ( badFirst < 0 ) {
+					badFirst = i;
+				}
+				badLast = i;
+				badChunks++;
+			}
+		}
+		if ( badChunks > 0 ) {
+			t->verifyBad = true;
+			if ( verifyLogged < 40 ) {
+				verifyLogged++;
+				char desc[96];
+				N3DSGPU_TexDescribe( t->gpu, desc, sizeof( desc ) );
+				common->Printf( "TEXVERIFY: %s (%s, %s, uploaded %d frames ago) changed in %s: %d of %d KB, from %d KB to %d KB\n",
+					t->image->GetName(), desc, t->packed ? "pack" : "decoded", texFrame - t->uploadFrame, t->inLinear ? "linear memory" : "VRAM",
+					badChunks, t->verifyChunks, badFirst, badLast + 1 );
+				N3DS_ReportOverlaps( t, "changed texture" );
+			}
+		}
+	}
+}
+
 void N3DS_TexBeginFrame( bool has3D ) {
 	texFrame++;
+	N3DS_VerifySome( 6 );
 	uploadsThisFrame = 0;
 	uploadLimit = n3ds_texUploadsPerFrame.GetInteger();
 	if ( has3D && boostFrames > 0 ) {
@@ -813,6 +959,7 @@ static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & lay
 	}
 	N3DS_TexFill( t, layout, rgba, (byte *)N3DSGPU_TexData( gpu ) );
 	N3DSGPU_TexFlush( gpu, layout.bytes );
+	N3DS_VerifyRecord( t, (const byte *)N3DSGPU_TexData( gpu ), layout.bytes );
 	t->gpu = gpu;
 	t->gpuBytes = layout.bytes;
 	t->inLinear = true;
@@ -823,6 +970,7 @@ static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & lay
 	residentBytes += layout.bytes;
 	linearTexBytes += layout.bytes;
 	LRU_PushFront( t );
+	N3DS_ReportOverlaps( t, "new texture" );
 	statLinearUploads++;
 	return true;
 }
@@ -900,6 +1048,7 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		return false;
 	}
 	N3DS_TexFill( t, layout, rgba.Ptr(), staging );
+	N3DS_VerifyRecord( t, staging, layout.bytes );
 	if ( !N3DSGPU_TexUpload( gpu, staging, layout.bytes ) ) {		// takes the staging buffer
 		N3DSGPU_TexFree( gpu );
 		N3DS_TexFailed( t, layout, "copy refused (size mismatch or GX queue full)" );
@@ -914,6 +1063,7 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 	residentCount++;
 	residentBytes += layout.bytes;
 	LRU_PushFront( t );
+	N3DS_ReportOverlaps( t, "new texture" );
 	statUploads++;
 	statPackedUploads += t->packed ? 1 : 0;
 	statUploadUs += Sys_Microseconds() - start;

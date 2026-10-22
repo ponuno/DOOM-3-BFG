@@ -813,6 +813,10 @@ void * N3DSGPU_TexCreateLinear( int width, int height, int format, int maxLevel,
 	return N3DS_TexCreateIn( width, height, format, maxLevel, repeat, 0 );
 }
 
+void N3DSGPU_InvalidateRange( void * data, unsigned int size ) {
+	GSPGPU_InvalidateDataCache( data, size );
+}
+
 void * N3DSGPU_TexData( void * tex ) {
 	return ( tex != NULL ) ? ( (C3D_Tex *)tex )->data : NULL;
 }
