@@ -51,4 +51,8 @@ void	IN_Frame();			// samples HID once per frame on the main thread
 // 3ds_main.cpp
 void	Sys_LogMemory( const char * when );	// prints heap / linear heap usage to the console and log
 
+// 3ds_bottom.cpp: bottom screen = touch panel (gyro aim button) above the log
+void	N3DS_BottomInit();
+void	N3DS_BottomFrame();				// main thread, once per frame after hidScanInput
+
 #endif /* !__3DS_LOCAL_H__ */

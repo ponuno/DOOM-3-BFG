@@ -539,6 +539,13 @@ void			Sys_N3DSStage( int slot, const char * what );
 void			Sys_N3DSFrameDone();
 // true in the 178 MB New 3DS memory mode (the CIA): big linear heap, second heap
 bool			Sys_N3DSExtendedMemory();
+// gyro aim (3ds_input.cpp): degrees turned since the last call; false while it is off
+bool			Sys_N3DSGyroAngles( float & yaw, float & pitch );
+// 0 off, 1 calibrating, 2 on; the current rates in degrees per second
+int				Sys_N3DSGyroState( float & yawDps, float & pitchDps );
+// the log's lock (3ds_main.cpp): the bottom screen panel draws under it
+void			Sys_N3DSConsoleLock();
+void			Sys_N3DSConsoleUnlock();
 #define N3DS_STAGE( slot, what )	Sys_N3DSStage( slot, what )
 // logs "SLOW <label>: x ms" when the enclosing scope takes longer than limitMs
 class idN3DSSlowScope {

@@ -1023,6 +1023,15 @@ void idUsercmdGenLocal::MakeCurrent() {
 		// keyboard angle adjustment
 		AdjustAngles();
 
+#if defined( ID_3DS )
+		// gyro aim: what the console turned since the last usercmd
+		float gyroYaw, gyroPitch;
+		if ( Sys_N3DSGyroAngles( gyroYaw, gyroPitch ) ) {
+			viewangles[YAW] += gyroYaw;
+			viewangles[PITCH] += gyroPitch;
+		}
+#endif
+
 		// set button bits
 		CmdButtons();
 

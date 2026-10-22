@@ -30,6 +30,12 @@ the Free Software Foundation, either version 3 of the License, or
 
 	START + SELECT together quits.
 
+	Gyro aim (n3ds_gyro, toggled on the bottom screen): the gyroscope's yaw and pitch
+	rates, integrated over the frame, turn the view (Sys_N3DSGyroAngles, added in
+	idUsercmdGenLocal::MakeCurrent next to the C-Stick). Switching it on measures the
+	resting bias for ~0.7 s (hold the console still); rates under n3ds_gyroDeadzone count
+	as rest and slowly pull the bias along, which takes care of drift.
+
 	HID is sampled once per frame on the main thread (IN_Frame); the usercmd
 	code consumes the cached state through Sys_PollJoystickInputEvents.
 
@@ -46,7 +52,21 @@ extern "C" {
 #include <3ds/synchronization.h>
 #include <3ds/services/hid.h>
 #include <3ds/services/irrst.h>	// C-Stick (merged into hid on New 3DS)
+#include <3ds/result.h>
+#include <3ds/svc.h>
+#include <3ds/os.h>
 }
+
+idCVar n3ds_gyro( "n3ds_gyro", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "New 3DS: aim with the gyroscope (bottom screen button)" );
+idCVar n3ds_gyroSensitivity( "n3ds_gyroSensitivity", "1.5", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "New 3DS gyro aim: view degrees per degree the console turns", 0.1f, 10.0f );
+idCVar n3ds_gyroDeadzone( "n3ds_gyroDeadzone", "1.5", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_FLOAT, "New 3DS gyro aim: rates below this (degrees per second) count as rest" );
+idCVar n3ds_gyroYawAxis( "n3ds_gyroYawAxis", "2", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER, "New 3DS gyro aim: gyroscope axis for yaw (0 = x / roll, 1 = y / pitch, 2 = z / yaw, as libctru names them)", 0, 2 );
+idCVar n3ds_gyroPitchAxis( "n3ds_gyroPitchAxis", "1", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_INTEGER, "New 3DS gyro aim: gyroscope axis for pitch", 0, 2 );
+idCVar n3ds_gyroInvertYaw( "n3ds_gyroInvertYaw", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "New 3DS gyro aim: turn the other way" );
+idCVar n3ds_gyroInvertPitch( "n3ds_gyroInvertPitch", "0", CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_BOOL, "New 3DS gyro aim: look up / down the other way" );
+idCVar n3ds_gyroDebug( "n3ds_gyroDebug", "0", CVAR_SYSTEM | CVAR_BOOL, "New 3DS gyro aim: log the three axes' rates once a second (to find the axes and signs)" );
+
+void N3DS_BottomFrame();		// 3ds_bottom.cpp
 
 static const int CIRCLE_PAD_RANGE	= 156;	// approximate max deflection of the Circle Pad / C-Stick
 static const int AXIS_RANGE			= 32767;
@@ -74,6 +94,121 @@ static int			numJoyEvents = 0;
 
 static bool			buttonStates[K_LAST_KEY];
 static int			joyAxis[MAX_JOYSTICK_AXIS];
+
+/*
+================================================================================================
+
+	Gyroscope
+
+================================================================================================
+*/
+static const int	GYRO_CALIBRATION_FRAMES = 40;
+static bool			gyroOn = false;
+static float		gyroCoeff = 14.375f;		// raw units per degree per second
+static int			gyroCalibrated = 0;			// frames summed for the bias
+static float		gyroBias[3];
+static float		gyroSum[3];
+static u64			gyroLastTick = 0;
+static u64			gyroLastConsume = 0;
+static float		gyroPendingYaw = 0.0f;		// degrees, under padLock
+static float		gyroPendingPitch = 0.0f;
+static float		gyroYawDps = 0.0f;			// last rates, for the bottom screen
+static float		gyroPitchDps = 0.0f;
+static int			gyroDebugMs = 0;
+
+static void N3DS_GyroFrame() {
+	const bool want = n3ds_gyro.GetBool();
+	const u64 now = svcGetSystemTick();
+	if ( want && !gyroOn ) {
+		HIDUSER_EnableGyroscope();
+		float coeff = 0.0f;
+		if ( R_SUCCEEDED( HIDUSER_GetGyroscopeRawToDpsCoefficient( &coeff ) ) && coeff > 0.1f && coeff < 1000.0f ) {
+			gyroCoeff = coeff;
+		}
+		gyroOn = true;
+		gyroCalibrated = 0;
+		gyroSum[0] = gyroSum[1] = gyroSum[2] = 0.0f;
+		gyroLastTick = now;
+		common->Printf( "gyro aim: on, %.3f raw per deg/s, calibrating (hold the console still)\n", gyroCoeff );
+	} else if ( !want && gyroOn ) {
+		HIDUSER_DisableGyroscope();
+		gyroOn = false;
+		LightLock_Lock( &padLock );
+		gyroPendingYaw = gyroPendingPitch = 0.0f;
+		LightLock_Unlock( &padLock );
+		gyroYawDps = gyroPitchDps = 0.0f;
+	}
+	if ( !gyroOn ) {
+		return;
+	}
+	angularRate r;
+	hidGyroRead( &r );
+	const float raw[3] = { (float)r.x, (float)r.y, (float)r.z };
+	float dt = (float)( (double)( now - gyroLastTick ) / SYSCLOCK_ARM11 );
+	gyroLastTick = now;
+	if ( dt > 0.1f ) {
+		dt = 0.1f;
+	}
+	if ( gyroCalibrated < GYRO_CALIBRATION_FRAMES ) {
+		for ( int k = 0; k < 3; k++ ) {
+			gyroSum[k] += raw[k];
+		}
+		if ( ++gyroCalibrated == GYRO_CALIBRATION_FRAMES ) {
+			for ( int k = 0; k < 3; k++ ) {
+				gyroBias[k] = gyroSum[k] / GYRO_CALIBRATION_FRAMES;
+			}
+			common->Printf( "gyro aim: bias %.1f %.1f %.1f raw, ready\n", gyroBias[0], gyroBias[1], gyroBias[2] );
+		}
+		return;
+	}
+	float dps[3];
+	const float deadzone = Max( 0.0f, n3ds_gyroDeadzone.GetFloat() );
+	for ( int k = 0; k < 3; k++ ) {
+		dps[k] = ( raw[k] - gyroBias[k] ) / gyroCoeff;
+		if ( fabsf( dps[k] ) < deadzone ) {
+			gyroBias[k] += 0.002f * ( raw[k] - gyroBias[k] );		// at rest: follow the drift
+			dps[k] = 0.0f;
+		}
+	}
+	const int yawAxis = idMath::ClampInt( 0, 2, n3ds_gyroYawAxis.GetInteger() );
+	const int pitchAxis = idMath::ClampInt( 0, 2, n3ds_gyroPitchAxis.GetInteger() );
+	gyroYawDps = dps[yawAxis] * ( n3ds_gyroInvertYaw.GetBool() ? -1.0f : 1.0f );
+	// view pitch grows looking down
+	gyroPitchDps = -dps[pitchAxis] * ( n3ds_gyroInvertPitch.GetBool() ? -1.0f : 1.0f );
+	const float sens = n3ds_gyroSensitivity.GetFloat();
+	LightLock_Lock( &padLock );
+	if ( (double)( now - gyroLastConsume ) / SYSCLOCK_ARM11 > 0.25 ) {
+		// nobody took the turns (menu, loading): start over instead of jumping later
+		gyroPendingYaw = gyroPendingPitch = 0.0f;
+	}
+	gyroPendingYaw += gyroYawDps * dt * sens;
+	gyroPendingPitch += gyroPitchDps * dt * sens;
+	LightLock_Unlock( &padLock );
+
+	if ( n3ds_gyroDebug.GetBool() && Sys_Milliseconds() - gyroDebugMs >= 1000 ) {
+		gyroDebugMs = Sys_Milliseconds();
+		common->Printf( "gyro: x %+.1f y %+.1f z %+.1f deg/s (yaw axis %d, pitch axis %d)\n", dps[0], dps[1], dps[2], yawAxis, pitchAxis );
+	}
+}
+
+bool Sys_N3DSGyroAngles( float & yaw, float & pitch ) {
+	LightLock_Lock( &padLock );
+	yaw = gyroPendingYaw;
+	pitch = gyroPendingPitch;
+	gyroPendingYaw = gyroPendingPitch = 0.0f;
+	gyroLastConsume = svcGetSystemTick();
+	LightLock_Unlock( &padLock );
+	return gyroOn && gyroCalibrated >= GYRO_CALIBRATION_FRAMES;
+}
+
+int Sys_N3DSGyroState( float & yawDps, float & pitchDps ) {
+	yawDps = gyroYawDps;
+	pitchDps = gyroPitchDps;
+	if ( !gyroOn ) {
+		return 0;
+	}
+	return ( gyroCalibrated < GYRO_CALIBRATION_FRAMES ) ? 1 : 2;
+}
 
 /*
 ========================
@@ -110,6 +245,10 @@ IN_Shutdown
 ========================
 */
 void IN_Shutdown() {
+	if ( gyroOn ) {
+		HIDUSER_DisableGyroscope();
+		gyroOn = false;
+	}
 }
 
 /*
@@ -119,6 +258,9 @@ IN_Frame
 */
 void IN_Frame() {
 	hidScanInput();
+
+	N3DS_BottomFrame();
+	N3DS_GyroFrame();
 
 	const u32 held = hidKeysHeld();
 	circlePosition cp, cs;

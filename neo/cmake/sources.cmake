@@ -244,6 +244,7 @@ set(ENGINE_3DS_SOURCES
 	sys/3ds/3ds_achievements.cpp
 	sys/3ds/3ds_glimp.cpp
 	sys/3ds/3ds_input.cpp
+	sys/3ds/3ds_bottom.cpp
 	sys/3ds/3ds_localuser.cpp
 	sys/3ds/3ds_main.cpp
 	sys/3ds/3ds_net.cpp

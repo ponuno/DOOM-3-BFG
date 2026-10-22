@@ -49,6 +49,7 @@ Target: armv6k / MPCore, VFPv2, hard-float, C++14 (gnu), exceptions ON
     sdmc:/doom3/base/_sound_pc_<language>.resources   (e.g. _sound_pc_en.resources)
     sdmc:/doom3/base/maps/<map>.resources
     sdmc:/doom3/base/_n3ds_textures.pak  (optional, made on the PC by n3dstex: see "Texture pack")
+    sdmc:/doom3/base/_n3ds_sounds.pak    (optional, made by n3dstex too: see "Sound")
     sdmc:/doom3/cmdline.txt          (optional: extra command line, e.g. "+map game/mars_city1")
     sdmc:/doom3/log.txt              (written by the game)
     sdmc:/doom3/save/                (fs_savepath)
@@ -176,9 +177,26 @@ away from any frame still on the GPU. The GUI model's block is 32768 vertexes / 
 (16-bit indexes; the PC's 80000 vertexes could not all be addressed). Released textures are
 deleted only once the frames that may sample them are finished, and are unbound first.
 
+## Bottom screen and gyro aim
+
+The bottom screen is two libctru consoles (`sys/3ds/3ds_bottom.cpp`): rows 0-5 a touch panel, rows
+6-29 the log as before. The panel has the GYRO AIM button (touch toggles `n3ds_gyro`, which is
+saved in the config) and a status line (off / calibrating / the current yaw and pitch rates). It is
+redrawn under the log's lock, so it never cuts into a log line.
+
+Gyro aim (`sys/3ds/3ds_input.cpp`): switching it on enables the gyroscope and measures its resting
+bias over 40 frames (hold the console still, the panel says so). Each frame the rates of the yaw
+and pitch axes (libctru's z and y; `n3ds_gyroYawAxis` / `n3ds_gyroPitchAxis`, inverted with
+`n3ds_gyroInvertYaw` / `n3ds_gyroInvertPitch`) are integrated over the frame time, scaled by
+`n3ds_gyroSensitivity`, and added to the view angles in `idUsercmdGenLocal::MakeCurrent` next to
+the C-Stick. Rates under `n3ds_gyroDeadzone` count as rest and pull the bias slowly along (drift).
+Turns nobody consumed for 0.25 s (menus, loading) are dropped. `+set n3ds_gyroDebug 1` logs the three
+axes once a second, to check the axes and signs on the console.
+
 ## Texture pack (tools/n3ds/n3dstex)
 
-`n3dstex` converts every 2D image of the game's `.resources` files on the PC into what the
+`n3dstex` (one run makes the texture pack and the sound pack; `-tex` / `-snd` for one of them)
+converts every 2D image of the game's `.resources` files on the PC into what the
 PICA200 samples directly, and writes them into one file, `_n3ds_textures.pak`
 (format: `neo/renderer/3DS/n3ds_pack.h`). Each texture is its whole mip chain (down to 8 on the
 short side), flipped and tiled as the backend lays textures out, so the console copies it to
@@ -279,6 +297,22 @@ is there (long sounds keep their timing); all data shares `n3ds_soundMemoryKB` w
 least-recently-played eviction. Needs the DSP firmware dump
 `sdmc:/3ds/dspfirm.cdc` (DSP1); without it the game runs silent. `+set s_noSound 1` turns sound off.
 
+Sound pack (`_n3ds_sounds.pak`, written by `n3dstex` next to the texture pack; format
+`sound/3DS/n3ds_soundpack.h`): every sample re-encoded as DSP-ADPCM, which the DSP decodes itself.
+A sample the pack has keeps its `.idwav` header (length, amplitude table) but its data becomes one
+DSP-ADPCM stream per channel from the pack (read by the loader thread, same budget and eviction).
+Its voice plays mono DSP-ADPCM channels (`N3DSAudio_ChnStartAdpcm`): the feeder only copies the next
+146 frames (2044 samples, 1168 bytes) per channel into a free wave buffer, no decoding and no
+mixing. A stereo sample takes two DSP channels; its level matrix becomes their left/right levels.
+Streams (the start, the looping sample from its first sample) begin with the encoder's state (the
+first frame's header, no history), so loops are seamless; a start at an offset is moved back to a
+frame boundary (14 samples). The VU meter (light flicker, lip sync) reads the sample's amplitude
+table at the buffer being played. All samples share the pack's 8 predictor pairs (the MS ADPCM
+ones x 8 and (1, -0.5)), so a voice keeps its channels' coefficients from leadin to loop. Encoder:
+per 14-sample frame every pair and scale is tried against an exact model of the DSP decoder; SNR
+against the decoded source is printed (synthetic tests: tones 47 dB, speech 30 dB, noise 25 dB).
+Without the pack, or with `+set n3ds_soundPack 0`, samples are decoded by the CPU as above.
+
 ## Skipping cinematics
 
 Not in BFG, but in the original Doom 3: during a cinematic (camera view), A (jump) or ZR (attack)
@@ -325,6 +359,13 @@ turns it off.
 | `n3ds_soundVolume` | 1 | DSP master volume |
 | `n3ds_ambientStages` | 1 | ambient/blended stages and fullscreen GUIs |
 | `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD texture |
+| `n3ds_soundPack` | 1 | play samples from `base/_n3ds_sounds.pak` (DSP-ADPCM, decoded by the DSP) when it is there |
+| `n3ds_gyro` | 0 | gyro aim (bottom screen button; saved) |
+| `n3ds_gyroSensitivity` | 1.5 | view degrees per degree the console turns |
+| `n3ds_gyroDeadzone` | 1.5 | rates below this (deg/s) count as rest |
+| `n3ds_gyroYawAxis` / `n3ds_gyroPitchAxis` | 2 / 1 | gyroscope axes (0 x, 1 y, 2 z as libctru names them) |
+| `n3ds_gyroInvertYaw` / `n3ds_gyroInvertPitch` | 0 | reverse a direction |
+| `n3ds_gyroDebug` | 0 | log the three axes' rates once a second |
 | `n3ds_texPack` | 1 | take textures from `base/_n3ds_textures.pak` (n3dstex) when it is there |
 | `n3ds_texWorldMaxSize` | 256 | texture pack: largest world texture (the top of the chain is skipped) |
 | `n3ds_texBumpMaxSize` | 128 | texture pack: largest normal map |

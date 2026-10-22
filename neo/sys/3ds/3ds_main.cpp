@@ -231,6 +231,18 @@ static void Sys_LogWrite( const char * text ) {
 	}
 }
 
+void Sys_N3DSConsoleLock() {
+	if ( logLockInit ) {
+		LightLock_Lock( &logLock );
+	}
+}
+
+void Sys_N3DSConsoleUnlock() {
+	if ( logLockInit ) {
+		LightLock_Unlock( &logLock );
+	}
+}
+
 /*
 ==============
 Sys_Printf
@@ -976,7 +988,7 @@ int N3DS_Main( int argc, char ** argv ) {
 	n3ds.quitRequested = false;
 
 	gfxInitDefault();
-	consoleInit( GFX_BOTTOM, NULL );
+	N3DS_BottomInit();		// touch panel above the log on the bottom screen
 
 	LightLock_Init( &logLock );
 	logLockInit = true;
