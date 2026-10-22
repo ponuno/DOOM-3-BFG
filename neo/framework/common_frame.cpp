@@ -920,6 +920,13 @@ void idCommonLocal::Frame() {
 				perfBackendUs += time_backend;
 				const int elapsed = now - perfStart;
 				if ( elapsed >= 2000 && perfFrames > 0 ) {
+					static bool threadsReported = false;
+					if ( !threadsReported ) {
+						// once: which core each engine thread got (all threads have started by now)
+						extern void Sys_N3DSThreadReport();
+						Sys_N3DSThreadReport();
+						threadsReported = true;
+					}
 					const float ticks = (float)Max( n3dsPerfTicks, 1 );
 					Printf( "PERF %.1fs: %d frames %.1f fps | %d ticks, game %.1f ms/tick, worst frame %.1f ms | draw %.1f frontend %.1f backend %.1f ms/frame\n",
 						elapsed * 0.001f, perfFrames, perfFrames * 1000.0f / elapsed,

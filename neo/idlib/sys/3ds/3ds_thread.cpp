@@ -88,12 +88,48 @@ struct threadRecord_t {
 	threadStart_t *	start;
 };
 
+/*
+	Which core each engine thread asked for and which it runs on: a thread whose core could
+	not be had falls back to core 0, where it competes with the main thread. Read by
+	Sys_N3DSThreadReport once the game runs.
+*/
+struct threadCoreRecord_t {
+	char	name[32];
+	int		asked;		// core asked for (libctru numbering), -2 = default
+	int		fallback;	// threadCreate on that core failed
+	int		ran;		// core the thread found itself on, -1 until it started
+};
+static const int			MAX_THREAD_RECORDS = 16;
+static threadCoreRecord_t	threadRecords[MAX_THREAD_RECORDS];
+static int					numThreadRecords = 0;
+
 static void ThreadEntry( void * arg ) {
 	threadStart_t * start = (threadStart_t *)arg;
 	if ( start->suspended ) {
 		LightEvent_Wait( &start->resume );
 	}
+	for ( int i = 0; i < numThreadRecords; i++ ) {
+		if ( threadRecords[i].ran < 0 && idStr::Cmp( threadRecords[i].name, start->name ) == 0 ) {
+			threadRecords[i].ran = svcGetProcessorID();
+			break;
+		}
+	}
 	start->function( start->parms );
+}
+
+/*
+========================
+Sys_N3DSThreadReport
+========================
+*/
+void Sys_N3DSThreadReport() {
+	s32 mainCore = svcGetProcessorID();
+	idLib::Printf( "threads: main thread on core %d\n", (int)mainCore );
+	for ( int i = 0; i < numThreadRecords; i++ ) {
+		const threadCoreRecord_t & r = threadRecords[i];
+		idLib::Printf( "threads: %-22s asked core %2d, runs on core %2d%s\n", r.name, r.asked, r.ran,
+			r.fallback != 0 ? " (creating it there failed, fell back to the default core)" : "" );
+	}
 }
 
 /*
@@ -121,8 +157,19 @@ uintptr_t Sys_CreateThread( xthread_t function, void *parms, xthreadPriority pri
 	LightEvent_Init( &start->resume, RESET_ONESHOT );
 
 	int coreId = MapCore( core );
+	threadCoreRecord_t * record = NULL;
+	if ( numThreadRecords < MAX_THREAD_RECORDS ) {
+		record = &threadRecords[numThreadRecords++];
+		idStr::Copynz( record->name, start->name, sizeof( record->name ) );
+		record->asked = coreId;
+		record->fallback = 0;
+		record->ran = -1;
+	}
 	Thread t = threadCreate( ThreadEntry, start, stackSize, MapPriority( priority ), coreId, false );
 	if ( t == NULL && coreId != -2 ) {
+		if ( record != NULL ) {
+			record->fallback = 1;
+		}
 		// requested core not available (e.g. old 3DS or speedup not enabled): fall back to core 0
 		t = threadCreate( ThreadEntry, start, stackSize, MapPriority( priority ), -2, false );
 	}
