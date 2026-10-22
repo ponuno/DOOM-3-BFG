@@ -42,12 +42,26 @@ bool N3DS_DecodeLevel( int format, int colorFormat, int width, int height,
 	switch ( format ) {
 		case FMT_DXT1:
 		case FMT_DXT5: {
-			if ( ( width & 3 ) != 0 || ( height & 3 ) != 0 ) {
-				return false;		// block-padded levels are not produced at the sizes kept here
-			}
+			// a side that is not a multiple of 4 (a 512x651 SWF atlas level) is stored as whole
+			// blocks: decode the padded size, then keep the top-left width x height
+			const int pw = ( width + 3 ) & ~3;
+			const int ph = ( height + 3 ) & ~3;
 			const int blockBytes = ( format == FMT_DXT1 ) ? 8 : 16;
-			if ( dataSize < ( width / 4 ) * ( height / 4 ) * blockBytes ) {
+			if ( dataSize < ( pw / 4 ) * ( ph / 4 ) * blockBytes ) {
 				return false;
+			}
+			if ( pw != width || ph != height ) {
+				if ( colorFormat == CFM_NORMAL_DXT5 ) {
+					return false;
+				}
+				idTempArray<byte> padded( pw * ph * 4 );
+				if ( !N3DS_DecodeLevel( format, colorFormat, pw, ph, data, dataSize, padded.Ptr() ) ) {
+					return false;
+				}
+				for ( int y = 0; y < height; y++ ) {
+					memcpy( rgba + y * width * 4, padded.Ptr() + y * pw * 4, width * 4 );
+				}
+				return true;
 			}
 			idDxtDecoder dxt;
 			if ( format == FMT_DXT1 ) {
@@ -242,40 +256,76 @@ static void N3DS_Halve( const byte * src, int w, int h, bool halveX, bool halveY
 }
 
 // RGBA8 w x h -> tw x th, each target pixel the coverage-weighted average of the source
-// pixels under it (both directions, any ratio)
+// pixels under it. Separable (rows, then columns) with the weights of each target
+// position worked out once, in 1/65536: no division per pixel (ARM11 has no divider).
+struct n3dsTap_t {
+	int		first;		// first source index
+	int		count;
+	int		weight[8];	// sums to 65536 (ratios below 2:1 cover at most 3 sources; up to 8 allowed)
+};
+
+static void N3DS_AreaTaps( int src, int dst, n3dsTap_t * taps ) {
+	for ( int t = 0; t < dst; t++ ) {
+		// target t covers [t * src / dst, (t + 1) * src / dst) in 1/256 source units
+		const int a = ( t * src * 256 ) / dst;
+		const int b = ( ( t + 1 ) * src * 256 ) / dst;
+		n3dsTap_t & tap = taps[t];
+		tap.first = a >> 8;
+		tap.count = 0;
+		int total = 0;
+		for ( int s = a >> 8; s < src && ( s << 8 ) < b && tap.count < 8; s++ ) {
+			const int w = Min( b, ( s + 1 ) << 8 ) - Max( a, s << 8 );
+			tap.weight[tap.count++] = Max( w, 0 );
+			total += Max( w, 0 );
+		}
+		// normalise to 65536, the rounding remainder on the last tap
+		int sum = 0;
+		for ( int k = 0; k < tap.count; k++ ) {
+			tap.weight[k] = ( total > 0 ) ? ( tap.weight[k] * 65536 ) / total : 0;
+			sum += tap.weight[k];
+		}
+		if ( tap.count > 0 ) {
+			tap.weight[tap.count - 1] += 65536 - sum;
+		}
+	}
+}
+
 static void N3DS_AreaResample( const byte * src, int w, int h, int tw, int th, byte * dst ) {
-	// weights in 1/256 source pixels: target pixel t covers [t * w / tw, (t + 1) * w / tw)
-	for ( int y = 0; y < th; y++ ) {
-		const int y0 = ( y * h * 256 ) / th;
-		const int y1 = ( ( y + 1 ) * h * 256 ) / th;
+	idTempArray<n3dsTap_t> xt( tw );
+	idTempArray<n3dsTap_t> yt( th );
+	N3DS_AreaTaps( w, tw, xt.Ptr() );
+	N3DS_AreaTaps( h, th, yt.Ptr() );
+	// rows: w x h -> tw x h
+	idTempArray<byte> mid( tw * h * 4 );
+	for ( int y = 0; y < h; y++ ) {
+		const byte * row = src + y * w * 4;
+		byte * out = mid.Ptr() + y * tw * 4;
 		for ( int x = 0; x < tw; x++ ) {
-			const int x0 = ( x * w * 256 ) / tw;
-			const int x1 = ( ( x + 1 ) * w * 256 ) / tw;
-			int sum[4] = { 0, 0, 0, 0 };
-			int total = 0;
-			for ( int sy = y0 >> 8; sy < h && ( sy << 8 ) < y1; sy++ ) {
-				const int wy = Min( y1, ( sy + 1 ) << 8 ) - Max( y0, sy << 8 );
-				if ( wy <= 0 ) {
-					continue;
-				}
-				for ( int sx = x0 >> 8; sx < w && ( sx << 8 ) < x1; sx++ ) {
-					const int wx = Min( x1, ( sx + 1 ) << 8 ) - Max( x0, sx << 8 );
-					if ( wx <= 0 ) {
-						continue;
-					}
-					const int wgt = wx * wy;
-					const byte * p = src + ( sy * w + sx ) * 4;
-					sum[0] += p[0] * wgt;
-					sum[1] += p[1] * wgt;
-					sum[2] += p[2] * wgt;
-					sum[3] += p[3] * wgt;
-					total += wgt;
-				}
+			const n3dsTap_t & tap = xt[x];
+			int c[4] = { 32768, 32768, 32768, 32768 };
+			for ( int k = 0; k < tap.count; k++ ) {
+				const byte * p = row + ( tap.first + k ) * 4;
+				const int wgt = tap.weight[k];
+				c[0] += p[0] * wgt;
+				c[1] += p[1] * wgt;
+				c[2] += p[2] * wgt;
+				c[3] += p[3] * wgt;
 			}
-			byte * o = dst + ( y * tw + x ) * 4;
 			for ( int k = 0; k < 4; k++ ) {
-				o[k] = (byte)( total > 0 ? ( sum[k] + total / 2 ) / total : 0 );
+				out[x * 4 + k] = (byte)Min( c[k] >> 16, 255 );
 			}
+		}
+	}
+	// columns: tw x h -> tw x th
+	for ( int y = 0; y < th; y++ ) {
+		const n3dsTap_t & tap = yt[y];
+		byte * out = dst + y * tw * 4;
+		for ( int x = 0; x < tw * 4; x++ ) {
+			int c = 32768;
+			for ( int k = 0; k < tap.count; k++ ) {
+				c += mid[( tap.first + k ) * tw * 4 + x] * tap.weight[k];
+			}
+			out[x] = (byte)Min( c >> 16, 255 );
 		}
 	}
 }

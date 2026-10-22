@@ -633,6 +633,12 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 	if ( !N3DS_DecodeLevel( t->format, t->colorFormat, t->width, t->height, t->data, t->dataSize, rgba.Ptr() ) ) {
 		t->unsupported = true;
 		statFailed++;
+		static int undecodableLogged = 0;
+		if ( undecodableLogged < 32 ) {
+			undecodableLogged++;
+			common->Printf( "citro3d: texture %s cannot be decoded (%dx%d, format %d, colour format %d, %d bytes): not drawn\n",
+				t->image->GetName(), t->width, t->height, t->format, t->colorFormat, t->dataSize );
+		}
 		return false;
 	}
 	n3dsTexLayout_t layout;
