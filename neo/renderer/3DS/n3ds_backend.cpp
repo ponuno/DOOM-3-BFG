@@ -49,8 +49,9 @@ idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, 
 idCVar n3ds_c3dHangHunt( "n3ds_c3dHangHunt", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: from this 3D frame on, wait for the GPU after every draw and name the draw it never finishes (slow; 0 = off)" );
 static bool c3dHangFound = false;
 idCVar n3ds_c3dFullFlush( "n3ds_c3dFullFlush", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: clean the data cache over all linear memory at every frame end (old behaviour, ~69 MB per frame in the 178 MB mode)" );
+idCVar n3ds_hwMaxLights( "n3ds_hwMaxLights", "8", CVAR_RENDERER | CVAR_INTEGER, "citro3d lighting 2: most lights per surface (the brightest are kept); each light costs GPU time on every pixel of the surface", 1, 8 );
 idCVar n3ds_guiStencil( "n3ds_guiStencil", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: stencil for SWF masks (0 = ignore the stencil state, for bisecting)" );
-idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
+idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
 idCVar n3ds_c3dTest( "n3ds_c3dTest", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d bring-up test: 1 = only a test triangle, 2 = engine surfaces copied to a private buffer first (first one per frame)" );
 idCVar n3ds_c3dTrace( "n3ds_c3dTrace", "3", CVAR_RENDERER | CVAR_INTEGER, "citro3d: log begin/end of the first N 3D frames" );
 
@@ -742,6 +743,10 @@ struct n3dsHWLight_t {
 
 static n3dsHWLight_t	hwFrameLights[N3DS_MAX_FRAME_LIGHTS];
 
+static float N3DS_LightStrength( const n3dsHWLight_t & l ) {
+	return l.color[0] + l.color[1] + l.color[2];
+}
+
 // per view surface: up to 8 lights and the ambient light sum
 struct n3dsSurfLights_t {
 	byte	lights[8];
@@ -911,6 +916,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 		hwHash[h] = i;
 	}
 
+	const int maxSurfLights = idMath::ClampInt( 1, 8, n3ds_hwMaxLights.GetInteger() );
 	int numLights = 0;
 	for ( const viewLight_t * vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
 		const idMaterial * lightShader = vLight->lightShader;
@@ -961,9 +967,19 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 				if ( dup ) {
 					continue;
 				}
-				if ( sl.numLights < 8 ) {
+				if ( sl.numLights < maxSurfLights ) {
 					sl.lights[ sl.numLights++ ] = (byte)numLights;
 				} else {
+					// full: keep the brightest (PICA fragment lighting costs per light per pixel)
+					int weakest = 0;
+					for ( int k = 1; k < sl.numLights; k++ ) {
+						if ( N3DS_LightStrength( hwFrameLights[ sl.lights[k] ] ) < N3DS_LightStrength( hwFrameLights[ sl.lights[weakest] ] ) ) {
+							weakest = k;
+						}
+					}
+					if ( N3DS_LightStrength( light ) > N3DS_LightStrength( hwFrameLights[ sl.lights[weakest] ] ) ) {
+						sl.lights[weakest] = (byte)numLights;
+					}
 					c3dStatHWDropped++;
 				}
 			}
