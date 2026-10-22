@@ -143,7 +143,7 @@ projection mode) x falloff (unit 1) x diffuse (unit 2) x light colour x max(0, N
 x4 in the last combiner stage so `r_lightScale` 3 overbright survives the 0..1 vertex colour.
 No normal/specular maps and no shadows yet.
 
-`n3ds_lighting 2` (default): second vertex program `n3ds_vshader_lit.v.pica` outputs the eye-space
+`n3ds_lighting 2`: second vertex program `n3ds_vshader_lit.v.pica` outputs the eye-space
 normal quaternion and view vector; every surface is drawn once with the PICA fragment lighting.
 Its lights come from the interaction lists (matched to the view surface by vertex cache handle and
 space). Point lights -> positional lights with a shared distance attenuation table scaled by the
@@ -418,7 +418,7 @@ turns it off.
 | `n3ds_texFlip` | 1 | texture rows stored bottom-up; toggle if textures are upside down |
 | `n3ds_texMips` | 1 | mip maps |
 | `n3ds_texUploadsAfterLoad` | 256 | upload limit for the first 20 frames after a map load (at most 24 copies fit in one frame) |
-| `n3ds_lighting` | 2 | 0 = full brightness, 1 = a pass per light (light images, per-vertex N.L), 2 = PICA fragment lighting: one pass, per pixel, up to 8 lights per surface |
+| `n3ds_lighting` | 1 | 0 = full brightness, 1 = a pass per light (light images, per-vertex N.L), 2 = PICA fragment lighting: one pass, per pixel, up to 8 lights per surface |
 | `n3ds_hwLightScale` | 4 | lighting 2: overbright range (2 or 4) |
 | `n3ds_hwSpotFlip` | 0 | lighting 2: reverse spot light directions |
 | `n3ds_hwLightRadius` | 1 | lighting 2: point light reach as a fraction of the smallest half-size of its box |

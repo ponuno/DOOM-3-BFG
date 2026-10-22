@@ -74,7 +74,7 @@ static int		c3dStatLights = 0;
 static int		c3dStatLightDraws = 0;
 static int		c3dStatScissorPixels = 0;	// light rectangles, summed
 
-idCVar n3ds_lighting( "n3ds_lighting", "2", CVAR_RENDERER | CVAR_INTEGER, "citro3d: 0 = everything at full brightness, 1 = a pass per light (projected light images, per-vertex N.L), 2 = PICA fragment lighting, one pass, up to 8 lights per surface" );
+idCVar n3ds_lighting( "n3ds_lighting", "1", CVAR_RENDERER | CVAR_INTEGER, "citro3d: 0 = everything at full brightness, 1 = a pass per light (projected light images, per-vertex N.L), 2 = PICA fragment lighting, one pass, up to 8 lights per surface" );
 idCVar n3ds_hwLightRadius( "n3ds_hwLightRadius", "1", CVAR_RENDERER | CVAR_FLOAT, "citro3d n3ds_lighting 2: point light reach as a fraction of the smallest half-size of the light box" );
 idCVar n3ds_ambientStages( "n3ds_ambientStages", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: draw ambient / blended material stages (glows, glass, particles, decals, screens) and fullscreen GUIs" );
 idCVar n3ds_polygonOffset( "n3ds_polygonOffset", "4", CVAR_RENDERER | CVAR_FLOAT, "citro3d: depth bias per material polygonOffset unit (1/65536 of the depth range)" );
@@ -1977,9 +1977,11 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 	if ( now - c3dStatStart >= 2000 && c3dFrame3D > 0 ) {
 		const float f = (float)Max( c3dStatFrames, 1 );
-		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights, light area %.1f screens) %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d\n",
+		float waitGpuMs, waitVBlankMs;
+		N3DSGPU_WaitStats( &waitGpuMs, &waitVBlankMs );
+		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights, light area %.1f screens) %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d | waited for the GPU %.1f ms, for vblank %.1f ms per frame\n",
 			c3dStatDraws / f, c3dStatTextured / f, c3dStatLightDraws / f, c3dStatLights / f, c3dStatScissorPixels / ( f * 96000.0f ),
-			c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad );
+			c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad, waitGpuMs / f, waitVBlankMs / f );
 		common->Printf( "PERF   citro3d stages: %.0f ambient/GUI stage draws per frame (%.0f video), %.0f skipped (texgen, video without .n3v, program, not loaded)\n",
 			c3dStatStages / f, c3dStatVideoStages / f, c3dStatStagesSkipped / f );
 		c3dStatStages = c3dStatStagesSkipped = c3dStatVideoStages = 0;

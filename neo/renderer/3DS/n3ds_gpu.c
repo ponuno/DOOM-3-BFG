@@ -117,6 +117,9 @@ static void N3DS_DeleteTex( C3D_Tex * tex ) {
 	free( tex );
 }
 static int					pendingSet = 0;
+static u32					frameVBlankCount = 0;	// top screen vblanks counted at the last frame start
+static u64					statWaitGpuTicks = 0;	// waiting for the previous frame's GPU work
+static u64					statWaitVBlankTicks = 0;	// waiting for a vblank before submitting
 static C3D_RenderTarget *	topTarget = NULL;
 static void					N3DS_WritePendingColorBuffer( void );
 static void					N3DS_RingPicture( void );
@@ -326,9 +329,14 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 	}
 	gpuThread = threadGetCurrent();
 	// non-blocking polls so a hung GPU is reported instead of freezing silently
+	// Only the previous frame's GPU work is waited for here. C3D_FRAME_SYNCDRAW is not used:
+	// it waits for the next vblank before even looking at the GPU, and this loop called it
+	// again on every poll, so each frame lost up to a vblank plus one more per poll that found
+	// the GPU still busy. The vblank the previous frame's swap needs is checked in EndFrame.
 	const u64 start = osGetTime();
+	const u64 waitStart = svcGetSystemTick();
 	int reported = 0;
-	while ( !C3D_FrameBegin( C3D_FRAME_SYNCDRAW | C3D_FRAME_NONBLOCK ) ) {
+	while ( !C3D_FrameBegin( C3D_FRAME_NONBLOCK ) ) {
 		const u64 waited = osGetTime() - start;
 		if ( !reported && waited > 2000 ) {
 			reported = 1;
@@ -339,8 +347,11 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 		if ( reported ) {
 			N3DS_LostCompletion( start );
 		}
-		svcSleepThread( 1000LL * 1000 );
+		svcSleepThread( 200LL * 1000 );
 	}
+	statWaitGpuTicks += svcGetSystemTick() - waitStart;
+	// the previous frame's swap was asked for when its commands finished (before this point)
+	frameVBlankCount = C3D_FrameCounter( 0 );
 	// the previous frame is finished: the copies asked for while it was built, on their own
 	N3DS_RunDeferredCopies();
 	// staging buffers and textures released while the previous frame was built
@@ -870,8 +881,24 @@ void N3DSGPU_EndFrame( void ) {
 	if ( !inFrame ) {
 		return;
 	}
+	// This frame ends with a copy into the screen buffer that is not shown. The previous
+	// frame's swap only takes effect at a vblank: until one has passed since that swap, the
+	// buffer about to be written is still on screen (tearing). Building a frame takes longer
+	// than a vblank interval, so this almost never waits.
+	const u64 waitStart = svcGetSystemTick();
+	while ( C3D_FrameCounter( 0 ) == frameVBlankCount ) {
+		gspWaitForAnyEvent();
+	}
+	statWaitVBlankTicks += svcGetSystemTick() - waitStart;
 	C3D_FrameEnd( N3DS_FrameEndFlags() );
 	inFrame = 0;
+}
+
+void N3DSGPU_WaitStats( float * gpuMs, float * vblankMs ) {
+	const float toMs = 1000.0f / (float)SYSCLOCK_ARM11;
+	*gpuMs = statWaitGpuTicks * toMs;
+	*vblankMs = statWaitVBlankTicks * toMs;
+	statWaitGpuTicks = statWaitVBlankTicks = 0;
 }
 
 void N3DSGPU_SetMatrix( const float * rows ) {

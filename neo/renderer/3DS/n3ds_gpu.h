@@ -46,6 +46,8 @@ void			N3DSGPU_DrawIndexedCopied( const void * verts, int stride, int numVerts, 
 // diagnostics: command buffer use 0..1, GPU time of the last frame (ms)
 float			N3DSGPU_CmdBufUsage( void );
 float			N3DSGPU_DrawingTimeMs( void );
+// time spent waiting since the last call: for the previous frame's GPU work, for a vblank before submitting
+void			N3DSGPU_WaitStats( float * gpuMs, float * vblankMs );
 
 // make CPU writes in linear memory visible to the GPU
 void			N3DSGPU_FlushRange( const void * p, unsigned int size );
