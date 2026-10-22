@@ -129,7 +129,8 @@ static int					kickDraws = 0;			// draws per part handed to the GPU (0: the whol
 static int					drawsSinceKick = 0;
 static u64					firstKickTick = 0;		// when the GPU got the first part of the frame
 static float				gpuSpanMs = 0.0f;		// first part submitted -> last finished, previous frame
-static int					fillProbe = 0;			// scissor everything to a small box (see N3DSGPU_SetFillProbe)
+static int					fillProbe = 0;
+static int					oneTriangle = 0;		// GPU test: one triangle per draw			// scissor everything to a small box (see N3DSGPU_SetFillProbe)
 static u32					frameVBlankCount = 0;	// top screen vblanks counted at the last frame start
 static u64					statWaitGpuTicks = 0;	// waiting for the previous frame's GPU work
 static u64					statWaitVBlankTicks = 0;
@@ -427,6 +428,10 @@ void N3DSGPU_Kick( void ) {
 		firstKickTick = svcGetSystemTick();
 		N3DS_QueueRun();
 	}
+}
+
+void N3DSGPU_SetOneTriangle( int enable ) {
+	oneTriangle = enable;
 }
 
 void N3DSGPU_SetFillProbe( int enable ) {
@@ -1009,7 +1014,8 @@ void N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short *
 	// position (attr 0, 12) | st (attr 2, 4) | normal (attr 1, 4) | tangent (attr 4, 4) |
 	// colour (attr 3, 4) | colour2 (pad 4 = 0xC)
 	BufInfo_Add( bufInfo, verts, stride, 6, 0xC34120 );
-	C3D_DrawElements( GPU_TRIANGLES, numIndexes, C3D_UNSIGNED_SHORT, indexes );
+	// GPU test: every draw keeps its state changes but draws one triangle
+	C3D_DrawElements( GPU_TRIANGLES, oneTriangle ? 3 : numIndexes, C3D_UNSIGNED_SHORT, indexes );
 	if ( kickDraws > 0 && ++drawsSinceKick >= kickDraws ) {
 		drawsSinceKick = 0;
 		N3DSGPU_Kick();

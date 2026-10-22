@@ -56,6 +56,8 @@ void			N3DSGPU_Kick( void );
 void			N3DSGPU_SetKickDraws( int draws );
 // diagnostics: 1 = everything drawn into a 30x50 box (pixel work ~1/64, vertex work unchanged)
 void			N3DSGPU_SetFillProbe( int enable );
+// diagnostics: every draw draws only its first triangle (state changes and draw count unchanged)
+void			N3DSGPU_SetOneTriangle( int enable );
 
 // make CPU writes in linear memory visible to the GPU
 void			N3DSGPU_FlushRange( const void * p, unsigned int size );

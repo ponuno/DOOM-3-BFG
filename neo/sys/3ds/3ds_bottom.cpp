@@ -96,7 +96,7 @@ static void N3DS_PanelDraw( int state, float yawDps, float pitchDps, bool bench 
 	printf( "\x1b[4;29H%s           \x1b[0m", benchColour );
 	// status
 	if ( bench ) {
-		printf( "\x1b[5;1H\x1b[33m GPU test: stand still ~15 s            \x1b[0m" );
+		printf( "\x1b[5;1H\x1b[33m GPU test: stand still ~20 s            \x1b[0m" );
 	} else if ( state == 0 ) {
 		printf( "\x1b[5;1H\x1b[37m gyro off                               \x1b[0m" );
 	} else if ( state == 1 ) {

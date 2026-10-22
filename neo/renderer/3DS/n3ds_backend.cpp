@@ -1857,7 +1857,7 @@ extern idCVar n3ds_textures;
 
 static const int		C3D_BENCH_SETTLE = 15;
 static const int		C3D_BENCH_FRAMES = 60;
-static const char *		c3dBenchNames[] = { "normal", "pixels in a 30x50 box", "no light passes", "no textures", "normal again" };
+static const char *		c3dBenchNames[] = { "normal", "pixels in a 30x50 box", "no light passes", "no textures", "1 triangle per draw", "normal again" };
 static const int		C3D_BENCH_STEPS = sizeof( c3dBenchNames ) / sizeof( c3dBenchNames[0] );
 static int				c3dBenchStep = -1;
 static int				c3dBenchFrame = 0;
@@ -1869,6 +1869,7 @@ static uint64			c3dBenchLastStart = 0;
 
 static void N3DS_BenchApply() {
 	N3DSGPU_SetFillProbe( ( n3ds_gpuFillProbe.GetBool() || c3dBenchStep == 1 ) ? 1 : 0 );
+	N3DSGPU_SetOneTriangle( c3dBenchStep == 4 ? 1 : 0 );
 	c3dBenchNoLights = ( c3dBenchStep == 2 );
 	if ( c3dBenchStep == 3 ) {
 		n3ds_textures.SetBool( false );
@@ -1924,12 +1925,14 @@ static void N3DS_BenchFrameEnd( float gpuMs, float cpuMs, float frameMs, int dra
 	if ( c3dBenchStep < C3D_BENCH_STEPS ) {
 		return;
 	}
-	const float base = 0.5f * ( c3dBenchResult[0][0] + c3dBenchResult[4][0] );
-	common->Printf( "GPU TEST: GPU %.1f ms (normal runs %.1f / %.1f): pixel work ~%.1f ms, light passes ~%.1f ms, textures ~%.1f ms\n",
-		base, c3dBenchResult[0][0], c3dBenchResult[4][0], base - c3dBenchResult[1][0], base - c3dBenchResult[2][0], base - c3dBenchResult[3][0] );
+	const float base = 0.5f * ( c3dBenchResult[0][0] + c3dBenchResult[5][0] );
+	common->Printf( "GPU TEST: GPU %.1f ms (normal runs %.1f / %.1f): pixel work ~%.1f ms, light passes ~%.1f ms, textures ~%.1f ms, triangles beyond the first of each draw ~%.1f ms (what is left with one triangle per draw: %.1f ms of draw calls and state changes)\n",
+		base, c3dBenchResult[0][0], c3dBenchResult[5][0], base - c3dBenchResult[1][0], base - c3dBenchResult[2][0], base - c3dBenchResult[3][0],
+		base - c3dBenchResult[4][0], c3dBenchResult[4][0] );
 	c3dBenchStep = -1;
 	n3ds_textures.SetBool( c3dBenchTexturesWere );
 	c3dBenchNoLights = false;
+	N3DSGPU_SetOneTriangle( 0 );
 	n3ds_gpuBench.SetBool( false );
 }
 
