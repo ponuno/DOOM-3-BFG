@@ -25,7 +25,8 @@
 ; Uniforms
 .fvec mvp[4], mv[3], surfColor
 ; diagnostics (n3ds_hwQuat): x = 1 output the rotation from Z to N alone (no tangent twist),
-; y = 1 turn q into the hemisphere of that rotation (consistent sign between vertices)
+; y = 1 turn q into the hemisphere of that rotation (consistent sign between vertices);
+; z = scale of the eye space the fragment lighting works in (view vector, light positions)
 .fvec quatMode
 ; half float exponent table, set once by n3ds_gpu.c (see n3ds_vshader.v.pica)
 .fvec pow2[32]
@@ -70,6 +71,9 @@
 	dp4 r1.y, mv[1], r0
 	dp4 r1.z, mv[2], r0
 	mov r1.w, zeros
+	; the fragment lighting's eye space is scaled (quatMode.z, N3DS_HW_EYE_SCALE): its light
+	; positions are half floats
+	mul r1.xyz, quatMode.zzz, r1
 	mov outview, -r1
 
 	; ---- st: half float bits -> float, into r11.xy ----

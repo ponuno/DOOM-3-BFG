@@ -821,7 +821,8 @@ static const int N3DS_MAX_FRAME_LIGHTS = 64;
 struct n3dsHWLight_t {
 	float	eyePos[3];
 	float	color[3];		// already / combiner scale, clamped
-	float	invRadius;
+	float	invRadius;		// distance attenuation: table input = distance * invRadius + attnBias
+	float	attnBias;
 	bool	spot;
 	float	spotDir[3];		// eye space
 	float	cosOuter;
@@ -989,6 +990,7 @@ static bool N3DS_SetupHWLight( const viewDef_t * viewDef, const viewLight_t * vL
 		}
 		r *= n3ds_hwLightRadius.GetFloat();
 		out.invRadius = 1.0f / Max( r, 1.0f );
+		out.attnBias = 0.0f;
 		// box centre: s = t = falloff = 0.5
 		idMat3 m( proj[0].Normal(), proj[1].Normal(), proj[3].Normal() );
 		if ( m.InverseSelf() ) {
@@ -1012,12 +1014,16 @@ static bool N3DS_SetupHWLight( const viewDef_t * viewDef, const viewLight_t * vL
 	// falloff plane: 0 at the start, 1 at the end of the light
 	const idPlane & f = proj[3];
 	const float along = f.Normal() * axis;
-	float range = 512.0f;
+	// Along the axis the falloff is atOrigin + along * distance: that is the table input,
+	// exactly (the old 1 / range with no bias stretched it from the origin, wrong for lights
+	// whose start is far from their origin)
 	if ( along > 1e-6f ) {
-		const float atOrigin = f.Distance( vLight->globalLightOrigin );
-		range = ( 1.0f - atOrigin ) / along;
+		out.invRadius = along;
+		out.attnBias = f.Distance( vLight->globalLightOrigin );
+	} else {
+		out.invRadius = 1.0f / 512.0f;
+		out.attnBias = 0.0f;
 	}
-	out.invRadius = 1.0f / Max( range, 1.0f );
 	return true;
 }
 
@@ -1160,7 +1166,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 		}
 		if ( lightLog ) {
 			N3DS_LightLogEntry( vLight, light.ambient ? 'A' : 'L', logMatched, logUnmatched, N3DS_LightStrength( light ),
-				light.invRadius > 0.0f ? 1.0f / light.invRadius : 0.0f );
+				light.invRadius > 0.0f ? ( 1.0f - light.attnBias ) / light.invRadius : 0.0f );
 		}
 		numLights++;
 	}
@@ -1312,7 +1318,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 					}
 				}
 				const n3dsHWLight_t & hl = hwFrameLights[l];
-				N3DSGPU_HWSetLight( slot, hl.eyePos, hl.color, hl.invRadius, hl.spot ? hl.spotDir : NULL, hl.cosOuter );
+				N3DSGPU_HWSetLight( slot, hl.eyePos, hl.color, hl.invRadius, hl.attnBias, hl.spot ? hl.spotDir : NULL, hl.cosOuter );
 				slotLight[slot] = l;
 				used |= 1 << slot;
 				c3dStatHWSlotLoads++;

@@ -108,7 +108,7 @@ void			N3DSGPU_SetModelView( const float * rows );
 // slot 0..7: eye-space position, colour (already / scale), 1 / radius for the
 // distance attenuation; spotDir (eye space, pointing away from the light) and the
 // cone's outer cosine, or NULL for a point light
-void			N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, float invRadius,
+void			N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, float invRadius, float attnBias,
 								const float * spotDir, float cosOuter );
 void			N3DSGPU_HWEnableLights( int mask );
 void			N3DSGPU_HWAmbient( float r, float g, float b );

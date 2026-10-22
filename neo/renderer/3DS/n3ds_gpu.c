@@ -49,6 +49,7 @@ static int					litMvp = -1;
 static int					litMv = -1;
 static int					litColor = -1;
 static int					litQuatMode = -1;
+#define N3DS_HW_EYE_SCALE	( 1.0f / 16.0f )	// eye space of the fragment lighting, see N3DSGPU_HWSetLight
 static int					hwQuatMode = 0;
 static int					litPow2 = -1;
 static int					activeLit = 0;			// program in use: 0 base, 1 lit, 2 ambient/gui
@@ -1265,7 +1266,7 @@ void N3DSGPU_SetModelView( const float * rows ) {
 	C3D_FVUnifSet( GPU_VERTEX_SHADER, litMv + 1, rows[4], rows[5], rows[6], rows[7] );
 	C3D_FVUnifSet( GPU_VERTEX_SHADER, litMv + 2, rows[8], rows[9], rows[10], rows[11] );
 	if ( litQuatMode >= 0 ) {
-		C3D_FVUnifSet( GPU_VERTEX_SHADER, litQuatMode, hwQuatMode == 2 ? 1.0f : 0.0f, hwQuatMode == 1 ? 1.0f : 0.0f, 0.0f, 0.0f );
+		C3D_FVUnifSet( GPU_VERTEX_SHADER, litQuatMode, hwQuatMode == 2 ? 1.0f : 0.0f, hwQuatMode == 1 ? 1.0f : 0.0f, N3DS_HW_EYE_SCALE, 0.0f );
 	}
 }
 
@@ -1284,19 +1285,38 @@ void N3DSGPU_HWForgetLights( void ) {
 	}
 }
 
-void N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, float invRadius,
+void N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, float invRadius, float attnBias,
 		const float * spotDir, float cosOuter ) {
 	if ( slot < 0 || slot >= 8 ) {
 		return;
 	}
 	C3D_Light * light = &hwLights[slot];
-	C3D_FVec pos = FVec4_New( eyePos[0], eyePos[1], eyePos[2], 1.0f );
+	// The light position registers are half floats (max 65504): eye space for the lighting
+	// is scaled by N3DS_HW_EYE_SCALE (the lit vertex shader scales its view vector the same,
+	// quatMode.z). Unscaled, a light some 65000 units away (Mars City has projected lights
+	// with their origin at z 100147) became infinite, and every surface it touched got NaN
+	// lighting - dark, depending on the view.
+	float p[3];
+	bool far = false;
+	for ( int i = 0; i < 3; i++ ) {
+		p[i] = eyePos[i] * N3DS_HW_EYE_SCALE;
+		if ( p[i] > 60000.0f || p[i] < -60000.0f ) {
+			p[i] = ( p[i] > 0.0f ) ? 60000.0f : -60000.0f;
+			far = true;
+		}
+	}
+	C3D_FVec pos = FVec4_New( p[0], p[1], p[2], 1.0f );
 	C3D_LightPosition( light, &pos );
-	C3D_LightDiffuse( light, color[0], color[1], color[2] );
-	C3D_LightSpecular0( light, color[0], color[1], color[2] );
-	// shared table, per-light scale (no table upload)
-	light->conf.distAttnBias = f32tof20( 0.0f );
-	light->conf.distAttnScale = f32tof20( invRadius );
+	if ( far ) {
+		C3D_LightDiffuse( light, 0.0f, 0.0f, 0.0f );
+		C3D_LightSpecular0( light, 0.0f, 0.0f, 0.0f );
+	} else {
+		C3D_LightDiffuse( light, color[0], color[1], color[2] );
+		C3D_LightSpecular0( light, color[0], color[1], color[2] );
+	}
+	// shared table, per-light scale and bias (no table upload); distances are scaled too
+	light->conf.distAttnBias = f32tof20( attnBias );
+	light->conf.distAttnScale = f32tof20( invRadius / N3DS_HW_EYE_SCALE );
 	light->flags |= C3DF_Light_Dirty;
 	if ( spotDir != NULL ) {
 		C3D_LightSpotDir( light, spotDir[0], spotDir[1], spotDir[2] );
