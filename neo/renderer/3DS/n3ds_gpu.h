@@ -113,6 +113,7 @@ void			N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, 
 void			N3DSGPU_HWEnableLights( int mask );
 void			N3DSGPU_HWAmbient( float r, float g, float b );
 void			N3DSGPU_HWQuatMode( int mode );		// diagnostics
+void			N3DSGPU_HWEnvDiag( int keepEnv, int envDirty );	// diagnostics
 void			N3DSGPU_HWForgetLights( void );		// diagnostics
 void			N3DSGPU_HWAddPass( int on );		// 1: add onto the pixels of the same surface (lights beyond 8)
 // one pass: diffuse (unit 0, or NULL) x (lit ? fragment lighting x scale : 1) x vertex

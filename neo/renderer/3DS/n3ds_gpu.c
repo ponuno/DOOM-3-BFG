@@ -1153,6 +1153,9 @@ static C3D_LightLut		hwSpotLut[8];
 static float			hwSpotCos[8];			// cone the slot's table was built for (2 = none)
 static int				hwEnabledMask = -1;
 static int				hwEnvBound = 0;
+static int				hwKeepEnv = 0;			// diagnostics: light env stays bound for unlit surfaces
+static int				hwEnvDirty = 0;			// diagnostics: 2 = whole light env sent again before every lit surface
+void C3Di_LightEnvDirty( C3D_LightEnv * env );	// citro3d internal (lightenv.c)
 
 static float N3DS_DistAttn( float x, float unused0, float unused1 ) {
 	// 1 at the light, 0 at its radius, soft towards both ends
@@ -1272,6 +1275,17 @@ void N3DSGPU_SetModelView( const float * rows ) {
 
 // diagnostics (n3ds_hwQuat): 0 = TBN quaternion as built, 1 = sign made consistent with
 // the shortest Z -> N rotation, 2 = that shortest rotation only (no tangent twist)
+// diagnostics (n3ds_hwKeepEnv, n3ds_hwEnvDirty): keep the light environment bound for
+// unlit surfaces of the HW pass; send the whole environment (registers, every table,
+// every light) again: 1 = once per view, 2 = before every lit surface
+void N3DSGPU_HWEnvDiag( int keepEnv, int envDirty ) {
+	hwKeepEnv = keepEnv;
+	hwEnvDirty = envDirty;
+	if ( envDirty == 1 ) {
+		C3Di_LightEnvDirty( &hwEnv );
+	}
+}
+
 void N3DSGPU_HWQuatMode( int mode ) {
 	hwQuatMode = mode;
 }
@@ -1384,9 +1398,13 @@ void N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, i
 	if ( spec ) {
 		N3DS_BindTex( 2, (C3D_Tex *)specMap );
 	}
-	if ( lit != hwEnvBound ) {
-		hwEnvBound = lit;
-		C3D_LightEnvBind( lit ? &hwEnv : NULL );
+	if ( lit && hwEnvDirty == 2 ) {
+		C3Di_LightEnvDirty( &hwEnv );
+	}
+	const int wantEnv = ( lit || hwKeepEnv ) ? 1 : 0;
+	if ( wantEnv != hwEnvBound ) {
+		hwEnvBound = wantEnv;
+		C3D_LightEnvBind( wantEnv ? &hwEnv : NULL );
 	}
 	if ( lit && bump != hwBumpOn ) {
 		hwBumpOn = bump;
