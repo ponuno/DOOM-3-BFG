@@ -230,6 +230,15 @@ is there (long sounds keep their timing); all data shares `n3ds_soundMemoryKB` w
 least-recently-played eviction. Needs the DSP firmware dump
 `sdmc:/3ds/dspfirm.cdc` (DSP1); without it the game runs silent. `+set s_noSound 1` turns sound off.
 
+## Skipping cinematics
+
+Not in BFG, but in the original Doom 3: during a cinematic (camera view), A (jump) or ZR (attack)
+fast-forwards it with the sound muted until the camera is released (`idGameLocal::SkipCinematic`,
+`RunFrame`). Game frames run for up to `g_cinematicSkipMsPerFrame` (200) ms per rendered frame so
+the app stays responsive, at most `g_cinematicMaxSkipTime` (600) s of game time; a map change asked
+for meanwhile ends the skip. Cameras with `instantSkip` stop at once, as in Doom 3. `g_cinematicSkip 0`
+turns it off.
+
 ## Runtime switches (cmdline.txt, e.g. `+set n3ds_animQuant 0`)
 
 | cvar | default | effect |

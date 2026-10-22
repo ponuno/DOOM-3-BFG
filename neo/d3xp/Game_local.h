@@ -285,6 +285,12 @@ public:
 	idEditEntities *		editEntities;			// in game editing
 
 	bool					inCinematic;			// game is playing cinematic (player controls frozen)
+	// cinematic skipping (as in the original Doom 3; BFG had dropped it): game frames are run
+	// as fast as possible, sound muted, until the camera is released
+	bool					skipCinematic;
+	int						cinematicSkipTime;		// give up fast-forwarding at this game time
+	int						skipPrevButtons;		// skip buttons on the previous frame (edge detection)
+	bool					SkipCinematic();
 
 	int						framenum;
 	int						time;					// in msec
@@ -352,6 +358,7 @@ public:
 	virtual void			CacheDictionaryMedia( const idDict *dict );
 	virtual void			Preload( const idPreloadManifest &manifest );
 	virtual void			RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & gameReturn );
+	void					RunFrameOnce( idUserCmdMgr & cmdMgr, gameReturn_t & gameReturn );
 	void					RunAllUserCmdsForPlayer( idUserCmdMgr & cmdMgr, const int playerNumber );
 	void					RunSingleUserCmd( usercmd_t & cmd, idPlayer & player );
 	void					RunEntityThink( idEntity & ent, idUserCmdMgr & userCmdMgr );

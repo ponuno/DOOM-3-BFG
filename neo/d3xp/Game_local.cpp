@@ -226,6 +226,9 @@ void idGameLocal::Clear() {
 	editEntities = NULL;
 	entityHash.Clear( 1024, MAX_GENTITIES );
 	inCinematic = false;
+	skipCinematic = false;
+	cinematicSkipTime = 0;
+	skipPrevButtons = 0;
 	framenum = 0;
 	previousTime = 0;
 	time = 0;
@@ -971,6 +974,8 @@ void idGameLocal::LoadMap( const char * mapName, int randseed ) {
 	spawnArgs.Clear();
 
 	inCinematic = false;
+	skipCinematic = false;
+	cinematicSkipTime = 0;
 
 	clip.Init();
 
@@ -1512,6 +1517,10 @@ void idGameLocal::MapShutdown() {
 	if ( inCinematic ) {
 		camera = NULL;
 		inCinematic = false;
+	}
+	if ( skipCinematic ) {
+		skipCinematic = false;
+		soundSystem->SetMute( false );
 	}
 
 	MapClear( true );
@@ -2295,7 +2304,80 @@ idCVar g_recordTrace( "g_recordTrace", "0", CVAR_BOOL, "" );
 idGameLocal::RunFrame
 ================
 */
+idCVar g_cinematicSkip( "g_cinematicSkip", "1", CVAR_GAME | CVAR_BOOL | CVAR_ARCHIVE, "jump or attack skips a cinematic (fast-forwards it with the sound muted)" );
+// g_cinematicMaxSkipTime: gamesys/SysCvar.cpp (from the original Doom 3, unused in BFG until now)
+idCVar g_cinematicSkipMsPerFrame( "g_cinematicSkipMsPerFrame", "200", CVAR_GAME | CVAR_INTEGER, "real milliseconds of game frames run per rendered frame while skipping a cinematic", 16, 2000 );
+
+/*
+=============
+idGameLocal::SkipCinematic
+
+From the original Doom 3. Returns true if the cinematic is being fast-forwarded.
+=============
+*/
+bool idGameLocal::SkipCinematic() {
+	if ( camera != NULL ) {
+		if ( camera->spawnArgs.GetBool( "disconnect" ) ) {
+			camera->spawnArgs.Set( "disconnect", "0" );
+			return false;
+		}
+		if ( camera->spawnArgs.GetBool( "instantSkip" ) ) {
+			camera->Stop();
+			return false;
+		}
+	}
+	soundSystem->SetMute( true );
+	if ( !skipCinematic ) {
+		skipCinematic = true;
+		cinematicSkipTime = time + SEC2MS( g_cinematicMaxSkipTime.GetFloat() );
+	}
+	return true;
+}
+
+/*
+================
+idGameLocal::RunFrame
+
+One game frame, or while a cinematic is being skipped, as many as fit in
+g_cinematicSkipMsPerFrame (spread over rendered frames so the app stays responsive).
+================
+*/
 void idGameLocal::RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
+	if ( !common->IsMultiplayer() && g_cinematicSkip.GetBool() ) {
+		// jump or attack, newly pressed, during a cinematic
+		const int skipButtons = BUTTON_JUMP | BUTTON_ATTACK;
+		const int buttons = cmdMgr.NewestUserCmdForPlayer( GetLocalClientNum() ).buttons & skipButtons;
+		if ( inCinematic && !skipCinematic && ( buttons & ~skipPrevButtons ) != 0 ) {
+			SkipCinematic();
+		}
+		skipPrevButtons = buttons;
+	}
+
+	RunFrameOnce( cmdMgr, ret );
+
+	if ( skipCinematic ) {
+		const int start = Sys_Milliseconds();
+		for ( ;; ) {
+			if ( !inCinematic || time >= cinematicSkipTime || ret.sessionCommand[0] != '\0' || gameRenderWorld == NULL ) {
+				// done (or a map change was asked for: it must reach the session)
+				skipCinematic = false;
+				soundSystem->SetMute( false );
+				break;
+			}
+			if ( Sys_Milliseconds() - start >= g_cinematicSkipMsPerFrame.GetInteger() ) {
+				break;
+			}
+			RunFrameOnce( cmdMgr, ret );
+		}
+	}
+}
+
+/*
+================
+idGameLocal::RunFrameOnce
+================
+*/
+void idGameLocal::RunFrameOnce( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 	idEntity *	ent;
 	int			num;
 	float		ms;
