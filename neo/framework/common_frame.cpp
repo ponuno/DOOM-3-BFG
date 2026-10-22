@@ -790,6 +790,17 @@ void idCommonLocal::Frame() {
 
 		// build a new usercmd
 		int deviceNum = session->GetSignInManager().GetMasterInputDevice();
+#if defined( ID_3DS )
+		{
+			// the pad feeds the usercmd (C-Stick look, analog move) only through the master
+			// input device; -1 leaves only its key events (bindings)
+			static int lastDeviceNum = -2;
+			if ( deviceNum != lastDeviceNum ) {
+				Printf( "controls: master input device %d (was %d)\n", deviceNum, lastDeviceNum );
+				lastDeviceNum = deviceNum;
+			}
+		}
+#endif
 		usercmdGen->BuildCurrentUsercmd( deviceNum );
 		if ( deviceNum == -1 ) {
 			for ( int i = 0; i < MAX_INPUT_DEVICES; i++ ) {
