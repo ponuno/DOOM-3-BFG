@@ -1291,6 +1291,18 @@ void N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, fl
 	}
 }
 
+// a surface lit by more than 8 lights: the next 8 are added on top of the pixels the
+// first pass wrote (same vertices and program, so the same depth)
+void N3DSGPU_HWAddPass( int on ) {
+	if ( on ) {
+		C3D_DepthTest( true, GPU_EQUAL, GPU_WRITE_COLOR );
+		C3D_AlphaBlend( GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ONE, GPU_ZERO, GPU_ONE );
+	} else {
+		C3D_DepthTest( true, GPU_GREATER, GPU_WRITE_ALL );
+		C3D_AlphaBlend( GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO );
+	}
+}
+
 void N3DSGPU_HWEnableLights( int mask ) {
 	if ( mask == hwEnabledMask ) {
 		return;

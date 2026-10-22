@@ -50,7 +50,7 @@ idCVar n3ds_c3dHangRegs( "n3ds_c3dHangRegs", "0", CVAR_RENDERER | CVAR_BOOL, "ci
 idCVar n3ds_c3dHangHunt( "n3ds_c3dHangHunt", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: from this 3D frame on, wait for the GPU after every draw and name the draw it never finishes (slow; 0 = off)" );
 static bool c3dHangFound = false;
 idCVar n3ds_c3dFullFlush( "n3ds_c3dFullFlush", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: clean the data cache over all linear memory at every frame end (old behaviour, ~69 MB per frame in the 178 MB mode)" );
-idCVar n3ds_hwMaxLights( "n3ds_hwMaxLights", "8", CVAR_RENDERER | CVAR_INTEGER, "citro3d lighting 2: most lights per surface (the brightest are kept); each light costs GPU time on every pixel of the surface", 1, 8 );
+idCVar n3ds_hwMaxLights( "n3ds_hwMaxLights", "24", CVAR_RENDERER | CVAR_INTEGER, "citro3d lighting 2: most lights per surface (the brightest are kept); beyond 8 the surface is drawn again, adding the next 8; each light costs GPU time on every pixel of the surface", 1, 24 );
 idCVar n3ds_guiStencil( "n3ds_guiStencil", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: stencil for SWF masks (0 = ignore the stencil state, for bisecting)" );
 idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
 idCVar n3ds_c3dTest( "n3ds_c3dTest", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d bring-up test: 1 = only a test triangle, 2 = engine surfaces copied to a private buffer first (first one per frame)" );
@@ -834,9 +834,11 @@ static float N3DS_LightStrength( const n3dsHWLight_t & l ) {
 	return l.color[0] + l.color[1] + l.color[2];
 }
 
-// per view surface: up to 8 lights and the ambient light sum
+// per view surface: its lights and the ambient light sum. The PICA has 8 light slots; a
+// surface with more is drawn again, adding the next 8 (as the PC adds one pass per light)
+static const int N3DS_MAX_SURF_LIGHTS = 24;
 struct n3dsSurfLights_t {
-	byte	lights[8];
+	byte	lights[N3DS_MAX_SURF_LIGHTS];
 	byte	numLights;
 	float	ambient[3];
 };
@@ -846,7 +848,8 @@ static int *				hwHash = NULL;
 static int					hwHashSize = 0;
 static int					c3dStatHWLit = 0;
 static int					c3dStatHWLightsPerSurf = 0;
-static int					c3dStatHWDropped = 0;		// lights beyond 8 on a surface
+static int					c3dStatHWDropped = 0;		// lights beyond N3DS_MAX_SURF_LIGHTS on a surface
+static int					c3dStatHWExtraPasses = 0;	// surfaces drawn again for lights beyond 8
 static int					c3dStatHWSlotLoads = 0;
 static int					c3dStatBump = 0;			// lit surfaces drawn with a normal map
 static int					c3dStatSpec = 0;			// ... with a specular map
@@ -1009,7 +1012,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 		hwHash[h] = i;
 	}
 
-	const int maxSurfLights = idMath::ClampInt( 1, 8, n3ds_hwMaxLights.GetInteger() );
+	const int maxSurfLights = idMath::ClampInt( 1, N3DS_MAX_SURF_LIGHTS, n3ds_hwMaxLights.GetInteger() );
 	int numLights = 0;
 	for ( const viewLight_t * vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
 		const idMaterial * lightShader = vLight->lightShader;
@@ -1063,7 +1066,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 				if ( sl.numLights < maxSurfLights ) {
 					sl.lights[ sl.numLights++ ] = (byte)numLights;
 				} else {
-					// full: keep the brightest (PICA fragment lighting costs per light per pixel)
+					// full: keep the brightest
 					int weakest = 0;
 					for ( int k = 1; k < sl.numLights; k++ ) {
 						if ( N3DS_LightStrength( hwFrameLights[ sl.lights[k] ] ) < N3DS_LightStrength( hwFrameLights[ sl.lights[weakest] ] ) ) {
@@ -1171,14 +1174,35 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 				}
 			}
 		}
+		// lights in passes of 8: the brightest first, deterministic order (the set chosen for
+		// a surface must not depend on which other lights happen to be in view)
+		n3dsSurfLights_t & sl = hwSurfLights[i];
 		if ( lit ) {
-			const n3dsSurfLights_t & sl = hwSurfLights[i];
+			for ( int a = 1; a < sl.numLights; a++ ) {
+				const byte l = sl.lights[a];
+				const float sa = N3DS_LightStrength( hwFrameLights[l] );
+				int b = a - 1;
+				while ( b >= 0 && ( N3DS_LightStrength( hwFrameLights[ sl.lights[b] ] ) < sa ||
+						( N3DS_LightStrength( hwFrameLights[ sl.lights[b] ] ) == sa && sl.lights[b] > l ) ) ) {
+					sl.lights[b + 1] = sl.lights[b];
+					b--;
+				}
+				sl.lights[b + 1] = l;
+			}
+			c3dStatHWLit++;
+			c3dStatHWLightsPerSurf += sl.numLights;
+		}
+		const int numPasses = ( lit && sl.numLights > 8 ) ? ( sl.numLights + 7 ) / 8 : 1;
+		for ( int pass = 0; pass < numPasses; pass++ ) {
+		if ( lit ) {
 			// slots: keep lights already loaded, load the rest into free slots
+			const int first = pass * 8;
+			const int count = Min( 8, sl.numLights - first );
 			int used = 0;
 			int need[8];
 			int numNeed = 0;
-			for ( int k = 0; k < sl.numLights; k++ ) {
-				const int l = sl.lights[k];
+			for ( int k = 0; k < count; k++ ) {
+				const int l = sl.lights[first + k];
 				int slot = -1;
 				for ( int s = 0; s < 8; s++ ) {
 					if ( slotLight[s] == l ) {
@@ -1206,11 +1230,15 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 				c3dStatHWSlotLoads++;
 			}
 			N3DSGPU_HWEnableLights( used );
-			const float base = ambientLevel / combinerScale;
-			N3DSGPU_HWAmbient( idMath::ClampFloat( 0.0f, 1.0f, base + sl.ambient[0] ),
-				idMath::ClampFloat( 0.0f, 1.0f, base + sl.ambient[1] ), idMath::ClampFloat( 0.0f, 1.0f, base + sl.ambient[2] ) );
-			c3dStatHWLit++;
-			c3dStatHWLightsPerSurf += sl.numLights;
+			if ( pass == 0 ) {
+				const float base = ambientLevel / combinerScale;
+				N3DSGPU_HWAmbient( idMath::ClampFloat( 0.0f, 1.0f, base + sl.ambient[0] ),
+					idMath::ClampFloat( 0.0f, 1.0f, base + sl.ambient[1] ), idMath::ClampFloat( 0.0f, 1.0f, base + sl.ambient[2] ) );
+			} else {
+				// added on top: these lights only, no ambient again
+				N3DSGPU_HWAmbient( 0.0f, 0.0f, 0.0f );
+				c3dStatHWExtraPasses++;
+			}
 		}
 
 		// diffuse stage colour (lit) / full brightness (unlit)
@@ -1242,7 +1270,14 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 		record.gpuTex[2] = specTex;
 		record.numLights = lit ? (short)hwSurfLights[i].numLights : 0;
 		record.alphaSource = (short)alphaSource;
+		if ( pass > 0 ) {
+			N3DSGPU_HWAddPass( 1 );
+		}
 		N3DS_Draw( surf, verts, indexes, record, test );
+		if ( pass > 0 && pass == numPasses - 1 ) {
+			N3DSGPU_HWAddPass( 0 );
+		}
+		}
 	}
 }
 
@@ -1638,11 +1673,11 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 			c3dStatStages / f, c3dStatVideoStages / f, c3dStatStagesSkipped / f );
 		c3dStatStages = c3dStatStagesSkipped = c3dStatVideoStages = 0;
 		if ( c3dStatHWLit > 0 ) {
-			common->Printf( "PERF   citro3d HW lights: %.0f lit surfaces, %.2f lights each, %.0f slot loads, %.0f lights over the limit dropped, %.0f with normal map (%.0f waiting for it), %.0f with specular map per frame\n",
-				c3dStatHWLit / f, c3dStatHWLightsPerSurf / (float)c3dStatHWLit, c3dStatHWSlotLoads / f, c3dStatHWDropped / f,
+			common->Printf( "PERF   citro3d HW lights: %.0f lit surfaces, %.2f lights each, %.0f slot loads, %.0f lights over the limit dropped, %.0f extra passes for lights beyond 8, %.0f with normal map (%.0f waiting for it), %.0f with specular map per frame\n",
+				c3dStatHWLit / f, c3dStatHWLightsPerSurf / (float)c3dStatHWLit, c3dStatHWSlotLoads / f, c3dStatHWDropped / f, c3dStatHWExtraPasses / f,
 				c3dStatBump / f, c3dStatBumpWaiting / f, c3dStatSpec / f );
 		}
-		c3dStatHWLit = c3dStatHWLightsPerSurf = c3dStatHWSlotLoads = c3dStatHWDropped = 0;
+		c3dStatHWLit = c3dStatHWLightsPerSurf = c3dStatHWSlotLoads = c3dStatHWDropped = c3dStatHWExtraPasses = 0;
 		c3dStatBump = c3dStatBumpWaiting = c3dStatSpec = 0;
 		idStr texLine;
 		N3DS_TexStatsLine( texLine );

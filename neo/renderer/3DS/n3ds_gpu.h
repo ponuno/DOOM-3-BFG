@@ -112,6 +112,7 @@ void			N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, 
 								const float * spotDir, float cosOuter );
 void			N3DSGPU_HWEnableLights( int mask );
 void			N3DSGPU_HWAmbient( float r, float g, float b );
+void			N3DSGPU_HWAddPass( int on );		// 1: add onto the pixels of the same surface (lights beyond 8)
 // one pass: diffuse (unit 0, or NULL) x (lit ? fragment lighting x scale : 1) x vertex
 // colour; alphaSource as N3DSGPU_SetFillPass (mask on unit 1); depth written. Lit only:
 // normalMap (HILO8, unit 1; not with a mask) turns the bump unit on, specMap (unit 2)
