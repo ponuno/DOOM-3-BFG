@@ -883,6 +883,8 @@ static n3dsSurfLog_t	surfLog[N3DS_SURFLOG_SIZE];
 static int				c3dSurfLogFrame = 0;
 static int				c3dSurfLogLines = 0;
 
+static inline uint64 N3DS_SurfGeo( const drawSurf_t * surf );
+
 static void N3DS_SurfLogEntry( const drawSurf_t * surf, const byte * lights, int num ) {
 	const int limit = n3ds_hwSurfLog.GetInteger();
 	if ( limit <= 0 || c3dSurfLogLines >= limit ) {
@@ -890,7 +892,7 @@ static void N3DS_SurfLogEntry( const drawSurf_t * surf, const byte * lights, int
 	}
 	// the vertex cache handle is shared by every entity with the same model (doors...):
 	// the entity pointer (a value only, not read) tells them apart
-	const uint64 key = (uint64)surf->ambientCache ^ ( (uint64)(uintptr_t)( surf->space != NULL ? surf->space->entityDef : NULL ) * 0x100000001B3ull );
+	const uint64 key = N3DS_SurfGeo( surf ) ^ ( (uint64)(uintptr_t)( surf->space != NULL ? surf->space->entityDef : NULL ) * 0x100000001B3ull );
 	unsigned int h = (unsigned int)( ( key * 0x9E3779B97F4A7C15ull ) >> 51 ) & ( N3DS_SURFLOG_SIZE - 1 );
 	for ( int probe = 0; probe < 32; probe++, h = ( h + 1 ) & ( N3DS_SURFLOG_SIZE - 1 ) ) {
 		n3dsSurfLog_t & e = surfLog[h];
@@ -1020,8 +1022,18 @@ static int					c3dStatBump = 0;			// lit surfaces drawn with a normal map
 static int					c3dStatSpec = 0;			// ... with a specular map
 static int					c3dStatBumpWaiting = 0;		// normal map not on the GPU yet
 
+// A drawn surface and its light interactions are the same model surface: same frontEndGeo
+// (the srfTriangles_t; its pointer is only compared here, never read) in the same space.
+// The vertex cache handle is NOT an identity: surfaces whose geometry went into one
+// vertex buffer share it, and matching by it gave one surface the lights of another -
+// which one depended on the order of the drawn surfaces, so the lighting of whole walls
+// changed while the camera turned.
+static inline uint64 N3DS_SurfGeo( const drawSurf_t * surf ) {
+	return ( surf->frontEndGeo != NULL ) ? (uint64)(UINT_PTR)surf->frontEndGeo : (uint64)surf->ambientCache;
+}
+
 static inline unsigned int N3DS_SurfKey( const drawSurf_t * surf ) {
-	const uint64 a = (uint64)surf->ambientCache;
+	const uint64 a = N3DS_SurfGeo( surf );
 	const uint64 b = (uint64)(UINT_PTR)surf->space;
 	uint64 h = a * 0x9E3779B97F4A7C15ULL ^ ( b + ( a >> 29 ) );
 	h ^= h >> 31;
@@ -1234,7 +1246,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 				int found = -1;
 				while ( hwHash[h] >= 0 ) {
 					const drawSurf_t * s = viewDef->drawSurfs[ hwHash[h] ];
-					if ( s->ambientCache == inter->ambientCache && s->space == inter->space ) {
+					if ( N3DS_SurfGeo( s ) == N3DS_SurfGeo( inter ) && s->space == inter->space ) {
 						found = hwHash[h];
 						break;
 					}
@@ -1440,6 +1452,22 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 				slotLight[slot] = l;
 				used |= 1 << slot;
 				c3dStatHWSlotLoads++;
+			}
+			if ( used == 0 ) {
+				// No light reaches this surface (ambient only). The PICA has no "0 lights":
+				// its light count register holds count - 1, so with every light disabled it
+				// still lit the surface with the light in the first slot of the permutation -
+				// whatever the previously drawn surface had loaded there. Draw order changes as
+				// the camera turns, so such surfaces (whole walls, rocks) flickered between
+				// dark and lit by a stray lamp. A black light in slot 7 is that one light now.
+				const float black[3] = { 0.0f, 0.0f, 0.0f };
+				const float origin[3] = { 0.0f, 0.0f, 0.0f };
+				if ( slotLight[7] != -2 ) {
+					N3DSGPU_HWSetLight( 7, origin, black, 1.0f, 0.0f, NULL, 0.0f );
+					slotLight[7] = -2;
+					c3dStatHWSlotLoads++;
+				}
+				used = 1 << 7;
 			}
 			N3DSGPU_HWEnableLights( used );
 			if ( pass == 0 ) {
