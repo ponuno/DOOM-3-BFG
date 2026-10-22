@@ -187,14 +187,21 @@ only after a fatal error (`Sys_Error`), so the error can be read without the SD 
 saved in the config) and a status line (off / calibrating / the current yaw and pitch rates). It is
 redrawn under the log's lock, so it never cuts into a log line.
 
-Gyro aim (`sys/3ds/3ds_input.cpp`): switching it on enables the gyroscope and measures its resting
-bias over 40 frames (hold the console still, the panel says so). Each frame the rates of the yaw
-and pitch axes (libctru's z and y; `n3ds_gyroYawAxis` / `n3ds_gyroPitchAxis`, inverted with
-`n3ds_gyroInvertYaw` / `n3ds_gyroInvertPitch`) are integrated over the frame time, scaled by
-`n3ds_gyroSensitivity`, and added to the view angles in `idUsercmdGenLocal::MakeCurrent` next to
-the C-Stick. Rates under `n3ds_gyroDeadzone` count as rest and pull the bias slowly along (drift).
-Turns nobody consumed for 0.25 s (menus, loading) are dropped. `+set n3ds_gyroDebug 1` logs the three
-axes once a second, to check the axes and signs on the console.
+Gyro aim (`sys/3ds/3ds_input.cpp`): switching it on enables the gyroscope and the accelerometer and
+measures the gyroscope's resting bias and the direction of gravity over 40 frames (hold the console
+still, the panel says so). The console's axes (gyroscope and accelerometer alike, right-hand rule):
++x towards LEFT on the D-pad, +y out of the touch screen, +z towards UP on the D-pad. libctru's
+labels (x roll, y pitch, z yaw) are wrong for a console held in front of you: the old mapping
+(yaw z, pitch y) turned the view diagonally and ignored looking up and down. Now:
+- yaw = the angular velocity projected on "up", the accelerometer's reading against gravity,
+  smoothed over ~0.3 s, so it is a turn about the true vertical at any holding angle;
+- pitch = the rate about x (positive tips the top of the console away: looking down).
+Each frame they are integrated over the frame time, scaled by `n3ds_gyroSensitivity` (inverted with
+`n3ds_gyroInvertYaw` / `n3ds_gyroInvertPitch`) and added to the view angles in
+`idUsercmdGenLocal::MakeCurrent` next to the C-Stick. A turn rate (all three axes together) under
+`n3ds_gyroDeadzone` counts as rest and pulls the bias slowly along (drift). Turns nobody consumed for
+0.25 s (menus, loading) are dropped. `+set n3ds_gyroDebug 1` logs the rates, up and the resulting yaw
+and pitch once a second.
 
 ## Texture pack (tools/n3ds/n3dstex)
 
@@ -451,9 +458,8 @@ turns it off.
 | `n3ds_gyro` | 0 | gyro aim (bottom screen button; saved) |
 | `n3ds_gyroSensitivity` | 1.5 | view degrees per degree the console turns |
 | `n3ds_gyroDeadzone` | 1.5 | rates below this (deg/s) count as rest |
-| `n3ds_gyroYawAxis` / `n3ds_gyroPitchAxis` | 2 / 1 | gyroscope axes (0 x, 1 y, 2 z as libctru names them) |
 | `n3ds_gyroInvertYaw` / `n3ds_gyroInvertPitch` | 0 | reverse a direction |
-| `n3ds_gyroDebug` | 0 | log the three axes' rates once a second |
+| `n3ds_gyroDebug` | 0 | log the rates, the up vector and the resulting yaw / pitch once a second |
 | `n3ds_texPack` | 1 | take textures from `base/_n3ds_textures.pak` (n3dstex) when it is there |
 | `n3ds_texWorldMaxSize` | 256 | texture pack: largest world texture (the top of the chain is skipped) |
 | `n3ds_texBumpMaxSize` | 128 | texture pack: largest normal map |
