@@ -879,7 +879,9 @@ static void N3DS_SurfLogEntry( const drawSurf_t * surf, const byte * lights, int
 	if ( limit <= 0 || c3dSurfLogLines >= limit ) {
 		return;
 	}
-	const uint64 key = (uint64)surf->ambientCache;
+	// the vertex cache handle is shared by every entity with the same model (doors...):
+	// the entity pointer (a value only, not read) tells them apart
+	const uint64 key = (uint64)surf->ambientCache ^ ( (uint64)(uintptr_t)( surf->space != NULL ? surf->space->entityDef : NULL ) * 0x100000001B3ull );
 	unsigned int h = (unsigned int)( ( key * 0x9E3779B97F4A7C15ull ) >> 51 ) & ( N3DS_SURFLOG_SIZE - 1 );
 	for ( int probe = 0; probe < 32; probe++, h = ( h + 1 ) & ( N3DS_SURFLOG_SIZE - 1 ) ) {
 		n3dsSurfLog_t & e = surfLog[h];
@@ -908,7 +910,15 @@ static void N3DS_SurfLogEntry( const drawSurf_t * surf, const byte * lights, int
 					still |= ( now[j] == e.lights[k] );
 				}
 				if ( !still ) {
-					lost += va( " %d", e.lights[k] );
+					// what that light is doing this frame (n3ds_hwLightLog keeps it)
+					const int idx = e.lights[k];
+					char state = '-';
+					int surfaces = 0;
+					if ( idx >= 0 && idx < N3DS_LIGHTLOG_MAX && lightLog[idx].frame == c3dLightLogFrame ) {
+						state = lightLog[idx].state;
+						surfaces = lightLog[idx].surfaces;
+					}
+					lost += va( " %d[%c %d]", idx, state, surfaces );
 				}
 			}
 			for ( int j = 0; j < num; j++ ) {
