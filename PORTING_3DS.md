@@ -262,6 +262,8 @@ least-recently-played eviction. Needs the DSP firmware dump
 | `n3ds_ambientStages` | 1 | ambient/blended stages and fullscreen GUIs |
 | `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD texture |
 | `n3ds_texFontMaxSize` | 1024 | largest font atlas level kept (A8) |
+| `n3ds_texLinearKB` | 3072 | textures that do not fit in VRAM go to linear memory (FCRAM) up to this much; the GPU samples them from there |
+| `n3ds_texLinearReserveKB` | 2048 | linear memory the texture cache always leaves free |
 | `n3ds_texStream` | 1 | texture levels read from SD when first drawn instead of all kept in RAM (applies to images loaded afterwards) |
 | `n3ds_texRAMCacheKB` | 1024 | RAM for already uploaded streamed levels, so VRAM evictions come back without a read |
 | `n3ds_tourFrames` | 600 | map tour: frames each map runs before the next |

@@ -456,7 +456,27 @@ void * N3DSGPU_LinearAlloc( unsigned int size ) {
 	return linearAlloc( size );
 }
 
+static void * N3DS_TexCreateIn( int width, int height, int format, int maxLevel, int repeat, int onVram );
+
 void * N3DSGPU_TexCreate( int width, int height, int format, int maxLevel, int repeat ) {
+	return N3DS_TexCreateIn( width, height, format, maxLevel, repeat, 1 );
+}
+
+void * N3DSGPU_TexCreateLinear( int width, int height, int format, int maxLevel, int repeat ) {
+	return N3DS_TexCreateIn( width, height, format, maxLevel, repeat, 0 );
+}
+
+void * N3DSGPU_TexData( void * tex ) {
+	return ( tex != NULL ) ? ( (C3D_Tex *)tex )->data : NULL;
+}
+
+void N3DSGPU_TexFlush( void * tex, unsigned int size ) {
+	if ( tex != NULL ) {
+		GSPGPU_FlushDataCache( ( (C3D_Tex *)tex )->data, size );
+	}
+}
+
+static void * N3DS_TexCreateIn( int width, int height, int format, int maxLevel, int repeat, int onVram ) {
 	if ( !initialized ) {
 		return NULL;
 	}
@@ -479,7 +499,7 @@ void * N3DSGPU_TexCreate( int width, int height, int format, int maxLevel, int r
 	params.maxLevel = (u8)maxLevel;
 	params.format = fmt;
 	params.type = GPU_TEX_2D;
-	params.onVram = true;
+	params.onVram = onVram != 0;
 	if ( !C3D_TexInitWithParams( tex, NULL, params ) ) {
 		free( tex );
 		return NULL;

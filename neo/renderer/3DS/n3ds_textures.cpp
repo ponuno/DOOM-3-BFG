@@ -54,6 +54,8 @@ idCVar n3ds_texUploadsAfterLoad( "n3ds_texUploadsAfterLoad", "256", CVAR_RENDERE
 idCVar n3ds_texFlip( "n3ds_texFlip", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: store texture rows bottom-up (the PICA samples t = 0 at the last row); toggle if textures are upside down" );
 idCVar n3ds_texStream( "n3ds_texStream", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: read texture levels from disk when first drawn instead of keeping them all in RAM (set at startup; applies to images loaded afterwards)" );
 idCVar n3ds_texRAMCacheKB( "n3ds_texRAMCacheKB", "1024", CVAR_RENDERER | CVAR_INTEGER, "citro3d: RAM kept for streamed texture levels already uploaded, so that textures evicted from VRAM come back without a read" );
+idCVar n3ds_texLinearKB( "n3ds_texLinearKB", "3072", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory (FCRAM) for textures that do not fit in VRAM; the GPU samples them from there" );
+idCVar n3ds_texLinearReserveKB( "n3ds_texLinearReserveKB", "2048", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory the texture cache always leaves free (citro3d, staging copies)" );
 idCVar n3ds_texVRAMReserveKB( "n3ds_texVRAMReserveKB", "64", CVAR_RENDERER | CVAR_INTEGER, "citro3d: VRAM left free by the texture cache" );
 
 struct n3dsTexture_t {
@@ -72,6 +74,7 @@ struct n3dsTexture_t {
 	// on the GPU
 	void *				gpu;
 	int					gpuBytes;
+	bool				inLinear;		// gpu lives in linear memory (VRAM was full)
 	bool				gpuHasAlpha;
 	int					lastFrame;
 	int					retryFrame;		// after a failed upload: not before this frame
@@ -108,6 +111,8 @@ static uint64			statUploadUs = 0;
 static int				keptCount = 0;
 static int				keptBytes = 0;
 static int				residentCount = 0;
+static int				linearTexBytes = 0;		// of residentBytes, in linear memory
+static int				statLinearUploads = 0;
 static int				residentBytes = 0;
 
 static void LRU_Unlink( n3dsTexture_t * t ) {
@@ -365,6 +370,10 @@ static void N3DS_TexDropGPU( n3dsTexture_t * t ) {
 	t->gpu = NULL;
 	residentCount--;
 	residentBytes -= t->gpuBytes;
+	if ( t->inLinear ) {
+		linearTexBytes -= t->gpuBytes;
+		t->inLinear = false;
+	}
 	t->gpuBytes = 0;
 }
 
@@ -575,6 +584,48 @@ static void N3DS_TexFailed( n3dsTexture_t * t, const n3dsTexLayout_t & layout, c
 N3DS_TexUpload
 ========================
 */
+// VRAM full: the texture goes to linear memory, within n3ds_texLinearKB, evicting linear
+// textures this frame does not use. Written in place, no copy.
+static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & layout, const byte * rgba ) {
+	const int budget = Max( 0, n3ds_texLinearKB.GetInteger() ) * 1024;
+	const unsigned int reserve = (unsigned int)Max( 0, n3ds_texLinearReserveKB.GetInteger() ) * 1024;
+	void * gpu = NULL;
+	for ( ;; ) {
+		if ( linearTexBytes + layout.bytes <= budget && N3DSGPU_LinearFree() >= (unsigned int)layout.bytes + reserve ) {
+			gpu = N3DSGPU_TexCreateLinear( layout.width, layout.height, layout.format, layout.maxLevel, t->wrap );
+			if ( gpu != NULL ) {
+				break;
+			}
+		}
+		// the least recently used linear texture this frame does not draw
+		n3dsTexture_t * victim = NULL;
+		for ( n3dsTexture_t * v = lruTail; v != NULL && v->lastFrame < texFrame; v = v->lruPrev ) {
+			if ( v->inLinear ) {
+				victim = v;
+				break;
+			}
+		}
+		if ( victim == NULL ) {
+			return false;
+		}
+		N3DS_TexDropGPU( victim );
+		statEvictions++;
+	}
+	N3DS_BuildTexture( rgba, t->width, t->height, layout, n3ds_texFlip.GetBool(), (byte *)N3DSGPU_TexData( gpu ) );
+	N3DSGPU_TexFlush( gpu, layout.bytes );
+	t->gpu = gpu;
+	t->gpuBytes = layout.bytes;
+	t->inLinear = true;
+	t->everUploaded = true;
+	t->gpuHasAlpha = ( layout.format != N3DS_TEXCONV_RGB565 );
+	residentCount++;
+	residentBytes += layout.bytes;
+	linearTexBytes += layout.bytes;
+	LRU_PushFront( t );
+	statLinearUploads++;
+	return true;
+}
+
 static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 	const uint64 start = Sys_Microseconds();
 
@@ -597,14 +648,29 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 				break;
 			}
 		}
-		if ( lruTail == NULL || lruTail->lastFrame >= texFrame ) {
-			break;		// everything resident is in use this frame
+		// the least recently used VRAM texture this frame does not draw
+		n3dsTexture_t * victim = NULL;
+		for ( n3dsTexture_t * v = lruTail; v != NULL && v->lastFrame < texFrame; v = v->lruPrev ) {
+			if ( !v->inLinear ) {
+				victim = v;
+				break;
+			}
 		}
-		N3DS_TexDropGPU( lruTail );
+		if ( victim == NULL ) {
+			break;		// every VRAM texture is in use this frame
+		}
+		N3DS_TexDropGPU( victim );
 		statEvictions++;
 	}
 	if ( gpu == NULL ) {
-		N3DS_TexFailed( t, layout, "no VRAM block (all resident textures in use this frame, or TexCreate failed)" );
+		// VRAM is full of textures this frame draws (a world in view behind a menu, a
+		// cutscene with many screens): the GPU can sample from linear memory too
+		if ( N3DS_TexUploadLinear( t, layout, rgba.Ptr() ) ) {
+			statUploads++;
+			statUploadUs += Sys_Microseconds() - start;
+			return true;
+		}
+		N3DS_TexFailed( t, layout, "no VRAM block and no room in the linear texture pool (all resident textures in use this frame)" );
 		return false;
 	}
 
@@ -719,12 +785,12 @@ void N3DS_TexStatsLine( idStr & line ) {
 	statReadUs = 0;
 	const int queued = texQueueCount;
 	texLoadLock.Unlock();
-	line.Format( "tex %d resident %d KB, VRAM free %u KB, %d uploads (%.1f ms each), %d evictions, %d waiting, %d undecodable | kept %d levels %d KB | streamed %d levels %d KB, %d reads %d KB (%.1f ms each), %d failed, %d waits, %d queued, RAM cache %d KB",
-		residentCount, residentBytes / 1024, N3DSGPU_VRAMFree() / 1024, statUploads,
+	line.Format( "tex %d resident %d KB (%d KB in linear memory, %d put there), VRAM free %u KB, %d uploads (%.1f ms each), %d evictions, %d waiting, %d undecodable | kept %d levels %d KB | streamed %d levels %d KB, %d reads %d KB (%.1f ms each), %d failed, %d waits, %d queued, RAM cache %d KB",
+		residentCount, residentBytes / 1024, linearTexBytes / 1024, statLinearUploads, N3DSGPU_VRAMFree() / 1024, statUploads,
 		statUploads > 0 ? statUploadUs * 0.001f / statUploads : 0.0f, statEvictions, statDeferred, statFailed,
 		keptCount, keptBytes / 1024, streamedCount, streamedBytes / 1024, reads, readBytes / 1024,
 		reads > 0 ? readUs * 0.001f / reads : 0.0f, readFailures, statStreamWaits, queued, ramBytes / 1024 );
-	statUploads = statEvictions = statDeferred = statFailed = statStreamWaits = 0;
+	statUploads = statEvictions = statDeferred = statFailed = statStreamWaits = statLinearUploads = 0;
 	statUploadUs = 0;
 }
 
