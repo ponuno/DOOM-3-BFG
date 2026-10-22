@@ -1275,12 +1275,19 @@ void idCommonLocal::Shutdown() {
 	delete renderWorld;
 	renderWorld = NULL;
 
-	printf( "delete soundWorld;\n" );
-	delete soundWorld;
+	// FreeSoundWorld, not delete: the sound system keeps a list of its worlds and walks it
+	// when samples are freed at its own shutdown (StopVoicesWithSample); a deleted world
+	// left in the list was read back from freed memory (data abort on quitting on 3DS)
+	printf( "free soundWorld;\n" );
+	if ( soundWorld != NULL ) {
+		soundSystem->FreeSoundWorld( soundWorld );
+	}
 	soundWorld = NULL;
 
-	printf( "delete menuSoundWorld;\n" );
-	delete menuSoundWorld;
+	printf( "free menuSoundWorld;\n" );
+	if ( menuSoundWorld != NULL ) {
+		soundSystem->FreeSoundWorld( menuSoundWorld );
+	}
 	menuSoundWorld = NULL;
 
 	// shut down the session
