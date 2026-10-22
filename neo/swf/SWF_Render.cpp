@@ -41,6 +41,11 @@ idCVar swf_forceAlpha( "swf_forceAlpha", "0", CVAR_FLOAT, "force an alpha value 
 // their size on the 240-line top screen. Edge-anchored sprites (_left, _bottomRight, ...) stay
 // pinned to the screen edges at any scale, so the whole stage can be enlarged.
 idCVar n3ds_hudScale( "n3ds_hudScale", "1.8", CVAR_FLOAT, "3DS: size of the in-game HUD relative to fitting the SWF stage to the screen height", 0.5f, 3.0f );
+// Small text (hints, descriptions, loading tips) ends up 6-8 pixels tall on the 240-line screen
+// even with n3ds_uiScale. Text fields below this height are drawn at it: the glyph scale drives
+// the line layout (wrapping, line spacing, alignment) and the text measurements the menu
+// scripts read, so the field reflows within its box instead of only the glyphs growing.
+idCVar n3ds_uiMinTextPx( "n3ds_uiMinTextPx", "11", CVAR_FLOAT | CVAR_ARCHIVE, "3DS: smallest height in screen pixels SWF text (menus, loading screen, HUD) is drawn at; 0 = as laid out", 0.0f, 30.0f );
 idCVar n3ds_uiScale( "n3ds_uiScale", "1.35", CVAR_FLOAT, "3DS: size of menus, PDA, loading screen and dialogs relative to fitting the SWF stage to the screen height", 0.5f, 3.0f );
 #endif
 
@@ -809,6 +814,11 @@ void idSWF::RenderEditText( idRenderSystem * gui, idSWFTextInstance * textInstan
 	idSWFFont * swfFont = fontEntry->font;
 
 	float postTransformHeight = SWFTWIP( shape->fontHeight ) * yScale;
+#if defined( ID_3DS )
+	if ( postTransformHeight > 0.0f && postTransformHeight < n3ds_uiMinTextPx.GetFloat() ) {
+		postTransformHeight = n3ds_uiMinTextPx.GetFloat();
+	}
+#endif
 
 	const idFont * fontInfo = swfFont->fontID;
 

@@ -473,6 +473,7 @@ turns it off.
 | `n3ds_texPrefetch` | 1 | read the textures of the view's area and of every area one portal away (closed doors too) from the pack into the RAM cache while the SD card is idle, so a room entered next uploads from RAM |
 | `n3ds_tourFrames` | 600 | map tour: frames each map runs before the next |
 | `n3ds_hudScale` | 1.8 | HUD size relative to fitting the 720-line SWF stage to the 240-line screen; edge-anchored elements stay at the edges |
+| `n3ds_uiMinTextPx` | 11 | smallest SWF text height in screen pixels (menus, loading screen, HUD); smaller text fields are drawn at it and reflow within their box (the glyph scale drives wrapping, line spacing and the measurements the menu scripts read). 0 = as laid out |
 | `n3ds_uiScale` | 1.35 | same for menus, PDA, loading screen and dialogs; too large crops unanchored elements |
 | `n3ds_polygonOffset` | 4 | depth bias per material polygonOffset unit (decals) |
 | `n3ds_debugPhysics` | 0 | heavy physics diagnostics: NaN checks per AF step, LCP dumps, trace counters, SLOW AF lines |
