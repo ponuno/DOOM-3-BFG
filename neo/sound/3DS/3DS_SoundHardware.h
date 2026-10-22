@@ -20,10 +20,10 @@ the Free Software Foundation, either version 3 of the License, or
 ================================================
 idSoundHardware_3DS
 
-New 3DS sound output: a software mixer (all voices resampled and mixed into one
-stereo stream on a thread on the system core) feeding one NDSP channel through
-n3ds_audio.c. Without the DSP firmware the voices still run on the clock, so
-the sound world behaves the same, silently.
+New 3DS sound output: every playing voice gets one of the DSP's 24 channels, the
+DSP resamples and mixes them (n3ds_audio.c); a feeder thread keeps the channels'
+wave buffers filled. Without the DSP firmware the voices still run on the clock,
+so the sound world behaves the same, silently.
 ================================================
 */
 
@@ -50,8 +50,17 @@ public:
 	int				GetNumZombieVoices() const { return zombieVoices.Num(); }
 	int				GetNumFreeVoices() const { return freeVoices.Num(); }
 
-	// mixer thread (n3ds_audio.c callback)
-	void			MixBlock( short * out, int frames );
+	// feeder thread (n3ds_audio.c callback)
+	void			FeedVoices();
+
+	// DSP channels, mixer lock held
+	bool			AudioRunning() const { return audioOk; }
+	int				AllocChannel();
+	void			FreeChannel( int ch );
+	bool			ChannelStarted( int ch ) const { return channelStarted[ch]; }
+	void			SetChannelStarted( int ch ) { channelStarted[ch] = true; }
+	void			CountUnderrun() { underruns++; }
+	void			CountDropped() { droppedVoices++; }
 
 protected:
 	friend class idSoundSample_3DS;
@@ -61,11 +70,14 @@ private:
 	int				outputChannels;
 	int				channelMask;
 	bool			audioOk;			// NDSP running
-	int				outputRate;
 	int				lastUpdateMs;		// without NDSP: voices advanced by the clock
 	int				lastReportMs;
-	int *			mixBuffer;
-	int				mixBufferFrames;
+	float			lastMasterVolume;
+
+	bool			channelUsed[N3DS_AUDIO_CHANNELS];
+	bool			channelStarted[N3DS_AUDIO_CHANNELS];	// had buffers queued before
+	int				underruns;
+	int				droppedVoices;
 
 	idStaticList<idSoundVoice_3DS, MAX_HARDWARE_VOICES * 2 > voices;
 	idStaticList<idSoundVoice_3DS *, MAX_HARDWARE_VOICES * 2 > zombieVoices;

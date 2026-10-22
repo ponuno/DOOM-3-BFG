@@ -123,18 +123,18 @@ idSoundVoice_3DS::idSoundVoice_3DS()
 		pendingOffsetMS( 0 ),
 		pendingFlags( 0 ),
 		pendingSince( 0 ),
+		channel( -1 ),
+		stereo( false ),
+		sourceDone( true ),
 		current( NULL ),
-		position( 0 ),
+		frame( 0 ),
 		pitchScale( 1.0f ),
-		amplitude( 0.0f ),
-		cacheNext( 0 ),
-		cacheSize( 0 ) {
+		adpcmSample( NULL ),
+		adpcmBlock( -1 ),
+		adpcmData( NULL ),
+		adpcmSize( 0 ) {
 	memset( levels, 0, sizeof( levels ) );
-	for ( int i = 0; i < ADPCM_CACHE; i++ ) {
-		cacheSample[i] = NULL;
-		cacheBlock[i] = -1;
-		cacheData[i] = NULL;
-	}
+	memset( bufferPeak, 0, sizeof( bufferPeak ) );
 }
 
 /*
@@ -144,10 +144,8 @@ idSoundVoice_3DS::~idSoundVoice_3DS
 */
 idSoundVoice_3DS::~idSoundVoice_3DS() {
 	DestroyInternal();
-	for ( int i = 0; i < ADPCM_CACHE; i++ ) {
-		Mem_Free( cacheData[i] );
-		cacheData[i] = NULL;
-	}
+	Mem_Free( adpcmData );
+	adpcmData = NULL;
 }
 
 /*
@@ -156,8 +154,27 @@ idSoundVoice_3DS::CompatibleFormat
 ========================
 */
 bool idSoundVoice_3DS::CompatibleFormat( idSoundSample_3DS * s ) {
-	// a software voice plays any format
+	// a voice plays any format (the DSP channel is configured at every start)
 	return true;
+}
+
+/*
+========================
+idSoundVoice_3DS::StopLocked
+
+Mixer lock held: gives the DSP channel back.
+========================
+*/
+void idSoundVoice_3DS::StopLocked() {
+	if ( channel >= 0 ) {
+		N3DSAudio_ChnStop( channel );
+		soundSystemLocal.hardware.FreeChannel( channel );
+		channel = -1;
+	}
+	playing = false;
+	paused = true;
+	sourceDone = true;
+	current = NULL;
 }
 
 /*
@@ -169,6 +186,7 @@ Keeps the samples' voice counts (a sample a voice holds keeps its data).
 */
 void idSoundVoice_3DS::SetSamples( idSoundSample_3DS * leadin, idSoundSample_3DS * looping ) {
 	N3DS_SoundLock();
+	StopLocked();
 	if ( leadinSample != NULL ) {
 		leadinSample->activeVoices--;
 	}
@@ -183,13 +201,8 @@ void idSoundVoice_3DS::SetSamples( idSoundSample_3DS * leadin, idSoundSample_3DS
 	if ( loopingSample != NULL ) {
 		loopingSample->activeVoices++;
 	}
-	current = NULL;
-	playing = false;
-	paused = true;
-	for ( int i = 0; i < ADPCM_CACHE; i++ ) {
-		cacheSample[i] = NULL;
-		cacheBlock[i] = -1;
-	}
+	adpcmSample = NULL;
+	adpcmBlock = -1;
 	N3DS_SoundUnlock();
 }
 
@@ -288,7 +301,7 @@ void idSoundVoice_3DS::StartNow( int offsetMS, int ssFlags ) {
 		sample = loopingSample;
 	}
 
-	// size the ADPCM cache for the biggest block of the two samples
+	// room for the biggest decoded ADPCM block of the two samples
 	int need = 0;
 	for ( int k = 0; k < 2; k++ ) {
 		const idSoundSample_3DS * s = ( k == 0 ) ? leadinSample : loopingSample;
@@ -298,25 +311,63 @@ void idSoundVoice_3DS::StartNow( int offsetMS, int ssFlags ) {
 	}
 
 	N3DS_SoundLock();
-	if ( need > cacheSize ) {
-		for ( int i = 0; i < ADPCM_CACHE; i++ ) {
-			Mem_Free( cacheData[i] );
-			cacheData[i] = (short *)Mem_Alloc( need * sizeof( short ), TAG_AUDIO );
-		}
-		cacheSize = need;
+	StopLocked();
+	if ( need > adpcmSize ) {
+		Mem_Free( adpcmData );
+		adpcmData = (short *)Mem_Alloc( need * sizeof( short ), TAG_AUDIO );
+		adpcmSize = need;
 	}
-	for ( int i = 0; i < ADPCM_CACHE; i++ ) {
-		cacheSample[i] = NULL;
-		cacheBlock[i] = -1;
-	}
+	adpcmSample = NULL;
+	adpcmBlock = -1;
 	current = sample;
-	position = (int64)offsetSamples << 32;
-	amplitude = 0.0f;
+	frame = offsetSamples;
+	stereo = leadinSample->NumChannels() > 1;
+	sourceDone = false;
+	memset( bufferPeak, 0, sizeof( bufferPeak ) );
 	playing = true;
 	paused = false;
+	if ( soundSystemLocal.hardware.AudioRunning() ) {
+		channel = soundSystemLocal.hardware.AllocChannel();
+		if ( channel < 0 ) {
+			// more voices than DSP channels (s_maxEmitterChannels keeps them below)
+			soundSystemLocal.hardware.CountDropped();
+			playing = false;
+			sourceDone = true;
+			current = NULL;
+			N3DS_SoundUnlock();
+			return;
+		}
+		N3DSAudio_ChnStart( channel, stereo ? 1 : 0, (float)sampleRate );
+	}
 	N3DS_SoundUnlock();
 
-	Update();
+	Update();		// levels and rate before the first buffer plays
+
+	N3DS_SoundLock();
+	Feed();			// the first buffers right away instead of at the next DSP frame
+	N3DS_SoundUnlock();
+}
+
+/*
+========================
+idSoundVoice_3DS::ApplyLevels
+
+Mixer lock held.
+========================
+*/
+void idSoundVoice_3DS::ApplyLevels() {
+	if ( channel < 0 ) {
+		return;
+	}
+	if ( stereo ) {
+		// the matrix is applied while filling (the DSP has no cross terms for stereo)
+		N3DSAudio_ChnSetMix( channel, 1.0f, 1.0f );
+	} else {
+		N3DSAudio_ChnSetMix( channel, levels[0][0] * ( 1.0f / 65536.0f ), levels[0][1] * ( 1.0f / 65536.0f ) );
+	}
+	if ( current != NULL ) {
+		N3DSAudio_ChnSetRate( channel, (float)current->SampleRate() * pitchScale );
+	}
 }
 
 /*
@@ -366,51 +417,78 @@ bool idSoundVoice_3DS::Update() {
 			newLevels[src][dst] = (int)( idMath::ClampFloat( 0.0f, 4.0f, l ) * 65536.0f );
 		}
 	}
-	// plain stores the mixer may see half-updated for one block: harmless, no lock
+	N3DS_SoundLock();
 	memcpy( levels, newLevels, sizeof( levels ) );
 	pitchScale = idMath::ClampFloat( 0.1f, 8.0f, pitch );
+	ApplyLevels();
+	N3DS_SoundUnlock();
 	return true;
 }
 
 /*
 ========================
-idSoundVoice_3DS::AdpcmBlock
+idSoundVoice_3DS::SourceRun
+
+Mixer lock held. Points at the data from 'frame' on and cuts 'frames' to what is
+contiguous there: the rest of a decoded ADPCM block, or of a PCM buffer.
 ========================
 */
-const short * idSoundVoice_3DS::AdpcmBlock( idSoundSample_3DS * s, int block ) {
-	for ( int i = 0; i < ADPCM_CACHE; i++ ) {
-		if ( cacheSample[i] == s && cacheBlock[i] == block ) {
-			return cacheData[i];
+const short * idSoundVoice_3DS::SourceRun( int & frames ) {
+	idSoundSample_3DS * s = current;
+	const int channels = s->format.basic.numChannels;
+	const int absFrame = frame + s->playBegin;
+	if ( s->format.basic.formatTag == idWaveFile::FORMAT_ADPCM ) {
+		const int spb = s->format.extra.adpcm.samplesPerBlock;
+		const int blockBytes = s->format.basic.blockSize;
+		if ( spb <= 0 || blockBytes <= 0 || spb * channels > adpcmSize ) {
+			return NULL;
 		}
+		const int block = absFrame / spb;
+		const int inBlock = absFrame - block * spb;
+		if ( adpcmSample != s || adpcmBlock != block ) {
+			// find the block in the buffers (each holds whole blocks)
+			const int first = block * spb;
+			int previous = 0;
+			bool found = false;
+			for ( int b = 0; b < s->buffers.Num() && !found; b++ ) {
+				const idSoundSample_3DS::sampleBuffer_t & buf = s->buffers[b];
+				if ( first < buf.numSamples ) {
+					if ( buf.buffer == NULL ) {
+						return NULL;
+					}
+					const int offset = ( ( first - previous ) / spb ) * blockBytes;
+					if ( offset >= buf.bufferSize ) {
+						return NULL;
+					}
+					DecodeAdpcmBlock( s->format, (const byte *)buf.buffer + offset, Min( blockBytes, buf.bufferSize - offset ), adpcmData );
+					found = true;
+				}
+				previous = buf.numSamples;
+			}
+			if ( !found ) {
+				return NULL;
+			}
+			adpcmSample = s;
+			adpcmBlock = block;
+		}
+		frames = Min( frames, spb - inBlock );
+		return adpcmData + inBlock * channels;
 	}
-	if ( cacheSize <= 0 ) {
-		return NULL;
-	}
-	// find the block in the buffers (each holds whole blocks)
-	const int spb = s->format.extra.adpcm.samplesPerBlock;
-	const int blockBytes = s->format.basic.blockSize;
-	if ( spb <= 0 || blockBytes <= 0 || spb * s->format.basic.numChannels > cacheSize ) {
-		return NULL;
-	}
-	const int frame = block * spb;
+	// 16-bit PCM
 	int previous = 0;
 	for ( int b = 0; b < s->buffers.Num(); b++ ) {
 		const idSoundSample_3DS::sampleBuffer_t & buf = s->buffers[b];
-		if ( frame < buf.numSamples ) {
+		if ( absFrame < buf.numSamples ) {
 			if ( buf.buffer == NULL ) {
 				return NULL;
 			}
-			const int local = ( frame - previous ) / spb;
-			const int offset = local * blockBytes;
-			if ( offset >= buf.bufferSize ) {
+			const int index = absFrame - previous;
+			const int inBuffer = buf.bufferSize / ( channels * (int)sizeof( short ) ) - index;
+			if ( inBuffer <= 0 ) {
 				return NULL;
 			}
-			const int slot = cacheNext;
-			cacheNext = ( cacheNext + 1 ) % ADPCM_CACHE;
-			DecodeAdpcmBlock( s->format, (const byte *)buf.buffer + offset, Min( blockBytes, buf.bufferSize - offset ), cacheData[slot] );
-			cacheSample[slot] = s;
-			cacheBlock[slot] = block;
-			return cacheData[slot];
+			frames = Min( frames, Min( buf.numSamples - absFrame, inBuffer ) );
+			return (const short *)buf.buffer + index * channels;
 		}
 		previous = buf.numSamples;
 	}
@@ -419,96 +497,129 @@ const short * idSoundVoice_3DS::AdpcmBlock( idSoundSample_3DS * s, int block ) {
 
 /*
 ========================
-idSoundVoice_3DS::FetchFrame
+idSoundVoice_3DS::Produce
+
+Mixer lock held. Copies (stereo: through the level matrix) up to 'frames' frames from
+the play position on into dst, moving on to the looping sample at the end of the leadin.
 ========================
 */
-bool idSoundVoice_3DS::FetchFrame( idSoundSample_3DS * s, int frame, int & left, int & right ) {
-	if ( frame < 0 || frame >= s->playLength ) {
-		return false;
-	}
-	frame += s->playBegin;
-	const int channels = s->format.basic.numChannels;
-	if ( s->format.basic.formatTag == idWaveFile::FORMAT_ADPCM ) {
-		const int spb = s->format.extra.adpcm.samplesPerBlock;
-		if ( spb <= 0 ) {
-			return false;
-		}
-		const short * data = AdpcmBlock( s, frame / spb );
-		if ( data == NULL ) {
-			return false;
-		}
-		const short * f = data + ( frame % spb ) * channels;
-		left = f[0];
-		right = ( channels > 1 ) ? f[1] : f[0];
-		return true;
-	}
-	// 16-bit PCM
-	int previous = 0;
-	for ( int b = 0; b < s->buffers.Num(); b++ ) {
-		const idSoundSample_3DS::sampleBuffer_t & buf = s->buffers[b];
-		if ( frame < buf.numSamples ) {
-			if ( buf.buffer == NULL ) {
-				return false;
+int idSoundVoice_3DS::Produce( short * dst, int frames, int & peak ) {
+	int done = 0;
+	while ( done < frames && !sourceDone ) {
+		if ( frame >= current->playLength ) {
+			if ( loopingSample != NULL && loopingSample->playLength > 0 ) {
+				frame = ( current == loopingSample ) ? frame - current->playLength : 0;
+				current = loopingSample;
+				if ( frame >= current->playLength ) {
+					frame = 0;
+				}
+				continue;
 			}
-			const int index = ( frame - previous ) * channels;
-			if ( ( index + channels ) * (int)sizeof( short ) > buf.bufferSize ) {
-				return false;
-			}
-			const short * f = (const short *)buf.buffer + index;
-			left = f[0];
-			right = ( channels > 1 ) ? f[1] : f[0];
-			return true;
+			sourceDone = true;
+			break;
 		}
-		previous = buf.numSamples;
+		int run = Min( frames - done, current->playLength - frame );
+		const short * src = SourceRun( run );
+		if ( src == NULL || run <= 0 ) {
+			// the data is gone (should not happen while the voice holds the sample)
+			sourceDone = true;
+			break;
+		}
+		if ( dst != NULL ) {
+			if ( !stereo ) {
+				short * d = dst + done;
+				for ( int i = 0; i < run; i++ ) {
+					const int v = src[i];
+					d[i] = (short)v;
+					const int a = v < 0 ? -v : v;
+					if ( a > peak ) {
+						peak = a;
+					}
+				}
+			} else {
+				short * d = dst + done * 2;
+				const int ll = levels[0][0], lr = levels[0][1], rl = levels[1][0], rr = levels[1][1];
+				const bool mono = current->format.basic.numChannels < 2;	// cannot happen (same format as the leadin)
+				for ( int i = 0; i < run; i++ ) {
+					const int l = src[mono ? i : i * 2];
+					const int r = src[mono ? i : i * 2 + 1];
+					int outL = (int)( ( (int64)l * ll + (int64)r * rl ) >> 16 );
+					int outR = (int)( ( (int64)l * lr + (int64)r * rr ) >> 16 );
+					outL = outL > 32767 ? 32767 : ( outL < -32768 ? -32768 : outL );
+					outR = outR > 32767 ? 32767 : ( outR < -32768 ? -32768 : outR );
+					d[i * 2 + 0] = (short)outL;
+					d[i * 2 + 1] = (short)outR;
+					const int a = abs( l ) > abs( r ) ? abs( l ) : abs( r );
+					if ( a > peak ) {
+						peak = a;
+					}
+				}
+			}
+		}
+		done += run;
+		frame += run;
 	}
-	return false;
+	return done;
 }
 
 /*
 ========================
-idSoundVoice_3DS::Mix
+idSoundVoice_3DS::Feed
 
-Mixer thread, mixer lock held.
+Feeder thread (and StartNow), mixer lock held.
 ========================
 */
-void idSoundVoice_3DS::Mix( int * out, int frames, int outputRate ) {
+void idSoundVoice_3DS::Feed() {
+	if ( !playing || channel < 0 || current == NULL ) {
+		return;
+	}
+	if ( !sourceDone ) {
+		bool busy = N3DSAudio_ChnBusy( channel ) != 0;
+		bool queuedAny = false;
+		for ( int b = 0; b < N3DS_AUDIO_BUFFERS && !sourceDone; b++ ) {
+			if ( !N3DSAudio_BufFree( channel, b ) ) {
+				continue;
+			}
+			int peak = 0;
+			const int n = Produce( N3DSAudio_BufData( channel, b ), N3DS_AUDIO_FRAMES, peak );
+			if ( n > 0 ) {
+				bufferPeak[b] = peak;
+				N3DSAudio_BufQueue( channel, b, n, stereo ? 1 : 0 );
+				queuedAny = true;
+			}
+		}
+		// all played out while there was more to play: the feeder came too late
+		if ( !busy && queuedAny && soundSystemLocal.hardware.ChannelStarted( channel ) ) {
+			soundSystemLocal.hardware.CountUnderrun();
+		}
+		soundSystemLocal.hardware.SetChannelStarted( channel );
+		return;
+	}
+	if ( !N3DSAudio_ChnBusy( channel ) ) {
+		// everything played: the channel is free again
+		StopLocked();
+	}
+}
+
+/*
+========================
+idSoundVoice_3DS::RunSilent
+
+No DSP: the voice advances by the clock so that sounds still end.
+========================
+*/
+void idSoundVoice_3DS::RunSilent( int ms ) {
 	if ( !playing || paused || current == NULL ) {
 		return;
 	}
+	const int frames = (int)( (int64)ms * (int)( current->SampleRate() * pitchScale ) / 1000 );
 	int peak = 0;
-	int64 step = (int64)( (double)pitchScale * current->SampleRate() / outputRate * 4294967296.0 );
-	for ( int i = 0; i < frames; i++ ) {
-		const int frame = (int)( position >> 32 );
-		int l0, r0;
-		if ( !FetchFrame( current, frame, l0, r0 ) ) {
-			// end of this sample: on to the looping one, or done
-			if ( loopingSample != NULL && loopingSample->playLength > 0 ) {
-				const int over = frame - current->playLength;
-				current = loopingSample;
-				position = (int64)( over > 0 ? over % loopingSample->playLength : 0 ) << 32;
-				step = (int64)( (double)pitchScale * current->SampleRate() / outputRate * 4294967296.0 );
-				i--;
-				continue;
-			}
-			playing = false;
-			break;
-		}
-		int l1 = l0, r1 = r0;
-		FetchFrame( current, frame + 1, l1, r1 );		// past the end: hold the last frame
-		const int frac = (int)( ( position >> 16 ) & 0xFFFF );
-		const int l = l0 + ( ( ( l1 - l0 ) * frac ) >> 16 );
-		const int r = r0 + ( ( ( r1 - r0 ) * frac ) >> 16 );
-		const int outL = (int)( ( (int64)l * levels[0][0] + (int64)r * levels[1][0] ) >> 16 );
-		const int outR = (int)( ( (int64)l * levels[0][1] + (int64)r * levels[1][1] ) >> 16 );
-		out[i * 2 + 0] += outL;
-		out[i * 2 + 1] += outR;
-		const int a = abs( l ) > abs( r ) ? abs( l ) : abs( r );
-		if ( a > peak ) {
-			peak = a;
-		}
-		position += step;
+	if ( frames > 0 ) {
+		Produce( NULL, frames, peak );
 	}
-	amplitude = peak * ( 1.0f / 32768.0f );
+	if ( sourceDone ) {
+		StopLocked();
+	}
 }
 
 /*
@@ -534,7 +645,12 @@ idSoundVoice_3DS::Pause
 ========================
 */
 void idSoundVoice_3DS::Pause() {
+	N3DS_SoundLock();
 	paused = true;
+	if ( channel >= 0 ) {
+		N3DSAudio_ChnSetPaused( channel, 1 );
+	}
+	N3DS_SoundUnlock();
 }
 
 /*
@@ -543,9 +659,14 @@ idSoundVoice_3DS::UnPause
 ========================
 */
 void idSoundVoice_3DS::UnPause() {
+	N3DS_SoundLock();
 	if ( playing ) {
 		paused = false;
+		if ( channel >= 0 ) {
+			N3DSAudio_ChnSetPaused( channel, 0 );
+		}
 	}
+	N3DS_SoundUnlock();
 }
 
 /*
@@ -556,19 +677,31 @@ idSoundVoice_3DS::Stop
 void idSoundVoice_3DS::Stop() {
 	pendingStart = false;
 	N3DS_SoundLock();
-	playing = false;
-	paused = true;
+	StopLocked();
 	N3DS_SoundUnlock();
 }
 
 /*
 ========================
 idSoundVoice_3DS::GetAmplitude
+
+Peak of the wave buffer the DSP is playing now.
 ========================
 */
 float idSoundVoice_3DS::GetAmplitude() {
 	if ( !hasVUMeter ) {
 		return 1.0f;
 	}
-	return amplitude;
+	int peak = 0;
+	N3DS_SoundLock();
+	if ( channel >= 0 ) {
+		for ( int b = 0; b < N3DS_AUDIO_BUFFERS; b++ ) {
+			if ( N3DSAudio_BufPlaying( channel, b ) ) {
+				peak = bufferPeak[b];
+				break;
+			}
+		}
+	}
+	N3DS_SoundUnlock();
+	return peak * ( 1.0f / 32768.0f );
 }

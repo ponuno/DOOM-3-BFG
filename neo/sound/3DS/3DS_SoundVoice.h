@@ -20,12 +20,17 @@ the Free Software Foundation, either version 3 of the License, or
 ================================================
 idSoundVoice_3DS
 
-A voice of the New 3DS software mixer (3DS_SoundHardware.cpp). The main thread
-sets it up (Create/Start/Update/Stop, under the mixer lock); the mixer thread
-reads the sample data, resamples it (linear) to the output rate, applies the
-stereo levels from CalculateSurround and the gain, and plays the leadin sample
-once and then the looping sample (if any) forever, like the XAudio2 voice.
-Sample formats: 16-bit PCM and MS ADPCM, mono or stereo.
+A voice of the New 3DS sound output (3DS_SoundHardware.cpp). While it plays it owns
+one of the DSP's 24 channels (n3ds_audio.c): the DSP resamples it (channel rate =
+sample rate * pitch), applies the left/right levels and mixes it with the others.
+The voice only keeps the channel's wave buffers filled with PCM16: 16-bit PCM is
+copied, MS ADPCM decoded block by block; the leadin sample plays once and then the
+looping sample (if any) forever, like the XAudio2 voice. Stereo samples get their
+2x2 level matrix (CalculateSurround) applied while filling, mono ones use the DSP's
+levels directly.
+
+The main thread sets it up (Create/Start/Update/Stop); the feeder thread refills it
+(Feed). Both under the mixer lock.
 ================================================
 */
 
@@ -58,8 +63,10 @@ public:
 
 	uint32					GetSampleRate() const { return sampleRate; }
 
-	// mixer thread: adds this voice into out[frames * 2] (stereo)
-	void					Mix( int * out, int frames, int outputRate );
+	// feeder thread, mixer lock held: refill the channel's finished wave buffers
+	void					Feed();
+	// no DSP: consume what 'ms' of playback would have played
+	void					RunSilent( int ms );
 
 private:
 	friend class idSoundHardware_3DS;
@@ -74,9 +81,13 @@ private:
 	void					DestroyInternal();
 
 	void					SetSamples( idSoundSample_3DS * leadin, idSoundSample_3DS * looping );
-	// one frame of a sample (both channels of a stereo one), false past the end
-	bool					FetchFrame( idSoundSample_3DS * s, int frame, int & left, int & right );
-	const short *			AdpcmBlock( idSoundSample_3DS * s, int block );
+	void					StopLocked();
+	// up to 'frames' frames of the sample data from the play position on (PCM16, the
+	// sample's channels); NULL if the data is not there
+	const short *			SourceRun( int & frames );
+	// fills dst (NULL: just skips) with up to 'frames' output frames, returns how many
+	int						Produce( short * dst, int frames, int & peak );
+	void					ApplyLevels();
 
 	idSoundSample_3DS *		leadinSample;
 	idSoundSample_3DS *		loopingSample;
@@ -98,20 +109,21 @@ private:
 	int						pendingSince;
 	void					StartNow( int offsetMS, int ssFlags );
 
-	// mixer state (under the mixer lock)
+	// playback state (under the mixer lock)
+	int						channel;			// DSP channel, -1 if none
+	bool					stereo;				// output (and source) is stereo
+	bool					sourceDone;			// everything is queued
 	idSoundSample_3DS *		current;			// leadin or looping
-	int64					position;			// in frames of 'current', 32.32 fixed point
+	int						frame;				// play position in 'current', frames from playBegin
 	int						levels[2][2];		// [source channel][left, right], 1.0 = 65536
-	float					pitchScale;			// pitch multiplier (the sample rate is applied when mixing)
-	float					amplitude;			// peak of the last mixed block, 0..1
+	float					pitchScale;			// pitch multiplier
+	int						bufferPeak[N3DS_AUDIO_BUFFERS];	// peak of each wave buffer's data
 
-	// MS ADPCM: two decoded blocks
-	static const int		ADPCM_CACHE = 2;
-	const idSoundSample_3DS * cacheSample[ADPCM_CACHE];
-	int						cacheBlock[ADPCM_CACHE];
-	int						cacheNext;
-	short *					cacheData[ADPCM_CACHE];		// samplesPerBlock * channels
-	int						cacheSize;					// shorts per cache slot
+	// MS ADPCM: the decoded block
+	const idSoundSample_3DS * adpcmSample;
+	int						adpcmBlock;
+	short *					adpcmData;			// samplesPerBlock * channels
+	int						adpcmSize;			// shorts allocated
 };
 
 /*

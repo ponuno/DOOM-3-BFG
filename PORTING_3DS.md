@@ -204,11 +204,17 @@ usual MEM report.
 
 ## Sound
 
-`sound/3DS/`: `n3ds_audio.c` (NDSP, the only sound file including `<3ds.h>`) plays one stereo
-PCM16 channel; a mixer thread on the system core (priority 0x18) fills 4 buffers of
-`n3ds_soundBufferFrames` through `idSoundHardware_3DS::MixBlock`. Voices are mixed in software:
-16-bit PCM and MS ADPCM (bit-exact with ffmpeg's decoder), mono/stereo, linear resampling to
-`n3ds_soundRate`, stereo levels from `CalculateSurround`. Sample data: the `.idwav` header is read at
+`sound/3DS/`: `n3ds_audio.c` (NDSP, the only sound file including `<3ds.h>`). Every playing voice
+gets one of the DSP's 24 channels: the DSP resamples it (channel rate = sample rate x pitch,
+polyphase), applies its left/right levels and mixes all channels in hardware. The CPU only keeps
+each channel's 3 wave buffers of 1024 frames filled (288 KB of linear memory in all): a feeder thread
+on the system core (priority 0x18), woken by the DSP every ~5 ms, copies 16-bit PCM and decodes MS
+ADPCM block by block into them (`idSoundVoice_3DS::Feed`). Mono voices use the DSP's levels directly
+(updated at once); stereo ones get their 2x2 `CalculateSurround` matrix applied while filling.
+`s_maxEmitterChannels` is 24 on 3DS, so the sound world mutes the quietest sounds beyond that.
+The old software mixer (one channel, everything resampled and mixed on the CPU) cost up to 1 s of
+CPU per second with 16 voices on the time-sliced system core and ran dry in fights.
+Formats: 16-bit PCM and MS ADPCM (bit-exact with ffmpeg's decoder), mono/stereo. Sample data: the `.idwav` header is read at
 level load, data of samples up to `n3ds_soundPreloadKB` too; bigger ones are read on first play by a
 loader thread (own unbuffered FILE on the container), the voice starting in `Update()` once the data
 is there (long sounds keep their timing); all data shares `n3ds_soundMemoryKB` with
@@ -241,10 +247,9 @@ least-recently-played eviction. Needs the DSP firmware dump
 | `n3ds_lightProjective` | 1 | light projection divided per pixel; 0 = per vertex |
 | `n3ds_lightScissor` | 1 | light passes clipped to the light's screen rectangle |
 | `n3ds_c3dValidate` | 0 | check every draw's indexes against its buffers (bring-up) |
-| `n3ds_soundRate` | 22050 | mixing rate (Hz) |
 | `n3ds_soundMemoryKB` | 4096 | sound sample data budget |
 | `n3ds_soundPreloadKB` | 16 | samples up to this size are read at level load; bigger ones by the loader thread when first played |
-| `n3ds_soundVolume` | 1 | mixer master volume |
+| `n3ds_soundVolume` | 1 | DSP master volume |
 | `n3ds_ambientStages` | 1 | ambient/blended stages and fullscreen GUIs |
 | `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD / font texture |
 | `n3ds_texStream` | 1 | texture levels read from SD when first drawn instead of all kept in RAM (applies to images loaded afterwards) |

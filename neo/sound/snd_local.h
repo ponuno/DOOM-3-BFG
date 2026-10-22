@@ -83,6 +83,7 @@ typedef enum {
 #define OPERATION_SET 1
 
 #if defined( ID_3DS )
+#include "3DS/n3ds_audio.h"
 #include "3DS/3DS_SoundSample.h"
 #include "3DS/3DS_SoundVoice.h"
 #include "3DS/3DS_SoundHardware.h"

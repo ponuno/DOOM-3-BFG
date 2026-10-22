@@ -18,9 +18,7 @@ the Free Software Foundation, either version 3 of the License, or
 #include "../snd_local.h"
 #include "n3ds_audio.h"
 
-idCVar n3ds_soundRate( "n3ds_soundRate", "22050", CVAR_SOUND | CVAR_INTEGER | CVAR_INIT, "New 3DS: mixing rate in Hz", 8000, 48000 );
-idCVar n3ds_soundBufferFrames( "n3ds_soundBufferFrames", "512", CVAR_SOUND | CVAR_INTEGER | CVAR_INIT, "New 3DS: frames per output buffer (4 are queued)", 128, 4096 );
-idCVar n3ds_soundVolume( "n3ds_soundVolume", "1", CVAR_SOUND | CVAR_FLOAT, "New 3DS: master volume of the mixer" );
+idCVar n3ds_soundVolume( "n3ds_soundVolume", "1", CVAR_SOUND | CVAR_FLOAT, "New 3DS: master volume of the DSP mix" );
 idCVar n3ds_soundStats( "n3ds_soundStats", "1", CVAR_SOUND | CVAR_BOOL, "New 3DS: log a sound line every 2 s with the PERF lines" );
 
 static bool soundLockReady = false;
@@ -37,8 +35,8 @@ void N3DS_SoundUnlock() {
 	}
 }
 
-static void N3DS_MixCallback( short * out, int frames, void * user ) {
-	( (idSoundHardware_3DS *)user )->MixBlock( out, frames );
+static void N3DS_FeedCallback( void * user ) {
+	( (idSoundHardware_3DS *)user )->FeedVoices();
 }
 
 /*
@@ -50,11 +48,13 @@ idSoundHardware_3DS::idSoundHardware_3DS() {
 	outputChannels = 2;
 	channelMask = 0;
 	audioOk = false;
-	outputRate = 22050;
 	lastUpdateMs = 0;
 	lastReportMs = 0;
-	mixBuffer = NULL;
-	mixBufferFrames = 0;
+	lastMasterVolume = -1.0f;
+	underruns = 0;
+	droppedVoices = 0;
+	memset( channelUsed, 0, sizeof( channelUsed ) );
+	memset( channelStarted, 0, sizeof( channelStarted ) );
 	voices.SetNum( 0 );
 	zombieVoices.SetNum( 0 );
 	freeVoices.SetNum( 0 );
@@ -77,18 +77,15 @@ void idSoundHardware_3DS::Init() {
 	for ( int i = 0; i < voices.Num(); i++ ) {
 		freeVoices[i] = &voices[i];
 	}
-
-	outputRate = n3ds_soundRate.GetInteger();
-	mixBufferFrames = Max( n3ds_soundBufferFrames.GetInteger(), 4096 );
-	mixBuffer = (int *)Mem_Alloc( mixBufferFrames * 2 * sizeof( int ), TAG_AUDIO );
+	memset( channelUsed, 0, sizeof( channelUsed ) );
 	lastUpdateMs = Sys_Milliseconds();
 	lastReportMs = lastUpdateMs;
 
-	audioOk = N3DSAudio_Init( outputRate, n3ds_soundBufferFrames.GetInteger(), 4, N3DS_MixCallback, this ) != 0;
+	audioOk = N3DSAudio_Init( N3DS_FeedCallback, this ) != 0;
 	soundLockReady = audioOk;
 	if ( audioOk ) {
-		idLib::Printf( "Sound: NDSP, software mixer at %d Hz, %d voices, %d frames x 4 buffers\n",
-			outputRate, voices.Num(), n3ds_soundBufferFrames.GetInteger() );
+		idLib::Printf( "Sound: NDSP, %d DSP channels mixed in hardware, %d x %d-frame buffers each\n",
+			N3DS_AUDIO_CHANNELS, N3DS_AUDIO_BUFFERS, N3DS_AUDIO_FRAMES );
 		if ( !fileSystem->FindFile( "_sound_pc.resources" ) ) {
 			// the sound data lives in its own resource files
 			idLib::Printf( "Sound: WARNING: no _sound_pc.resources in sdmc:/doom3/base -- copy _sound_pc.resources and _sound_pc_<lang>.resources from the PC game's base folder\n" );
@@ -104,51 +101,60 @@ idSoundHardware_3DS::Shutdown
 ========================
 */
 void idSoundHardware_3DS::Shutdown() {
+	for ( int i = 0; i < voices.Num(); i++ ) {
+		voices[ i ].DestroyInternal();
+	}
 	if ( audioOk ) {
 		N3DSAudio_Shutdown();
 		audioOk = false;
 	}
 	soundLockReady = false;
-	for ( int i = 0; i < voices.Num(); i++ ) {
-		voices[ i ].DestroyInternal();
-	}
 	voices.Clear();
 	freeVoices.Clear();
 	zombieVoices.Clear();
-	Mem_Free( mixBuffer );
-	mixBuffer = NULL;
 }
 
 /*
 ========================
-idSoundHardware_3DS::MixBlock
+idSoundHardware_3DS::AllocChannel / FreeChannel
 
-Mixer thread, mixer lock held.
+Mixer lock held.
 ========================
 */
-void idSoundHardware_3DS::MixBlock( short * out, int frames ) {
-	if ( frames > mixBufferFrames || mixBuffer == NULL ) {
-		memset( out, 0, frames * 2 * sizeof( short ) );
-		return;
+int idSoundHardware_3DS::AllocChannel() {
+	for ( int ch = 0; ch < N3DS_AUDIO_CHANNELS; ch++ ) {
+		if ( !channelUsed[ch] ) {
+			channelUsed[ch] = true;
+			channelStarted[ch] = false;
+			return ch;
+		}
 	}
-	memset( mixBuffer, 0, frames * 2 * sizeof( int ) );
+	return -1;
+}
+
+void idSoundHardware_3DS::FreeChannel( int ch ) {
+	if ( ch >= 0 && ch < N3DS_AUDIO_CHANNELS ) {
+		channelUsed[ch] = false;
+		channelStarted[ch] = false;
+	}
+}
+
+/*
+========================
+idSoundHardware_3DS::FeedVoices
+
+Feeder thread: refill every playing voice's channel, one voice per lock hold so
+the main thread never waits long.
+========================
+*/
+void idSoundHardware_3DS::FeedVoices() {
 	for ( int i = 0; i < voices.Num(); i++ ) {
 		if ( !voices[i].playing ) {
 			continue;
 		}
 		N3DS_SoundLock();
-		voices[i].Mix( mixBuffer, frames, outputRate );
+		voices[i].Feed();
 		N3DS_SoundUnlock();
-	}
-	const int master = (int)( idMath::ClampFloat( 0.0f, 4.0f, n3ds_soundVolume.GetFloat() ) * 256.0f );
-	for ( int i = 0; i < frames * 2; i++ ) {
-		int v = ( mixBuffer[i] * master ) >> 8;
-		if ( v > 32767 ) {
-			v = 32767;
-		} else if ( v < -32768 ) {
-			v = -32768;
-		}
-		out[i] = (short)v;
 	}
 }
 
@@ -199,12 +205,17 @@ void idSoundHardware_3DS::Update() {
 	const int now = Sys_Milliseconds();
 	if ( !audioOk ) {
 		// no output: run the voices on the clock so that sounds still end
-		const int frames = Min( ( now - lastUpdateMs ) * outputRate / 1000, mixBufferFrames );
-		if ( frames > 0 && mixBuffer != NULL ) {
-			memset( mixBuffer, 0, frames * 2 * sizeof( int ) );
+		const int ms = Min( now - lastUpdateMs, 1000 );
+		if ( ms > 0 ) {
 			for ( int i = 0; i < voices.Num(); i++ ) {
-				voices[i].Mix( mixBuffer, frames, outputRate );
+				voices[i].RunSilent( ms );
 			}
+		}
+	} else {
+		const float volume = idMath::ClampFloat( 0.0f, 4.0f, n3ds_soundVolume.GetFloat() );
+		if ( volume != lastMasterVolume ) {
+			N3DSAudio_SetMasterVolume( volume );
+			lastMasterVolume = volume;
 		}
 	}
 	lastUpdateMs = now;
@@ -220,14 +231,20 @@ void idSoundHardware_3DS::Update() {
 
 	if ( n3ds_soundStats.GetBool() && now - lastReportMs >= 2000 ) {
 		int active = 0;
+		int channels = 0;
 		for ( int i = 0; i < voices.Num(); i++ ) {
 			if ( voices[i].IsPlaying() ) {
 				active++;
 			}
 		}
-		idLib::Printf( "PERF   sound: %d voices playing, mixing %.1f ms/s, %d underruns, sample data %d KB, %d read on demand, %d dropped\n",
-			active, audioOk ? N3DSAudio_MixMsPerSecond() : 0.0f, audioOk ? N3DSAudio_Underruns() : 0,
+		for ( int ch = 0; ch < N3DS_AUDIO_CHANNELS; ch++ ) {
+			channels += channelUsed[ch] ? 1 : 0;
+		}
+		idLib::Printf( "PERF   sound: %d voices playing on %d / %d DSP channels, feeding %.1f ms/s, %d underruns, %d voices without a channel, sample data %d KB, %d read on demand, %d dropped\n",
+			active, channels, N3DS_AUDIO_CHANNELS, audioOk ? N3DSAudio_FeedMsPerSecond() : 0.0f, underruns, droppedVoices,
 			N3DS_SoundDataKB(), N3DS_SoundLoadsOnDemand(), N3DS_SoundEvictions() );
+		underruns = 0;
+		droppedVoices = 0;
 		lastReportMs = now;
 	}
 }
