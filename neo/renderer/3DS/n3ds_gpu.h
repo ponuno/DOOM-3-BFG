@@ -123,6 +123,8 @@ void			N3DSGPU_SetStencil( int func, int ref, int mask, int opFail, int opZFail,
 void			N3DSGPU_EndStages( void );
 // hang hunting: submit everything drawn so far, wait up to timeoutMs; 0 = the GPU did not finish
 int				N3DSGPU_DebugSync( unsigned int timeoutMs );
+// 1: clean the data cache over all linear memory at every frame end (citro3d default)
+void			N3DSGPU_SetFullFlush( int enable );
 
 // scissor in render target pixels (240 x 400, the 3DS framebuffer orientation),
 // right/bottom exclusive

@@ -81,6 +81,20 @@ static C3D_Tex *			boundTex[3];
 static C3D_Tex				placeholderTex;
 static int					placeholderOk = 0;
 
+// C3D_FrameEnd( 0 ) cleans the CPU data cache over the whole linear heap every frame:
+// 69 MB in the 178 MB mode. Everything the GPU reads is flushed where it is written
+// (frame vertex cache at BeginBackEnd, static cache and textures on upload, sound
+// buffers), so only the command list needs it. fullFlush: the old behaviour.
+static int					fullFlush = 0;
+
+void N3DSGPU_SetFullFlush( int enable ) {
+	fullFlush = enable;
+}
+
+static u8 N3DS_FrameEndFlags( void ) {
+	return fullFlush ? 0 : GX_CMDLIST_FLUSH;
+}
+
 static void N3DS_BindTex( int unit, C3D_Tex * tex ) {
 	boundTex[unit] = tex;
 	C3D_TexBind( unit, tex );
@@ -229,7 +243,7 @@ void N3DSGPU_Shutdown( void ) {
 		return;
 	}
 	if ( inFrame ) {
-		C3D_FrameEnd( 0 );
+		C3D_FrameEnd( N3DS_FrameEndFlags() );
 		inFrame = 0;
 	}
 	C3D_LightEnvBind( NULL );
@@ -295,7 +309,7 @@ int N3DSGPU_DebugSync( unsigned int timeoutMs ) {
 	if ( !inFrame ) {
 		return 1;
 	}
-	C3D_FrameEnd( 0 );
+	C3D_FrameEnd( N3DS_FrameEndFlags() );
 	const u64 start = osGetTime();
 	while ( !C3D_FrameBegin( C3D_FRAME_NONBLOCK ) ) {
 		if ( osGetTime() - start > timeoutMs ) {
@@ -312,7 +326,7 @@ void N3DSGPU_EndFrame( void ) {
 	if ( !inFrame ) {
 		return;
 	}
-	C3D_FrameEnd( 0 );
+	C3D_FrameEnd( N3DS_FrameEndFlags() );
 	inFrame = 0;
 }
 

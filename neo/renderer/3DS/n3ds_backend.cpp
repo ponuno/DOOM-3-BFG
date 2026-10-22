@@ -48,6 +48,7 @@ bool r_n3dsC3D = false;
 idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: draw at most this many surfaces per frame (0 = all), for bisecting GPU hangs" );
 idCVar n3ds_c3dHangHunt( "n3ds_c3dHangHunt", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: from this 3D frame on, wait for the GPU after every draw and name the draw it never finishes (slow; 0 = off)" );
 static bool c3dHangFound = false;
+idCVar n3ds_c3dFullFlush( "n3ds_c3dFullFlush", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: clean the data cache over all linear memory at every frame end (old behaviour, ~69 MB per frame in the 178 MB mode)" );
 idCVar n3ds_guiStencil( "n3ds_guiStencil", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: stencil for SWF masks (0 = ignore the stencil state, for bisecting)" );
 idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
 idCVar n3ds_c3dTest( "n3ds_c3dTest", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d bring-up test: 1 = only a test triangle, 2 = engine surfaces copied to a private buffer first (first one per frame)" );
@@ -1405,6 +1406,7 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: waiting for GPU" );
+	N3DSGPU_SetFullFlush( n3ds_c3dFullFlush.GetBool() ? 1 : 0 );
 	N3DSGPU_BeginFrame( 0x000000FF );
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: drawing" );
 	N3DS_TexBeginFrame( has3D );

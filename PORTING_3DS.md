@@ -255,7 +255,9 @@ least-recently-played eviction. Needs the DSP firmware dump
 | `n3ds_ambient` | 0.1 | brightness of lit surfaces no light reaches (Doom 3: 0) |
 | `n3ds_lightProjective` | 1 | light projection divided per pixel; 0 = per vertex |
 | `n3ds_lightScissor` | 1 | light passes clipped to the light's screen rectangle |
-| `n3ds_c3dValidate` | 0 | check every draw's indexes against its buffers (bring-up) |
+| `n3ds_c3dValidate` | 1 | check every draw's indexes against its buffers; bad draws are skipped and logged |
+| `n3ds_c3dHangHunt` | 0 | from this 3D frame on, wait for the GPU after every draw and log the one it never finishes (slow) |
+| `n3ds_c3dFullFlush` | 0 | 1 = clean the data cache over all linear memory at every frame end (citro3d's default; 69 MB per frame in the 178 MB mode). Off: only the command list; everything else the GPU reads is flushed where it is written |
 | `n3ds_soundMemoryKB` | 4096 | sound sample data budget |
 | `n3ds_soundPreloadKB` | 16 | samples up to this size are read at level load; bigger ones by the loader thread when first played |
 | `n3ds_soundVolume` | 1 | DSP master volume |
