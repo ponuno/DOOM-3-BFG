@@ -102,6 +102,7 @@ struct n3dsTexture_t {
 	int					lastFrame;
 	int					retryFrame;		// after a failed upload: not before this frame
 	bool				everUploaded;	// diagnostics: drawn at least once since load
+	int					uploadFrame;	// diagnostics: texFrame of the last upload
 	// streaming: the level is read from streamPath at streamOffset (streamPath < 0: data is
 	// owned for the image's lifetime). loadState and handing over data are under texLoadLock.
 	int					streamPath;
@@ -816,6 +817,7 @@ static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & lay
 	t->gpuBytes = layout.bytes;
 	t->inLinear = true;
 	t->everUploaded = true;
+	t->uploadFrame = texFrame;
 	t->gpuHasAlpha = N3DS_TexHasAlpha( t, layout );
 	residentCount++;
 	residentBytes += layout.bytes;
@@ -907,6 +909,7 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 	t->gpu = gpu;
 	t->gpuBytes = layout.bytes;
 	t->everUploaded = true;
+	t->uploadFrame = texFrame;
 	t->gpuHasAlpha = N3DS_TexHasAlpha( t, layout );
 	residentCount++;
 	residentBytes += layout.bytes;
@@ -951,8 +954,8 @@ void N3DS_TexDescribe( idImage * image, idStr & out ) {
 	}
 	char gpu[96];
 	N3DSGPU_TexDescribe( t->gpu, gpu, sizeof( gpu ) );
-	out = va( "%s: %s, %s%s%s", image->GetName(), gpu, t->packed ? "pack" : "decoded", t->gpu == NULL ? "" : ( t->inLinear ? ", linear" : ", VRAM" ),
-		t->unsupported ? ", unsupported" : "" );
+	out = va( "%s: %s, %s%s%s, uploaded %d frames before this one", image->GetName(), gpu, t->packed ? "pack" : "decoded",
+		t->gpu == NULL ? "" : ( t->inLinear ? ", linear" : ", VRAM" ), t->unsupported ? ", unsupported" : "", texFrame - t->uploadFrame );
 }
 
 const char * N3DS_TexNameForAddress( unsigned int address ) {

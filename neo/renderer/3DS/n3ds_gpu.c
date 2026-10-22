@@ -1214,6 +1214,9 @@ void N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, i
 			C3D_TexEnvInit( env );
 			C3D_TexEnvSrc( env, C3D_RGB, GPU_TEXTURE2, GPU_FRAGMENT_SECONDARY_COLOR, GPU_PRIMARY_COLOR );
 			C3D_TexEnvFunc( env, C3D_RGB, GPU_MODULATE );
+			// C3D_TexEnvInit leaves the alpha on GPU_PREVIOUS, which stage 0 does not have
+			C3D_TexEnvSrc( env, C3D_Alpha, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_Alpha, GPU_REPLACE );
 			C3D_TexEnvScale( env, C3D_RGB, tevScale );
 			// buffer update bit 0: stage 0's output goes into the combiner buffer, which
 			// stages 2 and 3 read (the buffer a stage sees lags one stage behind)
