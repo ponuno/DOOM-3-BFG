@@ -2,14 +2,24 @@
 ;   v0 = position (float3)
 ;   v1 = normal (ubyte4, 0..255 -> -1..1)
 ;   v2 = st (the two raw half floats of idDrawVert, read as signed shorts)
+;   v4 = tangent (ubyte4; w >= 128: bitangent = N x T, else -(N x T))
 ;
-; The PICA fragment lighting needs, per vertex, the eye-space normal as a
-; quaternion that rotates (0,0,1) onto it, and the vector from the vertex to the
-; eye. Light positions are given in the same eye space (n3ds_gpu.c).
-;   outnq    = ( n.x / 2c, n.y / 2c, c, 0 ), c = sqrt( (1 + n.z) / 2 )
-;              (a half turn about the axis halfway between z and n)
+; The PICA fragment lighting needs, per vertex, the rotation from tangent space to eye
+; space as a quaternion (the bump unit rotates the normal map's normal with it; without
+; a normal map it rotates (0,0,1) to the vertex normal), and the vector from the vertex
+; to the eye. Light positions are given in the same eye space (n3ds_gpu.c).
+;
+; Tangent frame, as the BFG interaction shader: N, T, B = N x T x sign. A rotation cannot
+; mirror, so a mirrored frame (sign -1) uses T' = -T: then B' = N x T' is the true
+; bitangent and only the normal map's x is reversed on mirrored halves.
+; Geometry without tangents (T parallel to N or zero) gets a tangent from N alone.
+;
+; The quaternion from the T B N matrix: case discrimination on the largest of
+; w, x, y, z, as devkitPro's 3ds-examples graphics/gpu/normal_mapping (fincs).
+;
+;   outnq    = quaternion (x, y, z, w)
 ;   outview  = -( modelView * position )
-;   texcoord0 = texcoord1 = st (diffuse on unit 0, alpha mask on unit 1)
+;   texcoord0 = texcoord1 = texcoord2 = st (diffuse, normal map, specular map)
 ;   colour   = surfColor
 
 ; Uniforms
@@ -20,7 +30,7 @@
 ; Constants
 .constf consts(1.0, 0.0, 0.0078431373, -1.0)
 .constf halfK(32768.0, 0.0009765625, -1024.0, -2.0)
-.constf quatK(0.5, 0.0001, 0.0, 0.0)
+.constf frameK(0.9, 0.0001, 2.0, 0.5)
 .alias  ones   consts.xxxx
 .alias  zeros  consts.yyyy
 .alias  bscale consts.zzzz
@@ -33,11 +43,13 @@
 .out outclr  color
 .out outtc0  texcoord0
 .out outtc1  texcoord1
+.out outtc2  texcoord2
 
 ; Inputs
 .alias inpos v0
 .alias innrm v1
 .alias inst  v2
+.alias intng v4
 
 .proc main
 	; r0 = (xyz, 1)
@@ -75,34 +87,115 @@
 	mov r11.zw, zeros
 	mov outtc0, r11
 	mov outtc1, r11
+	mov outtc2, r11
 
-	; ---- normal: model -> eye (rotation part of mv), normalized ----
+	; ---- N (r14), T (r12): model -> eye (rotation part of mv) ----
 	mov r2, innrm
 	mul r2, bscale, r2
 	add r2, bbias, r2
 	mov r2.w, zeros
-	dp3 r3.x, mv[0], r2
-	dp3 r3.y, mv[1], r2
-	dp3 r3.z, mv[2], r2
-	dp3 r4.x, r3.xyz, r3.xyz
-	max r4.x, quatK.y, r4.x
-	rsq r4.x, r4.x
-	mul r3.xyz, r3.xyz, r4.xxx
+	dp3 r14.x, mv[0], r2
+	dp3 r14.y, mv[1], r2
+	dp3 r14.z, mv[2], r2
+	dp3 r6.x, r14, r14
+	max r6.x, frameK.y, r6.x
+	rsq r6.x, r6.x
+	mul r14.xyz, r14.xyz, r6.xxx
 
-	; ---- quaternion ----
-	; r4.x = c^2 = ( 1 + n.z ) / 2, kept above 0 (n = -z gives a half turn about x)
-	add r4.x, ones, r3.z
-	mul r4.x, quatK.x, r4.x
-	max r4.x, quatK.y, r4.x
-	; r5.x = 1 / c, r5.y = c
-	rsq r5.x, r4.x
-	rcp r5.y, r5.x
-	; xy = n.xy * 0.5 / c
-	mul r6.xy, quatK.xx, r3.xy
-	mul r6.xy, r6.xy, r5.xx
-	mov r6.z, r5.y
-	mov r6.w, zeros
-	mov outnq, r6
+	mov r3, intng
+	mul r3, bscale, r3
+	add r3, bbias, r3
+	; sign: w >= 0 -> +1, else -1; a mirrored frame turns T around
+	sge r7.x, r3.w, zeros
+	mul r7.x, frameK.z, r7.x
+	add r7.x, bbias, r7.x
+	mov r3.w, zeros
+	dp3 r12.x, mv[0], r3
+	dp3 r12.y, mv[1], r3
+	dp3 r12.z, mv[2], r3
+	mul r12.xyz, r12.xyz, r7.xxx
+
+	; B = N x T
+	mul r13.xyz, r14.yzx, r12.zxy
+	mad r13.xyz, -r12.yzx, r14.zxy, r13
+
+	; no usable tangent (|B|^2 tiny): B = N x X, or N x Y when N is near X
+	;   N x X = ( 0, Nz, -Ny ), N x Y = ( -Nz, 0, Nx )
+	dp3 r6.x, r13, r13
+	slt r6.y, r6.x, frameK.y
+	max r6.z, r14.x, -r14.x
+	slt r6.z, r6.z, frameK.x
+	mov r8.x, zeros
+	mov r8.y, r14.z
+	mov r8.z, -r14.y
+	mov r9.x, -r14.z
+	mov r9.y, zeros
+	mov r9.z, r14.x
+	add r8.xyz, r8.xyz, -r9.xyz
+	mad r8.xyz, r6.zzz, r8.xyz, r9.xyz
+	add r8.xyz, r8.xyz, -r13.xyz
+	mad r13.xyz, r6.yyy, r8.xyz, r13.xyz
+
+	; normalize B, then T = B x N (orthonormal frame)
+	dp3 r6.x, r13, r13
+	max r6.x, frameK.y, r6.x
+	rsq r6.x, r6.x
+	mul r13.xyz, r13.xyz, r6.xxx
+	mul r12.xyz, r13.yzx, r14.zxy
+	mad r12.xyz, -r14.yzx, r13.zxy, r12
+
+	; ---- quaternion of the matrix with columns T B N ----
+	; r12 = (Tx, Ty, Tz, Bz)
+	; r13 = (Tx, By, Nz, 1 )
+	; r14 = (Nx, Ny, Nz, Bx)
+	mov r12.w, r13.z
+	mov r14.w, r13.x
+	mov r13.x, r12.x
+	mov r13.z, r14.z
+	mov r13.w, ones
+
+	; case discrimination
+	mov r11.z, zeros
+	sge r10, zeros, r14.z
+	mov r11.xyw, r13.zxzy
+	add r10, r10, r10
+	mad r11.y, r10, r11, -r11
+	cmp r11.xy, le, ge, r11.zw
+
+	ifc cmp.x
+		ifc cmp.y
+			; X case
+			mov r13.yz, -r13
+			mov r14.y, -r14
+			dp4 r0.x, r13.w, r13
+			add r0.yzw, r12.yyzw, r14.wwxy
+		.else
+			; Y case
+			mov r13.xz, -r13
+			mov r12.z, -r12
+			dp4 r0.y, r13.w, r13
+			add r0.xzw, r12.yywz, r14.wwyx
+		.end
+	.else
+		ifc cmp.y
+			; Z case
+			mov r13.xy, -r13
+			mov r14.w, -r14
+			dp4 r0.z, r13.w, r13
+			add r0.xyw, r12.zwwy, r14.xyyw
+		.else
+			; W case
+			mov r12.z, -r12
+			mov r14.yw, -r14
+			dp4 r0.w, r13.w, r13
+			add r0.xyz, r12.wzyy, r14.yxww
+		.end
+	.end
+
+	; renormalize and output
+	dp4 r1.x, r0, r0
+	rsq r1.x, r1.x
+	mul outnq, r0, r1.x
 
 	mov outclr, surfColor
 

@@ -105,8 +105,13 @@ void			N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, 
 void			N3DSGPU_HWEnableLights( int mask );
 void			N3DSGPU_HWAmbient( float r, float g, float b );
 // one pass: diffuse (unit 0, or NULL) x (lit ? fragment lighting x scale : 1) x vertex
-// colour; alphaSource as N3DSGPU_SetFillPass (mask on unit 1); depth written
-void			N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, int scale );
+// colour; alphaSource as N3DSGPU_SetFillPass (mask on unit 1); depth written. Lit only:
+// normalMap (HILO8, unit 1; not with a mask) turns the bump unit on, specMap (unit 2)
+// adds specular map x highlight (D0 table over N.H) x scale
+void			N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, int scale,
+								   void * normalMap, void * specMap );
+// exponent of the highlight table (uploaded only when it changes)
+void			N3DSGPU_HWSpecularPower( float power );
 
 // ambient / GUI stages (program 2 = n3ds_vshader_amb)
 // colour = ( vertex colour * vcModulate + vcAdd ) * color; st through texS / texT

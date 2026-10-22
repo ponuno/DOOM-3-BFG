@@ -931,6 +931,11 @@ bool N3DS_TexIsAlphaOnly( idImage * image ) {
 	return t != NULL && t->alphaOnly;
 }
 
+bool N3DS_TexIsNormalMap( idImage * image ) {
+	const n3dsTexture_t * t = ( image != NULL ) ? (const n3dsTexture_t *)image->n3dsTex : NULL;
+	return t != NULL && t->packed && t->gpuFormat == N3DS_TEX_HILO8;
+}
+
 void * N3DS_TexForImage( idImage * image ) {
 	if ( image == NULL || !n3ds_textures.GetBool() ) {
 		return NULL;

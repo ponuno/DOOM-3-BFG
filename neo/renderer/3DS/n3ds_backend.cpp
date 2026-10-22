@@ -82,6 +82,9 @@ idCVar n3ds_hwLightScale( "n3ds_hwLightScale", "4", CVAR_RENDERER | CVAR_INTEGER
 idCVar n3ds_ambient( "n3ds_ambient", "0.1", CVAR_RENDERER | CVAR_FLOAT, "citro3d: brightness of lit surfaces where no light reaches (Doom 3 itself: 0)" );
 idCVar n3ds_lightScissor( "n3ds_lightScissor", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: clip each light's passes to its screen rectangle" );
 idCVar n3ds_lightProjective( "n3ds_lightProjective", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: divide the light projection per pixel (texture unit 0 projection mode); 0 = per vertex" );
+idCVar n3ds_bump( "n3ds_bump", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d lighting 2: normal maps (from the texture pack) through the PICA bump unit" );
+idCVar n3ds_specular( "n3ds_specular", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d lighting 2: specular maps x highlights" );
+idCVar n3ds_specularPower( "n3ds_specularPower", "10", CVAR_RENDERER | CVAR_FLOAT, "citro3d lighting 2: highlight exponent (BFG interaction.pixel: 10)", 1, 128 );
 
 // the previous frame's draws, dumped if the GPU does not finish it
 struct c3dDrawRecord_t {
@@ -265,10 +268,10 @@ N3DS_DiffuseStage
 The diffuse stage of an interaction surface (first one that passes its condition).
 ========================
 */
-static const shaderStage_t * N3DS_DiffuseStage( const idMaterial * material, const float * regs ) {
+static const shaderStage_t * N3DS_LightingStage( const idMaterial * material, const float * regs, stageLighting_t lighting ) {
 	for ( int i = 0; i < material->GetNumStages(); i++ ) {
 		const shaderStage_t * stage = material->GetStage( i );
-		if ( stage->lighting != SL_DIFFUSE ) {
+		if ( stage->lighting != lighting ) {
 			continue;
 		}
 		if ( regs != NULL && !regs[ stage->conditionRegister ] ) {
@@ -277,6 +280,19 @@ static const shaderStage_t * N3DS_DiffuseStage( const idMaterial * material, con
 		return stage;
 	}
 	return NULL;
+}
+
+static const shaderStage_t * N3DS_DiffuseStage( const idMaterial * material, const float * regs ) {
+	return N3DS_LightingStage( material, regs, SL_DIFFUSE );
+}
+
+// the bump / specular map of an interaction surface, if it has one (a plain 2D image)
+static idImage * N3DS_StageImage( const idMaterial * material, const float * regs, stageLighting_t lighting ) {
+	const shaderStage_t * stage = N3DS_LightingStage( material, regs, lighting );
+	if ( stage == NULL || stage->texture.cinematic != NULL || stage->texture.texgen != TG_EXPLICIT ) {
+		return NULL;
+	}
+	return stage->texture.image;
 }
 
 /*
@@ -761,6 +777,9 @@ static int					c3dStatHWLit = 0;
 static int					c3dStatHWLightsPerSurf = 0;
 static int					c3dStatHWDropped = 0;		// lights beyond 8 on a surface
 static int					c3dStatHWSlotLoads = 0;
+static int					c3dStatBump = 0;			// lit surfaces drawn with a normal map
+static int					c3dStatSpec = 0;			// ... with a specular map
+static int					c3dStatBumpWaiting = 0;		// normal map not on the GPU yet
 
 static inline unsigned int N3DS_SurfKey( const drawSurf_t * surf ) {
 	const uint64 a = (uint64)surf->ambientCache;
@@ -884,6 +903,9 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 	const int numSurfs = viewDef->numDrawSurfs;
 	const int combinerScale = ( n3ds_hwLightScale.GetInteger() >= 4 ) ? 4 : 2;
 	const float ambientLevel = n3ds_ambient.GetFloat();
+	const bool useBump = n3ds_bump.GetBool();
+	const bool useSpecular = n3ds_specular.GetBool();
+	N3DSGPU_HWSpecularPower( n3ds_specularPower.GetFloat() );
 
 	// ---- per-surface light lists ----
 	if ( numSurfs > hwSurfLightsAlloc ) {
@@ -1050,6 +1072,30 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 		}
 
 		const bool lit = images.lit || images.color == NULL;
+		void * normalTex = NULL;
+		void * specTex = NULL;
+		if ( lit && images.lit && hwSurfLights[i].numLights > 0 ) {
+			// normal and specular maps only matter where a light reaches; normal maps only
+			// from the texture pack (HILO8)
+			if ( useBump && alphaSource != 2 ) {
+				idImage * bumpImage = N3DS_StageImage( material, surf->shaderRegisters, SL_BUMP );
+				if ( bumpImage != NULL && N3DS_TexIsNormalMap( bumpImage ) ) {
+					normalTex = N3DS_TexForImage( bumpImage );
+					if ( normalTex != NULL ) {
+						c3dStatBump++;
+					} else {
+						c3dStatBumpWaiting++;
+					}
+				}
+			}
+			if ( useSpecular ) {
+				idImage * specImage = N3DS_StageImage( material, surf->shaderRegisters, SL_SPECULAR );
+				if ( specImage != NULL ) {
+					specTex = N3DS_TexForImage( specImage );
+					c3dStatSpec += ( specTex != NULL ) ? 1 : 0;
+				}
+			}
+		}
 		if ( lit ) {
 			const n3dsSurfLights_t & sl = hwSurfLights[i];
 			// slots: keep lights already loaded, load the rest into free slots
@@ -1111,7 +1157,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 		} else {
 			N3DS_MaterialColor( material, lit ? 1.0f : r );
 		}
-		N3DSGPU_SetHWPass( colorTex, maskTex, alphaSource, lit ? 1 : 0, combinerScale );
+		N3DSGPU_SetHWPass( colorTex, maskTex, alphaSource, lit ? 1 : 0, combinerScale, normalTex, specTex );
 		N3DS_Draw( surf, verts, indexes, record, test );
 	}
 }
@@ -1496,10 +1542,12 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 			c3dStatStages / f, c3dStatStagesSkipped / f );
 		c3dStatStages = c3dStatStagesSkipped = 0;
 		if ( c3dStatHWLit > 0 ) {
-			common->Printf( "PERF   citro3d HW lights: %.0f lit surfaces, %.2f lights each, %.0f slot loads, %.0f lights over 8 dropped per frame\n",
-				c3dStatHWLit / f, c3dStatHWLightsPerSurf / (float)c3dStatHWLit, c3dStatHWSlotLoads / f, c3dStatHWDropped / f );
+			common->Printf( "PERF   citro3d HW lights: %.0f lit surfaces, %.2f lights each, %.0f slot loads, %.0f lights over the limit dropped, %.0f with normal map (%.0f waiting for it), %.0f with specular map per frame\n",
+				c3dStatHWLit / f, c3dStatHWLightsPerSurf / (float)c3dStatHWLit, c3dStatHWSlotLoads / f, c3dStatHWDropped / f,
+				c3dStatBump / f, c3dStatBumpWaiting / f, c3dStatSpec / f );
 		}
 		c3dStatHWLit = c3dStatHWLightsPerSurf = c3dStatHWSlotLoads = c3dStatHWDropped = 0;
+		c3dStatBump = c3dStatBumpWaiting = c3dStatSpec = 0;
 		idStr texLine;
 		N3DS_TexStatsLine( texLine );
 		common->Printf( "PERF   citro3d: %s\n", texLine.c_str() );

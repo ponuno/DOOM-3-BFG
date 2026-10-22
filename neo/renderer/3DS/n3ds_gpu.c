@@ -211,6 +211,7 @@ int N3DSGPU_Init( void ) {
 	AttrInfo_AddLoader( attrInfo, 1, GPU_UNSIGNED_BYTE, 4 );	// v1 = normal
 	AttrInfo_AddLoader( attrInfo, 2, GPU_SHORT, 2 );			// v2 = st (raw half floats)
 	AttrInfo_AddLoader( attrInfo, 3, GPU_UNSIGNED_BYTE, 4 );	// v3 = vertex colour
+	AttrInfo_AddLoader( attrInfo, 4, GPU_UNSIGNED_BYTE, 4 );	// v4 = tangent (lit program: normal maps)
 
 	texEnvMode = -1;
 	alphaTestOn = -1;
@@ -352,9 +353,9 @@ void N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short *
 	C3D_BufInfo * bufInfo = C3D_GetBufInfo();
 	BufInfo_Init( bufInfo );
 	// idDrawVert, 32 bytes, described completely so the components add up to the stride:
-	// position (attr 0, 12) | st (attr 2, 4) | normal (attr 1, 4) | tangent (pad 4 = 0xC) |
-	// colour (attr 3, 4) | colour2 (pad 4)
-	BufInfo_Add( bufInfo, verts, stride, 6, 0xC3C120 );
+	// position (attr 0, 12) | st (attr 2, 4) | normal (attr 1, 4) | tangent (attr 4, 4) |
+	// colour (attr 3, 4) | colour2 (pad 4 = 0xC)
+	BufInfo_Add( bufInfo, verts, stride, 6, 0xC34120 );
 	C3D_DrawElements( GPU_TRIANGLES, numIndexes, C3D_UNSIGNED_SHORT, indexes );
 }
 
@@ -363,6 +364,7 @@ typedef struct {
 	short			st[2];
 	unsigned char	normal[4];
 	unsigned char	color[4];
+	unsigned char	tangent[4];		// every attribute needs a buffer (v4 since normal maps)
 } testVert_t;
 
 static testVert_t *			testVerts = NULL;
@@ -395,6 +397,9 @@ void N3DSGPU_DrawTestTriangle( void ) {
 			testVerts[i].normal[2] = 255;
 			testVerts[i].normal[3] = 0;
 			testVerts[i].color[0] = testVerts[i].color[1] = testVerts[i].color[2] = testVerts[i].color[3] = 255;
+			testVerts[i].tangent[0] = 255;
+			testVerts[i].tangent[1] = testVerts[i].tangent[2] = 128;
+			testVerts[i].tangent[3] = 255;
 			testIndexes[i] = (unsigned short)i;
 		}
 		GSPGPU_FlushDataCache( testVerts, 3 * sizeof( testVert_t ) );
@@ -407,7 +412,7 @@ void N3DSGPU_DrawTestTriangle( void ) {
 	N3DSGPU_SetPassParams( 1, 0 );
 	C3D_BufInfo * bufInfo = C3D_GetBufInfo();
 	BufInfo_Init( bufInfo );
-	BufInfo_Add( bufInfo, testVerts, sizeof( testVert_t ), 4, 0x3120 );
+	BufInfo_Add( bufInfo, testVerts, sizeof( testVert_t ), 5, 0x43120 );
 	C3D_DrawElements( GPU_TRIANGLES, 3, C3D_UNSIGNED_SHORT, testIndexes );
 }
 
@@ -599,6 +604,7 @@ void N3DSGPU_TexFree( void * handle ) {
 */
 
 static C3D_Tex	projectionTex;		// unit 0 copy of a light image with the projection mode set
+static void N3DS_ResetSpecStages( void );
 
 static void N3DS_StageInit( int id ) {
 	C3D_TexEnv * env = C3D_GetTexEnv( id );
@@ -621,6 +627,7 @@ void N3DSGPU_SetFillPass( void * diffuse, void * mask, int alphaSource ) {
 	}
 	const int key = 0x100 | ( diffuse != NULL ? 1 : 0 ) | ( alphaSource << 1 );
 	if ( key != texEnvMode ) {
+		N3DS_ResetSpecStages();
 		const int wasLight = ( texEnvMode & 0x200 ) != 0 || texEnvMode < 0;
 		texEnvMode = key;
 		C3D_TexEnv * env = C3D_GetTexEnv( 0 );
@@ -673,6 +680,7 @@ void N3DSGPU_SetLightPass( void * projection, void * falloff, void * diffuse, in
 	}
 	const int key = 0x200 | ( projection != NULL ? 1 : 0 ) | ( falloff != NULL ? 2 : 0 ) | ( diffuse != NULL ? 4 : 0 );
 	if ( key != texEnvMode ) {
+		N3DS_ResetSpecStages();
 		const int wasFill = ( texEnvMode & 0x200 ) == 0;
 		texEnvMode = key;
 		C3D_TexEnv * env = C3D_GetTexEnv( 0 );
@@ -743,6 +751,11 @@ void N3DSGPU_SetPassParams( int fill, int projective ) {
 static C3D_LightEnv		hwEnv;
 static C3D_Light		hwLights[8];
 static C3D_LightLutDA	hwDistLut;
+static C3D_LightLut		hwSpecLut;				// D0: specular highlight over N.H
+static float			hwSpecPower = -1.0f;
+static int				hwBumpOn = -1;			// light env bump mode as set
+// combiner stage 3 and the combiner buffer, used by the specular pass: put back by the others
+static int				specStagesActive = 0;
 static C3D_LightLut		hwSpotLut[8];
 static float			hwSpotCos[8];			// cone the slot's table was built for (2 = none)
 static int				hwEnabledMask = -1;
@@ -772,15 +785,46 @@ static float N3DS_SpotCone( float c, float cosOuter ) {
 	return v * v * ( 3.0f - 2.0f * v );
 }
 
+static void N3DS_ResetSpecStages( void ) {
+	if ( !specStagesActive ) {
+		return;
+	}
+	specStagesActive = 0;
+	C3D_TexEnvInit( C3D_GetTexEnv( 3 ) );
+	C3D_TexEnvBufUpdate( C3D_Both, 0 );
+}
+
+void N3DSGPU_HWSpecularPower( float power ) {
+	if ( power == hwSpecPower ) {
+		return;
+	}
+	// BFG interaction.pixel: pow( N.H, 10 ) x specular map; uploaded only when it changes
+	hwSpecPower = power;
+	LightLut_FromFunc( &hwSpecLut, powf, power, false );
+	C3D_LightEnvLut( &hwEnv, GPU_LUT_D0, GPU_LUTINPUT_NH, false, &hwSpecLut );
+}
+
 static void N3DS_HWLightInit( void ) {
 	C3D_LightEnvInit( &hwEnv );
 	C3D_Material mtl;
 	memset( &mtl, 0, sizeof( mtl ) );
 	mtl.ambient[0] = mtl.ambient[1] = mtl.ambient[2] = 1.0f;
 	mtl.diffuse[0] = mtl.diffuse[1] = mtl.diffuse[2] = 1.0f;
+	// specular: the light's colour x the D0 table; the combiner multiplies it by the
+	// specular map, or leaves it out
+	mtl.specular0[0] = mtl.specular0[1] = mtl.specular0[2] = 1.0f;
 	C3D_LightEnvMaterial( &hwEnv, &mtl );
 	C3D_LightEnvAmbient( &hwEnv, 0.0f, 0.0f, 0.0f );
 	LightLutDA_Create( &hwDistLut, N3DS_DistAttn, 0.0f, 1.0f, 0.0f, 0.0f );
+	hwSpecPower = -1.0f;
+	N3DSGPU_HWSpecularPower( 10.0f );
+	// no highlight where N.L < 0 (BFG multiplies the specular term by N.L too)
+	C3D_LightEnvClampHighlights( &hwEnv, true );
+	// normal maps on texture unit 1, HILO8: x and y, z rebuilt by the GPU
+	C3D_LightEnvBumpSel( &hwEnv, 1 );
+	C3D_LightEnvBumpNormalZ( &hwEnv, false );
+	C3D_LightEnvBumpMode( &hwEnv, GPU_BUMP_NOT_USED );
+	hwBumpOn = 0;
 	for ( int i = 0; i < 8; i++ ) {
 		C3D_LightInit( &hwLights[i], &hwEnv );
 		C3D_LightSpecular0( &hwLights[i], 0.0f, 0.0f, 0.0f );
@@ -810,6 +854,7 @@ int N3DSGPU_UseProgram( int lit ) {
 	texEnvMode = -1;
 	alphaTestOn = -1;
 	stageStateKey = -1;
+	N3DS_ResetSpecStages();
 	if ( lit != 1 ) {
 		C3D_LightEnvBind( NULL );
 		hwEnvBound = 0;
@@ -838,6 +883,7 @@ void N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, fl
 	C3D_FVec pos = FVec4_New( eyePos[0], eyePos[1], eyePos[2], 1.0f );
 	C3D_LightPosition( light, &pos );
 	C3D_LightDiffuse( light, color[0], color[1], color[2] );
+	C3D_LightSpecular0( light, color[0], color[1], color[2] );
 	// shared table, per-light scale (no table upload)
 	light->conf.distAttnBias = f32tof20( 0.0f );
 	light->conf.distAttnScale = f32tof20( invRadius );
@@ -873,31 +919,61 @@ void N3DSGPU_HWAmbient( float r, float g, float b ) {
 	C3D_LightEnvAmbient( &hwEnv, r, g, b );
 }
 
-void N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, int scale ) {
-	// lit: diffuse x fragment lighting x scale x vertex colour; unlit: diffuse x vertex colour
+void N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, int scale, void * normalMap, void * specMap ) {
+	// lit: diffuse x fragment lighting x scale x vertex colour (+ specular map x highlight x
+	// scale); unlit: diffuse x vertex colour
 	if ( alphaSource == 2 && mask == NULL ) {
 		alphaSource = 0;
 	}
 	if ( alphaSource != 0 && diffuse == NULL ) {
 		alphaSource = 0;
 	}
+	// unit 1 holds either the alpha mask or the normal map
+	const int bump = ( lit && normalMap != NULL && alphaSource != 2 ) ? 1 : 0;
+	const int spec = ( lit && specMap != NULL ) ? 1 : 0;
 	if ( diffuse != NULL ) {
 		N3DS_BindTex( 0, (C3D_Tex *)diffuse );
 	}
 	if ( alphaSource == 2 ) {
 		N3DS_BindTex( 1, (C3D_Tex *)mask );
+	} else if ( bump ) {
+		N3DS_BindTex( 1, (C3D_Tex *)normalMap );
+	}
+	if ( spec ) {
+		N3DS_BindTex( 2, (C3D_Tex *)specMap );
 	}
 	if ( lit != hwEnvBound ) {
 		hwEnvBound = lit;
 		C3D_LightEnvBind( lit ? &hwEnv : NULL );
 	}
-	const int key = 0x400 | ( diffuse != NULL ? 1 : 0 ) | ( alphaSource << 1 ) | ( lit ? 8 : 0 ) | ( scale << 4 );
+	if ( lit && bump != hwBumpOn ) {
+		hwBumpOn = bump;
+		C3D_LightEnvBumpMode( &hwEnv, bump ? GPU_BUMP_AS_BUMP : GPU_BUMP_NOT_USED );
+	}
+	const int key = 0x400 | ( diffuse != NULL ? 1 : 0 ) | ( alphaSource << 1 ) | ( lit ? 8 : 0 ) | ( scale << 4 ) | ( spec << 8 );
 	if ( key != texEnvMode ) {
 		const int first = ( texEnvMode & 0x400 ) == 0 || texEnvMode < 0;
 		texEnvMode = key;
-		C3D_TexEnv * env = C3D_GetTexEnv( 0 );
-		C3D_TexEnvInit( env );
+		const GPU_TEVSCALE tevScale = scale >= 4 ? GPU_TEVSCALE_4 : ( scale >= 2 ? GPU_TEVSCALE_2 : GPU_TEVSCALE_1 );
 		const GPU_TEVSRC light = lit ? GPU_FRAGMENT_PRIMARY_COLOR : GPU_PRIMARY_COLOR;
+		// with a specular map, stage 0 is the highlight (kept in the combiner buffer) and
+		// the diffuse chain moves one stage down; stage 3 adds the two
+		const int d = spec ? 1 : 0;
+		C3D_TexEnv * env;
+		if ( spec ) {
+			env = C3D_GetTexEnv( 0 );
+			C3D_TexEnvInit( env );
+			C3D_TexEnvSrc( env, C3D_RGB, GPU_TEXTURE2, GPU_FRAGMENT_SECONDARY_COLOR, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_RGB, GPU_MODULATE );
+			C3D_TexEnvScale( env, C3D_RGB, tevScale );
+			// buffer update bit 0: stage 0's output goes into the combiner buffer, which
+			// stages 2 and 3 read (the buffer a stage sees lags one stage behind)
+			C3D_TexEnvBufUpdate( C3D_RGB, 1 );
+			C3D_TexEnvBufUpdate( C3D_Alpha, 0 );
+			specStagesActive = 1;
+		}
+		env = C3D_GetTexEnv( d );
+		C3D_TexEnvInit( env );
 		if ( diffuse != NULL ) {
 			C3D_TexEnvSrc( env, C3D_RGB, GPU_TEXTURE0, light, GPU_PRIMARY_COLOR );
 			C3D_TexEnvFunc( env, C3D_RGB, GPU_MODULATE );
@@ -906,7 +982,7 @@ void N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, i
 			C3D_TexEnvFunc( env, C3D_RGB, GPU_REPLACE );
 		}
 		if ( lit ) {
-			C3D_TexEnvScale( env, C3D_RGB, scale >= 4 ? GPU_TEVSCALE_4 : ( scale >= 2 ? GPU_TEVSCALE_2 : GPU_TEVSCALE_1 ) );
+			C3D_TexEnvScale( env, C3D_RGB, tevScale );
 		}
 		if ( alphaSource == 1 ) {
 			C3D_TexEnvSrc( env, C3D_Alpha, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
@@ -917,18 +993,25 @@ void N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, i
 		}
 		C3D_TexEnvFunc( env, C3D_Alpha, GPU_REPLACE );
 
-		// stage 1: x vertex colour (lit: the diffuse stage colour; unlit: already in)
-		env = C3D_GetTexEnv( 1 );
+		// x vertex colour (lit: the diffuse stage colour; unlit: already in)
+		env = C3D_GetTexEnv( d + 1 );
 		C3D_TexEnvInit( env );
 		if ( lit ) {
 			C3D_TexEnvSrc( env, C3D_RGB, GPU_PREVIOUS, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
 			C3D_TexEnvFunc( env, C3D_RGB, GPU_MODULATE );
 		}
-		if ( diffuse != NULL && !lit ) {
-			// unlit with texture: stage 0 was texture x light (= vertex colour) already
+		if ( spec ) {
+			// + the highlight
+			env = C3D_GetTexEnv( 3 );
+			C3D_TexEnvInit( env );
+			C3D_TexEnvSrc( env, C3D_RGB, GPU_PREVIOUS, GPU_PREVIOUS_BUFFER, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_RGB, GPU_ADD );
+		} else {
+			// stage 2 may hold the specular chain's vertex colour stage
+			N3DS_StageInit( 2 );
+			N3DS_ResetSpecStages();
 		}
 		if ( first ) {
-			N3DS_StageInit( 2 );
 			C3D_DepthTest( true, GPU_GREATER, GPU_WRITE_ALL );
 			C3D_AlphaBlend( GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO );
 		}
@@ -998,6 +1081,7 @@ void N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd, int alph
 	const int key = 0x800 | ( tex != NULL ? 1 : 0 ) | ( swf ? 2 : 0 ) | ( ( tex != NULL && alphaTex ) ? 4 : 0 );
 	if ( key != texEnvMode || swf ) {
 		texEnvMode = key;
+		N3DS_ResetSpecStages();
 		C3D_TexEnv * env = C3D_GetTexEnv( 0 );
 		C3D_TexEnvInit( env );
 		if ( tex != NULL && alphaTex ) {
@@ -1059,6 +1143,7 @@ void N3DSGPU_SetStencil( int func, int ref, int mask, int opFail, int opZFail, i
 
 void N3DSGPU_EndStages( void ) {
 	N3DSGPU_SetStencil( -1, 0, 0, 0, 0, 0 );
+	N3DS_ResetSpecStages();
 	// back to the opaque setup
 	C3D_DepthMap( true, -1.0f, 0.0f );
 	C3D_DepthTest( true, GPU_GREATER, GPU_WRITE_ALL );

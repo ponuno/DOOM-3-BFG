@@ -146,6 +146,16 @@ Its lights come from the interaction lists (matched to the view surface by verte
 space). Point lights -> positional lights with a shared distance attenuation table scaled by the
 radius (derived from the light projection planes); projected lights -> spot lights (axis and cone
 from the projection frustum, range from the falloff plane); ambient lights -> surface ambient.
+Normal and specular maps (with the texture pack): the lit program also reads the tangent (v4) and
+outputs the tangent-space -> eye-space rotation as the quaternion (case discrimination on the
+largest component, as devkitPro's normal_mapping example; a mirrored frame, bitangent sign -1,
+uses -T so only the normal map's x is reversed there; vertexes without a usable tangent get one
+from the normal). A surface with lights and a HILO8 normal map in the pack binds it to unit 1 and
+turns the PICA bump unit on (z rebuilt from x, y); a specular map goes to unit 2 and the combiner
+adds specular map x secondary colour (light colour x D0 table of N.H^`n3ds_specularPower`, 10 as
+interaction.pixel, no highlight where N.L < 0) x scale: stage 0 computes it into the combiner
+buffer, stages 1-2 the lit diffuse, stage 3 adds the buffer. Surfaces with a separate alpha mask
+(unit 1) keep the vertex normal. PERF `HW lights` counts surfaces with normal / specular maps.
 Ambient stages and GUIs (`N3DS_DrawAmbientStages`, third program `n3ds_vshader_amb.v.pica`): after
 the lit passes every SL_AMBIENT stage is drawn as RB_DrawShaderPasses does (blend/depth/alpha-test
 state from drawStateBits, stage colour x vertex colour, texture matrix, polygon offset); unlit opaque
@@ -304,6 +314,9 @@ turns it off.
 | `n3ds_lightProjective` | 1 | light projection divided per pixel; 0 = per vertex |
 | `n3ds_lightScissor` | 1 | light passes clipped to the light's screen rectangle |
 | `n3ds_c3dValidate` | 0 | check every draw's indexes against its buffers; bad draws are skipped and logged |
+| `n3ds_bump` | 1 | lighting 2: normal maps from the texture pack through the PICA bump unit |
+| `n3ds_specular` | 1 | lighting 2: specular maps x highlights |
+| `n3ds_specularPower` | 10 | lighting 2: highlight exponent (D0 table, uploaded when it changes) |
 | `n3ds_hwMaxLights` | 8 | lighting 2: most lights per surface, the brightest kept (fragment lighting costs GPU time per light per pixel) |
 | `n3ds_c3dHangHunt` | 0 | from this 3D frame on, wait for the GPU after every draw and log the one it never finishes (slow) |
 | `n3ds_c3dFullFlush` | 0 | 1 = clean the data cache over all linear memory at every frame end (citro3d's default; 69 MB per frame in the 178 MB mode). Off: only the command list; everything else the GPU reads is flushed where it is written |
