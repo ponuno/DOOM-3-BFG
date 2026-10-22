@@ -711,6 +711,9 @@ static void N3DS_RingPicture( void ) {
 			return;
 		}
 	}
+	// VRAM is mapped cached: without this, lines kept from earlier reads came back as
+	// stale 8-pixel blocks in the copies (0123's ring pictures)
+	svcInvalidateProcessDataCache( CUR_PROCESS_HANDLE, (u32)fb->colorBuf, size );
 	memcpy( s->fb, fb->colorBuf, size );
 	s->fbValid = 1;
 }
@@ -778,6 +781,7 @@ static void N3DS_WritePendingColorBuffer( void ) {
 	N3DS_DumpPut32( f, fb->width );
 	N3DS_DumpPut32( f, fb->height );
 	N3DS_DumpPut32( f, (u32)fb->colorFmt );
+	svcInvalidateProcessDataCache( CUR_PROCESS_HANDLE, (u32)fb->colorBuf, size );
 	// VRAM through a small copy: fwrite straight from VRAM goes through the SD driver
 	static u8 chunk[4096];
 	for ( u32 off = 0; off < size; off += sizeof( chunk ) ) {
