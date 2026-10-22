@@ -382,8 +382,11 @@ static void DecodeDXT( int kind, const byte * data, int width, int height, byte 
 				DecodeColorBlock( in, false, true, block );
 				in += 8;
 			} else {
+				// the colour block of a DXT5 is always four colours (the c0 <= c1 three-colour
+				// mode with black is DXT1 only; id's DecompressYCoCgDXT5 decodes the GeForce 7
+				// way). For YCoCg (kind 7) a "black" was Co = Cg = -128: magenta / red pixels
 				DecodeAlphaBlock( in, block );
-				DecodeColorBlock( in + 8, kind == 5, false, block );
+				DecodeColorBlock( in + 8, true, false, block );
 				in += 16;
 			}
 			for ( int j = 0; j < 4; j++ ) {

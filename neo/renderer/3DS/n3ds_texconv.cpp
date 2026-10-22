@@ -67,12 +67,16 @@ bool N3DS_DecodeLevel( int format, int colorFormat, int width, int height,
 			if ( format == FMT_DXT1 ) {
 				dxt.DecompressImageDXT1( data, rgba, width, height );
 			} else if ( colorFormat == CFM_YCOCG_DXT5 ) {
-				// output is CoCg_Y with the per-block scale already removed
-				dxt.DecompressYCoCgDXT5( data, rgba, width, height );
+				// CoCg_Y with the per-block scale in blue. Not DecompressYCoCgDXT5: that decodes
+				// the colour block the GeForce 7 way (c0 <= c1: three colours and black), and a
+				// "black" there is Co = Cg = -128 - magenta / red pixels. A DXT5 colour block is
+				// four colours, as every D3D10+ GPU decodes it for the PC game.
+				dxt.DecompressImageDXT5( data, rgba, width, height );
 				for ( int i = 0; i < numPixels; i++ ) {
 					byte * p = rgba + i * 4;
-					const int co = p[0] - 128;
-					const int cg = p[1] - 128;
+					const int scale = ( p[2] >> 3 ) + 1;
+					const int co = ( p[0] - 128 ) / scale;
+					const int cg = ( p[1] - 128 ) / scale;
 					const int y = p[3];
 					p[0] = N3DS_ClampByte( y + co - cg );
 					p[1] = N3DS_ClampByte( y + cg );
