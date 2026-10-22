@@ -16,6 +16,8 @@
 	  header and takes the data from the pack (idSoundSample_3DS::N3DS_UsePack);
 	- everything else is copied byte for byte.
 	Without the packs on the card such images are missing and such samples are silent.
+	Of the other files, Bink videos are left out (the console plays only the .n3v made
+	from them), and packs / videos already written by this run are not replaced.
 
 ================================================================================================
 */
@@ -228,7 +230,13 @@ int SlimResources( const std::vector<std::string> & containers ) {
 
 	slimStats_t st;
 	int failed = 0;
+	size_t done = 0;
 	for ( const std::string & c : containers ) {
+		if ( cancelRequested ) {
+			Log( "cancelled\n" );
+			return 2;
+		}
+		Progress( STAGE_SDCOPY, (double)done++ / ( containers.size() + 1 ), "%s", fs::path( c ).filename().string().c_str() );
 		const fs::path rel = fs::relative( fs::path( c ), fs::path( opt.baseDir ), ec );
 		const fs::path dst = outDir / rel;
 		fs::create_directories( dst.parent_path(), ec );
@@ -256,19 +264,18 @@ int SlimResources( const std::vector<std::string> & containers ) {
 		if ( ext == ".resources" ) {
 			continue;
 		}
-		if ( ext == ".bik" ) {
-			fs::path n3v = it->path();
-			n3v.replace_extension( ".n3v" );
-			if ( fs::exists( n3v, ec ) ) {
-				skippedVideos++;
-				continue;		// the console plays the .n3v (n3ds_cinematic.cpp), never the .bik
-			}
-		}
 		const fs::path abs = fs::weakly_canonical( it->path(), ec );
-		if ( abs.string().compare( 0, outDir.string().size(), outDir.string() ) == 0 ) {
+		if ( abs.string().compare( 0, outDir.string().size(), outDir.string() ) == 0 || IsInOutput( it->path().string() ) ) {
 			continue;		// the output folder inside the base folder
 		}
 		const fs::path dst = outDir / fs::relative( it->path(), fs::path( opt.baseDir ), ec );
+		if ( ext == ".bik" ) {
+			skippedVideos++;
+			continue;		// the console cannot play Bink: it plays the .n3v made from it (n3ds_cinematic.cpp)
+		}
+		if ( ( ext == ".pak" || ext == ".n3v" ) && fs::exists( dst, ec ) ) {
+			continue;		// made by this run (packs, videos): not replaced by older ones from the base folder
+		}
 		fs::create_directories( dst.parent_path(), ec );
 		fs::copy_file( it->path(), dst, fs::copy_options::overwrite_existing, ec );
 		if ( ec ) {
@@ -282,12 +289,13 @@ int SlimResources( const std::vector<std::string> & containers ) {
 	}
 	Log( "\n.resources: %.0f MB -> %.0f MB (%d images left out, %d samples reduced to their header, %d entries copied)\n",
 		st.before / 1048576.0, st.after / 1048576.0, st.imagesDropped, st.soundsStubbed, st.copied );
-	Log( "other files copied: %d, %.0f MB (the packs and .n3v videos among them; %d .bik left out, converted)\n", otherFiles,
+	Log( "other files copied: %d, %.0f MB (the packs and .n3v videos among them; %d .bik left out: the console plays .n3v only)\n", otherFiles,
 		otherBytes / 1048576.0, skippedVideos );
 	if ( failed > 0 ) {
 		Log( "ERROR: %d files failed\n", failed );
 		return 1;
 	}
 	Log( "copy the contents of %s to sdmc:/doom3/base/ on the SD card (instead of the originals)\n", opt.slimDir.c_str() );
+	Progress( STAGE_SDCOPY, 1.0, "" );
 	return 0;
 }

@@ -2,7 +2,7 @@
 ================================================================================================
 
 	New 3DS video (.n3v), written by tools/n3ds/n3dstex from the game's Bink videos
-	(base/video/*.bik -> base/video/*.n3v).
+	(base/video/NAME.bik -> outputDoom3/doom3/base/video/NAME.n3v).
 
 	Each frame is an ETC1 texture (power-of-two size, PICA tiled and flipped like every
 	texture of the port, one mip level), so the console only copies it to the GPU. Frames

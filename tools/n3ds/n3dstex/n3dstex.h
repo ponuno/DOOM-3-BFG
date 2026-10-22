@@ -4,6 +4,7 @@
 #ifndef __N3DSTEX_H__
 #define __N3DSTEX_H__
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -36,10 +37,33 @@ struct options_t {
 	int			videoFps = 20;
 	int			videoQuality = 0;
 	std::string	slimDir;			// -slim: write slimmed .resources there, convert nothing
+	// where results go: <outDir>/doom3/base/... (the SD card layout); default
+	// "outputDoom3" next to the base folder
+	std::string	outDir;
+	bool		sdFull = false;		// -sd: also the whole SD base folder (slim .resources + the rest)
 };
 extern options_t opt;
 
 void Log( const char * fmt, ... );
+
+// front ends (command line, Windows window): log lines and progress go there too
+enum { STAGE_TEXTURES, STAGE_SOUNDS, STAGE_VIDEOS, STAGE_SDCOPY, NUM_STAGES };
+extern void ( *logSink )( const char * text );
+extern void ( *progressSink )( int stage, double fraction, const char * text );
+void Progress( int stage, double fraction, const char * fmt, ... );
+// set by a front end: converters stop at the next item and delete what they were writing
+extern std::atomic<bool> cancelRequested;
+
+// <base folder>, or <dir>/base when <dir> holds the game (both checked for _common.resources)
+std::string DetectBaseDir( const std::string & dir );
+// fills the output paths from baseDir / outDir; false without a base folder
+bool ResolveOptions();
+// <outDir>/doom3/base
+std::string OutBaseDir();
+// true if p is inside the output folder (skipped when the base folder is scanned)
+bool IsInOutput( const std::string & p );
+// the whole conversion as the options say: 0 ok, 1 errors, 2 cancelled
+int RunConverter();
 
 // 64-bit file positions (a long is 32 bits on Windows)
 #if defined( _WIN32 )
@@ -82,7 +106,7 @@ bool ReadResourceTable( const std::string & path, std::vector<resourceEntry_t> &
 int ConvertSounds( const std::vector<std::string> & containers );
 // slim copy of the base folder (n3dsslim.cpp)
 int SlimResources( const std::vector<std::string> & containers );
-// videos (n3dsvid.cpp): base/.../*.bik -> *.n3v next to them
+// videos (n3dsvid.cpp): base/.../*.bik -> <out base>/.../*.n3v
 int ConvertVideos();
 
 #endif

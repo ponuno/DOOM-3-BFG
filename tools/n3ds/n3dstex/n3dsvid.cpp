@@ -1,7 +1,7 @@
 /*
 ================================================================================================
 
-	n3dstex video part: Bink videos (base/.../NAME.bik) -> NAME.n3v next to them
+	n3dstex video part: Bink videos (base/.../NAME.bik) -> <out>/doom3/base/.../NAME.n3v
 
 	Each .bik is decoded with libbinkdec (LGPL, Barry Duncan, from FFmpeg's Bink decoder),
 	converted from BT.601 YCbCr like the game's bink.pixel, resampled to a power-of-two
@@ -77,7 +77,8 @@ static void PutLE32( std::vector<byte> & v, uint32_t x ) {
 	}
 }
 
-static bool ConvertVideo( const fs::path & bik, const fs::path & outPath, uint64_t & bytesOut, double & seconds, std::string & why ) {
+static bool ConvertVideo( const fs::path & bik, const fs::path & outPath, uint64_t & bytesOut, double & seconds, std::string & why,
+		int videoIndex, int numVideos ) {
 	BinkDecoder dec;
 	if ( !dec.Open( bik.string() ) ) {
 		why = "not a Bink 1 video libbinkdec can read";
@@ -126,6 +127,14 @@ static bool ConvertVideo( const fs::path & bik, const fs::path & outPath, uint64
 	fimage_t lastRgb;
 	bool gray = false;
 	for ( uint32_t first = 0; first < numFrames; first += batch ) {
+		if ( cancelRequested ) {
+			fclose( out );
+			fs::remove( outPath );
+			why = "cancelled";
+			return false;
+		}
+		Progress( STAGE_VIDEOS, ( videoIndex + (double)first / numFrames ) / numVideos, "%s (%d / %d)",
+			bik.filename().string().c_str(), videoIndex + 1, numVideos );
 		const uint32_t count = std::min( batch, numFrames - first );
 		std::vector<fimage_t> images( count );
 		// decode up to the source frame each output frame shows (Bink is predictive:
@@ -249,6 +258,9 @@ int ConvertVideos() {
 		if ( !opt.only.empty() && name.find( opt.only ) == std::string::npos ) {
 			continue;
 		}
+		if ( IsInOutput( it->path().string() ) ) {
+			continue;
+		}
 		biks.push_back( it->path() );
 	}
 	std::sort( biks.begin(), biks.end() );
@@ -262,13 +274,23 @@ int ConvertVideos() {
 	uint64_t total = 0;
 	double totalSeconds = 0.0;
 	int failed = 0;
-	for ( const fs::path & bik : biks ) {
-		fs::path outPath = bik;
+	for ( size_t v = 0; v < biks.size(); v++ ) {
+		const fs::path & bik = biks[v];
+		if ( cancelRequested ) {
+			return 2;
+		}
+		// same place under the output base folder as under the game's: video/NAME.n3v
+		fs::path outPath = fs::path( OutBaseDir() ) / fs::relative( bik, fs::path( opt.baseDir ), ec );
 		outPath.replace_extension( ".n3v" );
+		fs::create_directories( outPath.parent_path(), ec );
 		uint64_t bytes = 0;
 		double seconds = 0.0;
 		std::string why;
-		if ( !ConvertVideo( bik, outPath, bytes, seconds, why ) ) {
+		if ( !ConvertVideo( bik, outPath, bytes, seconds, why, (int)v, (int)biks.size() ) ) {
+			if ( cancelRequested ) {
+				Log( "cancelled: %s not written\n", outPath.string().c_str() );
+				return 2;
+			}
 			Log( "  %s: skipped (%s)\n", bik.filename().string().c_str(), why.c_str() );
 			failed++;
 			continue;
@@ -279,6 +301,6 @@ int ConvertVideos() {
 	const double secs = std::chrono::duration<double>( std::chrono::steady_clock::now() - startTime ).count();
 	Log( "\n%zu videos (%.1f min), %d skipped, %.1f MB of .n3v, %.0f s\n", biks.size() - failed, totalSeconds / 60.0, failed,
 		total / 1048576.0, secs );
-	Log( "the .n3v files are next to the .bik ones: copy base/video/*.n3v to sdmc:/doom3/base/video/\n" );
+	Log( "videos: %s\n", ( fs::path( OutBaseDir() ) / "video" ).string().c_str() );
 	return 0;
 }

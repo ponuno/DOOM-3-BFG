@@ -1,0 +1,4 @@
+// n3dstex.exe (Windows): icon, and the manifest (common controls 6, DPI aware, UTF-8 code page)
+#include <winuser.h>
+1 ICON "n3dstex.ico"
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "n3dstex.manifest"

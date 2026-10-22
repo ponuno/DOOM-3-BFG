@@ -86,6 +86,10 @@ static std::vector<std::string>		containers;
 static std::vector<imageSource_t>	sources;
 
 std::mutex logLock;
+void ( *logSink )( const char * text ) = NULL;
+void ( *progressSink )( int stage, double fraction, const char * text ) = NULL;
+std::atomic<bool> cancelRequested( false );
+
 void Log( const char * fmt, ... ) {
 	char buf[2048];
 	va_list ap;
@@ -93,8 +97,87 @@ void Log( const char * fmt, ... ) {
 	vsnprintf( buf, sizeof( buf ), fmt, ap );
 	va_end( ap );
 	std::lock_guard<std::mutex> lock( logLock );
-	fputs( buf, stdout );
-	fflush( stdout );
+	if ( logSink != NULL ) {
+		logSink( buf );
+	} else {
+		fputs( buf, stdout );
+		fflush( stdout );
+	}
+}
+
+void Progress( int stage, double fraction, const char * fmt, ... ) {
+	if ( progressSink == NULL ) {
+		return;
+	}
+	char buf[512];
+	va_list ap;
+	va_start( ap, fmt );
+	vsnprintf( buf, sizeof( buf ), fmt, ap );
+	va_end( ap );
+	progressSink( stage, std::max( 0.0, std::min( 1.0, fraction ) ), buf );
+}
+
+std::string DetectBaseDir( const std::string & dir ) {
+	std::error_code ec;
+	const fs::path d( dir );
+	if ( fs::exists( d / "_common.resources", ec ) ) {
+		return d.string();
+	}
+	if ( fs::exists( d / "base" / "_common.resources", ec ) ) {
+		return ( d / "base" ).string();
+	}
+	return dir;
+}
+
+static fs::path CleanPath( const std::string & p ) {
+	std::error_code ec;
+	fs::path c = fs::weakly_canonical( fs::path( p ), ec );
+	if ( ec || c.empty() ) {
+		c = fs::absolute( fs::path( p ), ec );
+	}
+	// no trailing separator: parent_path() of ".../base/" is ".../base"
+	std::string s = c.string();
+	while ( s.size() > 1 && ( s.back() == '/' || s.back() == '\\' ) && !( s.size() == 3 && s[1] == ':' ) ) {
+		s.pop_back();
+	}
+	return fs::path( s );
+}
+
+std::string OutBaseDir() {
+	return ( fs::path( opt.outDir ) / "doom3" / "base" ).string();
+}
+
+bool IsInOutput( const std::string & p ) {
+	if ( opt.outDir.empty() ) {
+		return false;
+	}
+	const std::string out = CleanPath( opt.outDir ).string();
+	const std::string c = CleanPath( p ).string();
+	return c.size() >= out.size() && c.compare( 0, out.size(), out ) == 0 &&
+		( c.size() == out.size() || c[out.size()] == '/' || c[out.size()] == '\\' );
+}
+
+bool ResolveOptions() {
+	if ( opt.baseDir.empty() ) {
+		return false;
+	}
+	opt.baseDir = CleanPath( DetectBaseDir( opt.baseDir ) ).string();
+	if ( opt.outDir.empty() ) {
+		const fs::path base( opt.baseDir );
+		fs::path parent = base.parent_path();
+		if ( parent.empty() ) {
+			parent = base;
+		}
+		opt.outDir = ( parent / "outputDoom3" ).string();
+	}
+	opt.outDir = CleanPath( opt.outDir ).string();
+	if ( opt.output.empty() ) {
+		opt.output = ( fs::path( OutBaseDir() ) / "_n3ds_textures.pak" ).string();
+	}
+	if ( opt.soundOutput.empty() ) {
+		opt.soundOutput = ( fs::path( OutBaseDir() ) / "_n3ds_sounds.pak" ).string();
+	}
+	return true;
 }
 
 bool ReadAt( FILE * f, uint32_t offset, void * dst, uint32_t size ) {
@@ -198,7 +281,7 @@ static void FindContainers() {
 		}
 		std::string ext = it->path().extension().string();
 		std::transform( ext.begin(), ext.end(), ext.begin(), ::tolower );
-		if ( ext == ".resources" ) {
+		if ( ext == ".resources" && !IsInOutput( it->path().string() ) ) {
 			found.push_back( it->path().string() );
 		}
 	}
@@ -975,7 +1058,10 @@ static void Usage() {
 		"n3dstex - DOOM 3 BFG textures, sounds and videos -> New 3DS formats\n\n"
 		"usage: n3dstex <doom3 base folder> [options]\n"
 		"  the folder holding _common.resources, _sound_pc*.resources and maps/ (the PC game's base,\n"
-		"  or the SD card's doom3/base). Writes _n3ds_textures.pak and _n3ds_sounds.pak there.\n\n"
+		"  or the folder above it). Results go to outputDoom3 next to the base folder, laid out as\n"
+		"  the SD card: outputDoom3/doom3/base/_n3ds_textures.pak, _n3ds_sounds.pak, video/... .n3v\n"
+		"  (copy the contents of outputDoom3 to the root of the SD card).\n"
+		"  On Windows, n3dstex.exe without arguments opens a window.\n\n"
 		"options:\n"
 		"  -tex           textures only\n"
 		"  -snd           sounds only\n"
@@ -983,8 +1069,11 @@ static void Usage() {
 		"  -videosize <n> video texture, long side (default 512)\n"
 		"  -videofps <n>  video frames per second at most (default 20)\n"
 		"  -vq <0|1|2>    video ETC1 quality (default 0, low: fast)\n"
-		"  -o <file>      texture pack (default: <base>/_n3ds_textures.pak)\n"
-		"  -sndout <file> sound pack (default: <base>/_n3ds_sounds.pak)\n"
+		"  -out <dir>     output folder (default: outputDoom3 next to the base folder)\n"
+		"  -sd            also write the complete SD base folder there: the .resources without what\n"
+		"                 the packs replace, every other file of the game copied\n"
+		"  -o <file>      texture pack (default: <out>/doom3/base/_n3ds_textures.pak)\n"
+		"  -sndout <file> sound pack (default: <out>/doom3/base/_n3ds_sounds.pak)\n"
 		"  -slim <dir>    after converting: write the base folder to <dir> without what the packs\n"
 		"                 replace (images left out, samples reduced to their header), the packs and\n"
 		"                 all other files copied; <dir> then goes to sdmc:/doom3/base\n"
@@ -1062,6 +1151,10 @@ static bool ParseArgs( int argc, char ** argv ) {
 			if ( !next( opt.videoQuality ) ) return false;
 		} else if ( a == "-slim" && i + 1 < argc ) {
 			opt.slimDir = argv[++i];
+		} else if ( a == "-out" && i + 1 < argc ) {
+			opt.outDir = argv[++i];
+		} else if ( a == "-sd" ) {
+			opt.sdFull = true;
 		} else if ( a == "-sndout" && i + 1 < argc ) {
 			opt.soundOutput = argv[++i];
 		} else if ( a == "-v" ) {
@@ -1086,45 +1179,93 @@ static bool ParseArgs( int argc, char ** argv ) {
 	opt.videoQuality = std::max( 0, std::min( 2, opt.videoQuality ) );
 	pow2( opt.videoSize, 8, 1024 );
 	opt.videoFps = std::max( 1, std::min( 60, opt.videoFps ) );
-	if ( opt.output.empty() ) {
-		opt.output = ( fs::path( opt.baseDir ) / "_n3ds_textures.pak" ).string();
-	}
-	if ( opt.soundOutput.empty() ) {
-		opt.soundOutput = ( fs::path( opt.baseDir ) / "_n3ds_sounds.pak" ).string();
-	}
-	return !opt.baseDir.empty();
+	return ResolveOptions();
 }
 
 static int ConvertTextures();
 
-int main( int argc, char ** argv ) {
-	if ( !ParseArgs( argc, argv ) ) {
-		Usage();
-		return 1;
-	}
+int RunConverter() {
+	cancelRequested = false;
+	containers.clear();
+	sources.clear();
 	FindContainers();
-	if ( containers.empty() && ( opt.doTextures || opt.doSounds || !opt.slimDir.empty() ) ) {
-		Log( "no .resources files under %s\n", opt.baseDir.c_str() );
+	if ( containers.empty() && ( opt.doTextures || opt.doSounds || opt.sdFull || !opt.slimDir.empty() ) ) {
+		Log( "no .resources files under %s (choose the game's base folder)\n", opt.baseDir.c_str() );
 		return 1;
 	}
 	if ( !opt.slimDir.empty() ) {
 		return SlimResources( containers );
 	}
+	std::error_code ec;
+	fs::create_directories( OutBaseDir(), ec );
+	if ( ec ) {
+		Log( "cannot create %s\n", OutBaseDir().c_str() );
+		return 1;
+	}
+	Log( "n3dstex: %s -> %s\n\n", opt.baseDir.c_str(), OutBaseDir().c_str() );
 	int rc = 0;
-	if ( opt.doTextures ) {
-		rc |= ConvertTextures();
-	}
-	if ( opt.doSounds ) {
-		if ( opt.doTextures ) {
-			Log( "\n" );
+	auto step = [&]( int r ) {
+		if ( cancelRequested ) {
+			return false;
 		}
-		rc |= ConvertSounds( containers );
-	}
-	if ( opt.doVideos ) {
+		rc |= r;
 		Log( "\n" );
-		rc |= ConvertVideos();
+		return true;
+	};
+	if ( opt.doTextures && !step( ConvertTextures() ) ) {
+		return 2;
+	}
+	if ( opt.doSounds && !step( ConvertSounds( containers ) ) ) {
+		return 2;
+	}
+	if ( opt.doVideos && !step( ConvertVideos() ) ) {
+		return 2;
+	}
+	if ( opt.sdFull ) {
+		opt.slimDir = OutBaseDir();
+		const int r = SlimResources( containers );
+		opt.slimDir.clear();
+		if ( !step( r ) ) {
+			return 2;
+		}
+	}
+	if ( opt.list ) {
+		return rc;
+	}
+	Log( "%s: everything is in %s\n", rc == 0 ? "done" : "finished with errors", opt.outDir.c_str() );
+	Log( "copy the contents of that folder (the doom3 folder) to the root of the SD card\n" );
+	if ( !opt.sdFull ) {
+		Log( "(the game's original .resources files stay in sdmc:/doom3/base as before; -sd writes a complete base folder)\n" );
 	}
 	return rc;
+}
+
+#if defined( N3DSTEX_GUI )
+int RunGui();
+#if defined( _WIN32 )
+#include <windows.h>
+#endif
+#endif
+
+int main( int argc, char ** argv ) {
+#if defined( N3DSTEX_GUI )
+	if ( argc < 2 ) {
+		return RunGui();
+	}
+#if defined( _WIN32 )
+	// the window build is a GUI program: with arguments, print into the console it was started from
+	if ( AttachConsole( ATTACH_PARENT_PROCESS ) ) {
+		freopen( "CONOUT$", "w", stdout );
+		freopen( "CONOUT$", "w", stderr );
+		printf( "\n" );
+	}
+#endif
+#endif
+	if ( !ParseArgs( argc, argv ) ) {
+		Usage();
+		return 1;
+	}
+	return RunConverter();
 }
 
 static int ConvertTextures() {
@@ -1193,7 +1334,7 @@ static int ConvertTextures() {
 		std::vector<FILE *> files( containers.size(), (FILE *)NULL );
 		for ( ;; ) {
 			const size_t i = next++;
-			if ( i >= sources.size() ) {
+			if ( i >= sources.size() || cancelRequested ) {
 				break;
 			}
 			const imageSource_t & src = sources[i];
@@ -1243,6 +1384,7 @@ static int ConvertTextures() {
 			if ( d % 500 == 0 ) {
 				Log( "  %d / %zu\n", d, sources.size() );
 			}
+			Progress( STAGE_TEXTURES, (double)d / sources.size(), "%d / %zu", d, sources.size() );
 		}
 		for ( FILE * f : files ) {
 			if ( f != NULL ) {
@@ -1256,6 +1398,12 @@ static int ConvertTextures() {
 	}
 	for ( std::thread & t : threads ) {
 		t.join();
+	}
+	if ( cancelRequested ) {
+		fclose( out );
+		remove( opt.output.c_str() );
+		Log( "cancelled: %s not written\n", opt.output.c_str() );
+		return 2;
 	}
 
 	// entry table, sorted for the binary search on the console
@@ -1297,6 +1445,6 @@ static int ConvertTextures() {
 	for ( const auto & s : skipReasons ) {
 		Log( "  skipped (%s): %d\n", s.first.c_str(), s.second );
 	}
-	Log( "copy %s to sdmc:/doom3/base/ on the SD card\n", fs::path( opt.output ).filename().string().c_str() );
+	Log( "texture pack: %s\n", opt.output.c_str() );
 	return 0;
 }

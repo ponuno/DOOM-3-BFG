@@ -216,23 +216,41 @@ open the `.bimage` files at all at map load (the pack entry carries the header f
 Cube maps are left out (the backend does not draw them). Normal maps are renormalized on
 every mip level; the ETC1 blocks come from rg_etc1 (zlib licence), medium quality by default.
 
-    n3dstex <base folder> -slim <dir>     (SD-ready copy without what the packs replace)
-    n3dstex <base folder> [-o file] [-world 256] [-bump 128] [-spec 128] [-light 128] [-gui 512]
-            [-font 1024] [-q 0|1|2] [-j threads] [-only text] [-preview dir] [-list] [-v]
-            [-tex | -snd | -vid] [-videosize 512] [-videofps 20] [-vq 0|1|2]
+**Windows: `n3dstex.exe` without arguments opens a window** (`n3dsgui_win32.cpp`): the game
+folder (the game's folder or its `base`; found by itself when the exe sits there, else the last
+one used), the output folder, check boxes for textures / sounds / videos / the complete SD folder,
+texture and video quality, Start / Cancel, progress per step and overall, the log. Settings are
+kept in `HKCU\Software\n3dstex`. The manifest sets common controls 6, DPI awareness and the UTF-8
+code page (folder names in any language). With arguments the same exe is the command line
+(printing into the console it was started from); `n3dstex-cli.exe` is the console-only build.
 
-`<base folder>`: the one with `_common.resources` and `maps/` (the PC game's `base`, or a copy
-of the SD card's `doom3/base`); the pack is written there unless `-o` says otherwise and goes to
-`sdmc:/doom3/base/`. It must stay under 2 GB.
+**Results go to `outputDoom3` next to the base folder**, laid out as the SD card:
 
-`n3dstex <base> -slim <dir>` (after converting) writes an SD-ready base folder without what the
+    outputDoom3/doom3/base/_n3ds_textures.pak
+    outputDoom3/doom3/base/_n3ds_sounds.pak
+    outputDoom3/doom3/base/video/**/*.n3v
+    outputDoom3/doom3/base/... (with -sd / "complete SD folder": slim .resources and every other file)
+
+so the contents of `outputDoom3` are copied to the root of the SD card. The game's folder is only
+read; an output folder inside it is skipped when it is scanned.
+
+    n3dstex <game or base folder> [-out dir] [-sd] [-tex | -snd | -vid] [-world 256] [-bump 128]
+            [-spec 128] [-light 128] [-gui 512] [-font 1024] [-q 0|1|2] [-videosize 512]
+            [-videofps 20] [-vq 0|1|2] [-j threads] [-only text] [-preview dir] [-list] [-v]
+    n3dstex <base folder> -slim <dir>     (only the SD-ready copy, from packs made before)
+
+`<game or base folder>`: the one with `_common.resources` and `maps/`, or the folder above it.
+The texture pack must stay under 2 GB.
+
+`-sd` (after converting, into `outputDoom3/doom3/base`), or `n3dstex <base> -slim <dir>` alone, writes an SD-ready base folder without what the
 packs replace: every `.resources` is written again with the images the texture pack has left out
 and the samples the sound pack has reduced to their `.idwav` header (format, length, amplitude
 table; no buffers), everything else byte for byte; all other files of the base folder (cfg,
 strings, the packs) are copied. The engine never opens those images (pack lookup first) and reads
 only the header of those samples (`N3DS_UsePack`). Without the packs such images are missing and
-such samples silent. The originals are kept: `<dir>` must not be the base folder. `tools/n3ds/n3dstex/build.sh` builds the Linux
-binary and, with llvm-mingw, a static `n3dstex.exe`; `CMakeLists.txt` there builds it on any PC.
+such samples silent. Bink videos are not copied (the console plays only `.n3v`). The originals are kept: the output must not be the base folder.
+`tools/n3ds/n3dstex/build.sh` builds the Linux binary and, with llvm-mingw, static `n3dstex.exe` (window) and
+`n3dstex-cli.exe`; `CMakeLists.txt` there builds it on any PC (the window on Windows).
 
 On the console (`n3ds_textures.cpp`): the pack index (40 bytes per texture) is read at the first
 image load; `idBinaryImage::LoadFromGeneratedFile` looks every 2D image up by the hash of its
@@ -248,7 +266,8 @@ the console). The log says `citro3d: texture pack ...: N textures` or `no textur
 
 The PC source of BFG has no video player (Bink is not open source), so materials with a
 `videoMap` (the main menu's Mars, loading screens, screens in the levels) were left undrawn.
-`n3dstex` (default run, or `-vid` alone) converts every `base/**/*.bik` into `NAME.n3v` next to it
+`n3dstex` (default run, or `-vid` alone) converts every `base/**/*.bik` into
+`outputDoom3/doom3/base/**/NAME.n3v`
 (format: `neo/renderer/3DS/n3ds_video.h`): decoded with libbinkdec (LGPL, from RBDOOM-3-BFG,
 `tools/n3ds/n3dstex/libbinkdec`), BT.601 like `bink.pixel`, resampled to a power-of-two texture
 (`-videosize`, long side, default 512; aspect to the nearest power of two, the material stretches
@@ -263,8 +282,8 @@ On the console `idCinematic::Alloc` makes an `idCinematic_3DS` (`n3ds_cinematic.
 ambient/GUI stage code asks it for the GPU texture of the frame at the view time
 (`N3DS_GpuTexture`). A frame is built in RAM from the records since the one shown (or from the
 key frame), then copied into one of two ETC1 textures in linear memory, so the frame the GPU is
-still drawing keeps its own: no decoding, one short SD read and a 32 KB copy per frame. `-slim`
-leaves the `.bik` files out when their `.n3v` exists.
+still drawing keeps its own: no decoding, one short SD read and a 32 KB copy per frame. `-sd` /
+`-slim` leave the `.bik` files out.
 
 ## GPU hangs
 

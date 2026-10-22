@@ -490,7 +490,7 @@ int ConvertSounds( const std::vector<std::string> & containers ) {
 		std::vector<FILE *> files( containers.size(), (FILE *)NULL );
 		for ( ;; ) {
 			const size_t i = next++;
-			if ( i >= sources.size() ) {
+			if ( i >= sources.size() || cancelRequested ) {
 				break;
 			}
 			const soundSource_t & src = sources[i];
@@ -533,6 +533,7 @@ int ConvertSounds( const std::vector<std::string> & containers ) {
 			if ( d % 1000 == 0 ) {
 				Log( "  %d / %zu\n", d, sources.size() );
 			}
+			Progress( STAGE_SOUNDS, (double)d / sources.size(), "%d / %zu", d, sources.size() );
 		}
 		for ( FILE * f : files ) {
 			if ( f != NULL ) {
@@ -546,6 +547,12 @@ int ConvertSounds( const std::vector<std::string> & containers ) {
 	}
 	for ( std::thread & t : threads ) {
 		t.join();
+	}
+	if ( cancelRequested ) {
+		fclose( out );
+		remove( opt.soundOutput.c_str() );
+		Log( "cancelled: %s not written\n", opt.soundOutput.c_str() );
+		return 2;
 	}
 
 	std::sort( entries.begin(), entries.end(), []( const n3dsSoundPackEntry_t & a, const n3dsSoundPackEntry_t & b ) {
@@ -586,6 +593,6 @@ int ConvertSounds( const std::vector<std::string> & containers ) {
 	for ( const auto & s : skipReasons ) {
 		Log( "  skipped (%s): %d\n", s.first.c_str(), s.second );
 	}
-	Log( "copy %s to sdmc:/doom3/base/ on the SD card\n", fs::path( opt.soundOutput ).filename().string().c_str() );
+	Log( "sound pack: %s\n", opt.soundOutput.c_str() );
 	return 0;
 }
