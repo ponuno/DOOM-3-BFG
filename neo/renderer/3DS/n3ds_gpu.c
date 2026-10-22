@@ -815,6 +815,21 @@ unsigned int N3DSGPU_LinearFree( void ) {
 	return linearSpaceFree();
 }
 
+// textures released in a frame keep their memory until the GPU is done with that frame
+// (one to two frames): what is on its way back, in VRAM or in linear memory
+unsigned int N3DSGPU_PendingFreeBytes( int vram ) {
+	unsigned int bytes = 0;
+	for ( int set = 0; set < 2; set++ ) {
+		for ( int i = 0; i < numPendingFree[set]; i++ ) {
+			const C3D_Tex * tex = pendingFree[set][i];
+			if ( tex->data != NULL && ( ( (u32)tex->data >= 0x1F000000u && (u32)tex->data < 0x1F600000u ) ? 1 : 0 ) == ( vram ? 1 : 0 ) ) {
+				bytes += C3D_TexCalcTotalSize( tex->size, tex->maxLevel );
+			}
+		}
+	}
+	return bytes;
+}
+
 void * N3DSGPU_LinearAlloc( unsigned int size ) {
 	return linearAlloc( size );
 }

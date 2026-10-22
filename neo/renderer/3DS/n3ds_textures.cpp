@@ -958,15 +958,25 @@ static bool N3DS_TexHasAlpha( const n3dsTexture_t * t, const n3dsTexLayout_t & l
 
 // VRAM full: the texture goes to linear memory, within n3ds_texLinearKB, evicting linear
 // textures this frame does not use. Written in place, no copy.
-static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & layout, const byte * rgba ) {
+static bool N3DS_TexUploadLinear( n3dsTexture_t * t, const n3dsTexLayout_t & layout, const byte * rgba, bool & comingBack ) {
+	comingBack = false;
 	const int budget = Max( 0, n3ds_texLinearKB.GetInteger() ) * 1024;
 	const unsigned int reserve = (unsigned int)Max( 0, n3ds_texLinearReserveKB.GetInteger() ) * 1024;
 	void * gpu = NULL;
 	for ( ;; ) {
-		if ( linearTexBytes + layout.bytes <= budget && N3DSGPU_LinearFree() >= (unsigned int)layout.bytes + reserve ) {
+		const unsigned int linearFree = N3DSGPU_LinearFree();
+		if ( linearTexBytes + layout.bytes <= budget && linearFree >= (unsigned int)layout.bytes + reserve ) {
 			gpu = N3DSGPU_TexCreateLinear( layout.width, layout.height, layout.format, layout.maxLevel, t->wrap );
 			if ( gpu != NULL ) {
 				break;
+			}
+		}
+		// as for VRAM: released linear textures come back after this frame
+		if ( linearTexBytes + layout.bytes <= budget ) {
+			const unsigned int linearPending = N3DSGPU_PendingFreeBytes( 0 );
+			if ( linearPending > 0 && linearFree + linearPending >= (unsigned int)layout.bytes + reserve ) {
+				comingBack = true;
+				return false;
 			}
 		}
 		// the least recently used linear texture this frame does not draw
@@ -1051,12 +1061,23 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 	// room in VRAM: evict textures that the current frame does not use
 	const unsigned int reserve = (unsigned int)Max( 0, n3ds_texVRAMReserveKB.GetInteger() ) * 1024;
 	void * gpu = NULL;
+	bool vramComing = false;
 	for ( ;; ) {
-		if ( N3DSGPU_VRAMFree() >= (unsigned int)layout.bytes + reserve ) {
+		const unsigned int vramFree = N3DSGPU_VRAMFree();
+		if ( vramFree >= (unsigned int)layout.bytes + reserve ) {
 			gpu = N3DSGPU_TexCreate( layout.width, layout.height, layout.format, layout.maxLevel, t->wrap );
 			if ( gpu != NULL ) {
 				break;
 			}
+		}
+		// an evicted texture's VRAM is only given back once the GPU has finished the frames
+		// that may sample it, so evicting more now frees nothing more now: before this, the
+		// loop went on through every texture not drawn this frame (200+ at once) and they
+		// all had to be read and uploaded again - textures vanishing and blinking
+		const unsigned int vramPending = N3DSGPU_PendingFreeBytes( 1 );
+		if ( vramPending > 0 && vramFree + vramPending >= (unsigned int)layout.bytes + reserve ) {
+			vramComing = true;
+			break;
 		}
 		// the least recently used VRAM texture this frame does not draw
 		n3dsTexture_t * victim = NULL;
@@ -1072,14 +1093,26 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		N3DS_TexDropGPU( victim );
 		statEvictions++;
 	}
+	if ( gpu == NULL && vramComing ) {
+		// tried again next frame, when the released VRAM is back
+		t->retryFrame = texFrame + 1;
+		statDeferred++;
+		return false;
+	}
 	if ( gpu == NULL ) {
 		// VRAM is full of textures this frame draws (a world in view behind a menu, a
 		// cutscene with many screens): the GPU can sample from linear memory too
-		if ( N3DS_TexUploadLinear( t, layout, rgba.Ptr() ) ) {
+		bool linearComing = false;
+		if ( N3DS_TexUploadLinear( t, layout, rgba.Ptr(), linearComing ) ) {
 			statUploads++;
 			statPackedUploads += t->packed ? 1 : 0;
 			statUploadUs += Sys_Microseconds() - start;
 			return true;
+		}
+		if ( linearComing ) {
+			t->retryFrame = texFrame + 1;
+			statDeferred++;
+			return false;
 		}
 		N3DS_TexFailed( t, layout, "no VRAM block and no room in the linear texture pool (all resident textures in use this frame)" );
 		return false;

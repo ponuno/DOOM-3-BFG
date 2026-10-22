@@ -64,6 +64,7 @@ enum {
 };
 unsigned int	N3DSGPU_VRAMFree( void );
 unsigned int	N3DSGPU_LinearFree( void );
+unsigned int	N3DSGPU_PendingFreeBytes( int vram );	// released textures whose memory comes back after this frame
 void *			N3DSGPU_LinearAlloc( unsigned int size );
 // NULL when VRAM has no room; maxLevel = number of mip levels - 1; wrap: N3DS_WRAP_*
 void *			N3DSGPU_TexCreate( int width, int height, int format, int maxLevel, int repeat );
