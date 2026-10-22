@@ -46,6 +46,8 @@ void * NullGL_BufferStorage( GLuint name, bool * linear );	// gl_null.cpp
 bool r_n3dsC3D = false;
 
 idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: draw at most this many surfaces per frame (0 = all), for bisecting GPU hangs" );
+idCVar n3ds_c3dHangHunt( "n3ds_c3dHangHunt", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: from this 3D frame on, wait for the GPU after every draw and name the draw it never finishes (slow; 0 = off)" );
+static bool c3dHangFound = false;
 idCVar n3ds_guiStencil( "n3ds_guiStencil", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: stencil for SWF masks (0 = ignore the stencil state, for bisecting)" );
 idCVar n3ds_c3dValidate( "n3ds_c3dValidate", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: check every draw's index range against its vertex/index buffers" );
 idCVar n3ds_c3dTest( "n3ds_c3dTest", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d bring-up test: 1 = only a test triangle, 2 = engine surfaces copied to a private buffer first (first one per frame)" );
@@ -96,17 +98,20 @@ static c3dDrawRecord_t	c3dRecords[2][C3D_MAX_RECORDS];
 static int				c3dNumRecords[2];
 static int				c3dRecordSet = 0;		// set being filled this frame
 
+static void N3DS_PrintRecord( int i, const c3dDrawRecord_t & r ) {
+	common->Printf( "  %3d %s: %d indexes, vb %u+%d, ib %u+%d%s%s%s%s%s%s%s\n", i,
+		r.material != NULL ? r.material->GetName() : "?", r.numIndexes, r.vbName, r.vbOffset, r.ibName, r.ibOffset,
+		( r.flags & C3D_REC_STAGE ) ? " | stage, tex " : "", ( r.flags & C3D_REC_STAGE ) ? ( r.texName != NULL ? r.texName : "none" ) : "",
+		( r.flags & C3D_REC_A8 ) ? " A8" : "", ( r.flags & C3D_REC_STENCIL ) ? " stencil" : "", ( r.flags & C3D_REC_SWF ) ? " swf" : "",
+		( r.flags & C3D_REC_ALPHATEST ) ? " alphatest" : "", ( r.flags & C3D_REC_GUIVIEW ) ? " guiview" : "" );
+}
+
 static void N3DS_GPUHang( unsigned int waitedMs ) {
 	const int prev = c3dRecordSet;		// not flipped yet: the frame the GPU is still on
 	common->Printf( "citro3d: GPU has not finished the previous frame after %u ms (3D frame %d); its %d draws:\n",
 		waitedMs, c3dFrame3D, c3dNumRecords[prev] );
 	for ( int i = 0; i < c3dNumRecords[prev]; i++ ) {
-		const c3dDrawRecord_t & r = c3dRecords[prev][i];
-		common->Printf( "  %3d %s: %d indexes, vb %u+%d, ib %u+%d%s%s%s%s%s%s%s\n", i,
-			r.material != NULL ? r.material->GetName() : "?", r.numIndexes, r.vbName, r.vbOffset, r.ibName, r.ibOffset,
-			( r.flags & C3D_REC_STAGE ) ? " | stage, tex " : "", ( r.flags & C3D_REC_STAGE ) ? ( r.texName != NULL ? r.texName : "none" ) : "",
-			( r.flags & C3D_REC_A8 ) ? " A8" : "", ( r.flags & C3D_REC_STENCIL ) ? " stencil" : "", ( r.flags & C3D_REC_SWF ) ? " swf" : "",
-			( r.flags & C3D_REC_ALPHATEST ) ? " alphatest" : "", ( r.flags & C3D_REC_GUIVIEW ) ? " guiview" : "" );
+		N3DS_PrintRecord( i, c3dRecords[prev][i] );
 	}
 }
 
@@ -461,6 +466,19 @@ static void N3DS_Draw( const drawSurf_t * surf, const byte * verts, const unsign
 		N3DSGPU_DrawIndexedCopied( verts, sizeof( idDrawVert ), vb.GetSize() / (int)sizeof( idDrawVert ), indexes, surf->numIndexes );
 	} else {
 		N3DSGPU_DrawIndexed( verts, sizeof( idDrawVert ), indexes, surf->numIndexes );
+	}
+	const int hunt = n3ds_c3dHangHunt.GetInteger();
+	if ( hunt > 0 && c3dFrame3D >= hunt && !c3dHangFound ) {
+		if ( !N3DSGPU_DebugSync( 1500 ) ) {
+			c3dHangFound = true;
+			common->Printf( "HANG HUNT: the GPU never finished draw %d of 3D frame %d:\n", c3dNumRecords[c3dRecordSet] - 1, c3dFrame3D );
+			N3DS_PrintRecord( c3dNumRecords[c3dRecordSet] - 1, record );
+			const int n = c3dNumRecords[c3dRecordSet];
+			common->Printf( "HANG HUNT: draws before it in this frame (all finished):\n" );
+			for ( int i = Max( 0, n - 9 ); i < n - 1; i++ ) {
+				N3DS_PrintRecord( i, c3dRecords[c3dRecordSet][i] );
+			}
+		}
 	}
 	backEnd.pc.c_drawElements++;
 	backEnd.pc.c_drawIndexes += surf->numIndexes;

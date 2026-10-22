@@ -116,6 +116,8 @@ void			N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd, int al
 // 4 decr, 5 invert, 6 incr wrap, 7 decr wrap). The stencil starts every frame at 128.
 void			N3DSGPU_SetStencil( int func, int ref, int mask, int opFail, int opZFail, int opPass );
 void			N3DSGPU_EndStages( void );
+// hang hunting: submit everything drawn so far, wait up to timeoutMs; 0 = the GPU did not finish
+int				N3DSGPU_DebugSync( unsigned int timeoutMs );
 
 // scissor in render target pixels (240 x 400, the 3DS framebuffer orientation),
 // right/bottom exclusive
