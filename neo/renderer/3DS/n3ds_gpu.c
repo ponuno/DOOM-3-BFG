@@ -40,7 +40,8 @@ static int					uLocLightS = -1;
 static int					uLocLightT = -1;
 static int					uLocLightQ = -1;
 static int					uLocLightF = -1;
-static int					uLocPassParams = -1;
+static int					uLocIsFill = -1;		// bool uniforms of the stage 3 program
+static int					uLocPerPixelQ = -1;
 // hardware-lit program (n3ds_vshader_lit.v.pica)
 static DVLB_s *				vshDvlbLit = NULL;
 static shaderProgram_s		programLit;
@@ -202,9 +203,10 @@ int N3DSGPU_Init( void ) {
 	uLocLightT = shaderInstanceGetUniformLocation( program.vertexShader, "lightT" );
 	uLocLightQ = shaderInstanceGetUniformLocation( program.vertexShader, "lightQ" );
 	uLocLightF = shaderInstanceGetUniformLocation( program.vertexShader, "lightF" );
-	uLocPassParams = shaderInstanceGetUniformLocation( program.vertexShader, "passParams" );
+	uLocIsFill = shaderInstanceGetUniformLocation( program.vertexShader, "isFill" );
+	uLocPerPixelQ = shaderInstanceGetUniformLocation( program.vertexShader, "perPixelQ" );
 	if ( uLocMvp < 0 || uLocColor < 0 || uLocPow2 < 0 || uLocLightOrigin < 0 || uLocLightS < 0 ||
-			uLocLightT < 0 || uLocLightQ < 0 || uLocLightF < 0 || uLocPassParams < 0 ) {
+			uLocLightT < 0 || uLocLightQ < 0 || uLocLightF < 0 || uLocIsFill < 0 || uLocPerPixelQ < 0 ) {
 		lastError = "shader uniforms not found";
 		return 0;
 	}
@@ -1449,7 +1451,9 @@ void N3DSGPU_SetScissor( int enable, int left, int top, int right, int bottom ) 
 }
 
 void N3DSGPU_SetPassParams( int fill, int projective ) {
-	C3D_FVUnifSet( GPU_VERTEX_SHADER, uLocPassParams, fill ? 1.0f : 0.0f, projective ? 1.0f : 0.0f, 0.0f, 0.0f );
+	// no other program uses bool uniforms, and none sets defaults that binding would load
+	C3D_BoolUnifSet( GPU_VERTEX_SHADER, uLocIsFill, fill != 0 );
+	C3D_BoolUnifSet( GPU_VERTEX_SHADER, uLocPerPixelQ, projective != 0 );
 }
 
 /*
