@@ -25,6 +25,8 @@ const char *	N3DSGPU_LastError( void );
 // callback is called once (then the wait goes on)
 void			N3DSGPU_BeginFrame( unsigned int clearRGBA );
 void			N3DSGPU_SetHangCallback( void ( *callback )( unsigned int waitedMs ) );
+// log lines from the GPU layer (lost completion interrupts, see N3DS_LostCompletion)
+void			N3DSGPU_SetNoticeCallback( void ( *callback )( const char * text ) );
 void			N3DSGPU_EndFrame( void );
 
 // rows[16]: row-major 4x4, already converted to PICA clip space

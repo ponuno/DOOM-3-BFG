@@ -278,6 +278,14 @@ void N3DSGPU_Shutdown( void ) {
 }
 
 static void N3DS_RunDeferredCopies( void );
+static int N3DS_LostCompletion( u64 stuckSince );
+static const char * N3DS_GxCommandName( u32 id );
+
+static void ( *noticeCallback )( const char * text ) = NULL;
+
+void N3DSGPU_SetNoticeCallback( void ( *callback )( const char * text ) ) {
+	noticeCallback = callback;
+}
 
 void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 	if ( !initialized || inFrame ) {
@@ -293,6 +301,9 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 			if ( hangCallback != NULL ) {
 				hangCallback( (unsigned int)waited );
 			}
+		}
+		if ( reported ) {
+			N3DS_LostCompletion( start );
 		}
 		svcSleepThread( 1000LL * 1000 );
 	}
@@ -352,6 +363,68 @@ typedef struct {
 } n3dsC3DContextHead_t;
 extern n3dsC3DContextHead_t __C3D_Context;
 
+// libctru counts the GX queue's completion interrupts (gxqueue.c); the queue waits for the
+// next one forever if it never comes
+extern void gxCmdQueueInterrupt( GSPGPU_Event irq );
+
+/*
+========================
+N3DS_LostCompletion
+
+Diagnostics for the Mars City stops (0088-0098): the GX queue waits for an entry while the
+GPU busy register (0x10400034: bit 31 P3D, bit 30 PPF, bits 26/27 PSC0/1) says no engine is
+working - the work is done or never started, and its completion interrupt was not
+counted. After 2 s of waiting and 0.5 s of an idle GPU this logs the queue entry and
+counts its interrupt (gxCmdQueueInterrupt), so the queue moves on. If the frame then
+appears and the game goes on, the GPU had not hung: an interrupt was lost. If the GPU
+was stuck after all, the next frame stops the same way.
+========================
+*/
+static int N3DS_LostCompletion( u64 stuckSince ) {
+	static u64 idleSince = 0;
+	static int logged = 0;
+	u32 busy = 0xFFFFFFFF;
+	if ( R_FAILED( GSPGPU_ReadHWRegs( 0x400034, &busy, 4 ) ) ) {
+		return 0;
+	}
+	const u64 now = osGetTime();
+	if ( ( busy & 0xCC000000u ) != 0 ) {
+		idleSince = 0;
+		return 0;
+	}
+	if ( idleSince < stuckSince ) {
+		idleSince = now;
+		return 0;
+	}
+	if ( now - idleSince < 500 ) {
+		return 0;
+	}
+	idleSince = 0;
+	const gxCmdQueue_s * q = &__C3D_Context.gxQueue;
+	if ( q->lastEntry >= q->numEntries ) {
+		return 0;
+	}
+	const u32 id = q->entries[q->lastEntry].data[0] & 0xFF;
+	GSPGPU_Event irq = GSPGPU_EVENT_P3D;
+	if ( id == 0x02 ) {
+		irq = GSPGPU_EVENT_PSC0;
+	} else if ( id == 0x03 || id == 0x04 ) {
+		irq = GSPGPU_EVENT_PPF;
+	} else if ( id == 0x00 ) {
+		irq = GSPGPU_EVENT_DMA;
+	}
+	if ( noticeCallback != NULL && logged < 40 ) {
+		logged++;
+		char text[256];
+		snprintf( text, sizeof( text ), "citro3d: GPU idle (busy %08lx) %llu ms into the wait, queue on entry %u of %u (%s): "
+			"its completion interrupt never came - counted now (lost interrupt #%d)\n", busy, now - stuckSince,
+			q->lastEntry, q->numEntries, N3DS_GxCommandName( id ), logged );
+		noticeCallback( text );
+	}
+	gxCmdQueueInterrupt( irq );
+	return 1;
+}
+
 // the GX queue is idle (C3D_FrameBegin cleared it, nothing of this frame is queued yet):
 // the deferred texture copies run alone, and the frame starts once they are done
 static void N3DS_RunDeferredCopies( void ) {
@@ -371,6 +444,9 @@ static void N3DS_RunDeferredCopies( void ) {
 			if ( hangCallback != NULL ) {
 				hangCallback( (unsigned int)( osGetTime() - start ) );
 			}
+		}
+		if ( reported ) {
+			N3DS_LostCompletion( start );
 		}
 		svcSleepThread( 200LL * 1000 );
 	}

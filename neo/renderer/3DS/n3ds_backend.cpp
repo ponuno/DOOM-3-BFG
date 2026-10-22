@@ -132,6 +132,10 @@ static void N3DS_PrintRecord( int i, const c3dDrawRecord_t & r ) {
 	}
 }
 
+static void N3DS_GPUNotice( const char * text ) {
+	common->Printf( "%s", text );
+}
+
 static void N3DS_GPUHang( unsigned int waitedMs ) {
 	const int prev = c3dRecordSet;		// not flipped yet: the frame the GPU is still on
 	common->Printf( "citro3d: GPU has not finished the previous frame after %u ms (3D frame %d); its %d draws:\n",
@@ -165,6 +169,7 @@ bool RB_N3DS_Init() {
 	}
 	N3DSGPU_SetHangCallback( N3DS_GPUHang );
 	N3DSGPU_SetHangTexNamer( N3DS_TexNameForAddress );
+	N3DSGPU_SetNoticeCallback( N3DS_GPUNotice );
 	common->Printf( "citro3d: initialized (stage 3: lit textured world, VRAM free %u KB, linear free %u KB)\n",
 		N3DSGPU_VRAMFree() / 1024, N3DSGPU_LinearFree() / 1024 );
 	r_n3dsC3D = true;

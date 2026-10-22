@@ -302,6 +302,11 @@ decodes every draw's state (vertex / index buffers, texture units, lighting and 
 flags impossible ones (addresses outside VRAM / FCRAM, textures running past memory, mip levels
 under 8 pixels, a bump map from a disabled unit, ...) and names the draws whose state matches
 the registers at the hang. Draw numbers are those of the log's list. `n3ds_c3dHangHunt <frame>`
+If, after the 2 s, the GPU busy register (0x10400034) shows no engine working for 0.5 s, the
+completion interrupt of the queue entry it waits for was never counted: the log says
+`citro3d: GPU idle ... lost interrupt #N` and the interrupt is counted by hand
+(`gxCmdQueueInterrupt`), so the queue goes on. Frames coming back afterwards mean the GPU had
+not hung. `n3ds_c3dHangHunt <frame>`
 (slow) waits for the GPU after every draw from that frame on; the draw it never finishes is logged
 and its command list (that draw alone) written to `sdmc:/doom3/gpuhang_hunt.bin` (same format).
 
