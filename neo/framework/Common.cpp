@@ -88,6 +88,7 @@ idCVar com_engineHz( "com_engineHz", "30", CVAR_FLOAT | CVAR_ARCHIVE, "Frames pe
 float com_engineHz_latched = 30.0f; // Latched version of cvar, updated between map loads
 int64 com_engineHz_numerator = 100LL * 1000LL;
 int64 com_engineHz_denominator = 100LL * 30LL;
+idCVar n3ds_configVersion( "n3ds_configVersion", "0", CVAR_INTEGER | CVAR_ARCHIVE | CVAR_NOCHEAT, "New 3DS: config file migrations applied (new defaults written over old saved values once)" );
 #else
 idCVar com_engineHz( "com_engineHz", "60", CVAR_FLOAT | CVAR_ARCHIVE, "Frames per second the engine runs at", 10.0f, 1024.0f );
 float com_engineHz_latched = 60.0f; // Latched version of cvar, updated between map loads
@@ -1063,6 +1064,17 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 
 		// run cfg execution
 		cmdSystem->ExecuteCommandBuffer();
+
+#if defined( ID_3DS )
+		// New 3DS: the config file stores every archived cvar, defaults included, so a
+		// changed default only reaches existing configs through a one-time migration.
+		// Version 1: com_engineHz 30 (was 60).
+		if ( n3ds_configVersion.GetInteger() < 1 ) {
+			Printf( "config: version %d -> 1: com_engineHz %s -> 30\n", n3ds_configVersion.GetInteger(), com_engineHz.GetString() );
+			com_engineHz.SetInteger( 30 );
+			n3ds_configVersion.SetInteger( 1 );
+		}
+#endif
 
 		// re-override anything from the config files with command line args
 		StartupVariable( NULL );

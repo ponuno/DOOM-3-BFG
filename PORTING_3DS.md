@@ -445,6 +445,7 @@ turns it off.
 | `n3ds_soundPack` | 1 | play samples from `base/_n3ds_sounds.pak` (DSP-ADPCM, decoded by the DSP) when it is there |
 | `n3ds_showFPS` | 1 | frame counter in the top right corner of the top screen (green 30+, yellow 20+, red below; refreshed twice a second) |
 | `com_engineHz` | 30 | game ticks per second (engine default 60). A frame is drawn only after a tick, so this also caps the frame rate; 60 costs two or three 4-6 ms ticks per drawn frame |
+| `n3ds_configVersion` | 0 | config migrations applied: the config stores every archived cvar, so changed defaults reach old configs only through this (1: `com_engineHz` 30) |
 | `n3ds_gyro` | 0 | gyro aim (bottom screen button; saved) |
 | `n3ds_gyroSensitivity` | 1.5 | view degrees per degree the console turns |
 | `n3ds_gyroDeadzone` | 1.5 | rates below this (deg/s) count as rest |
