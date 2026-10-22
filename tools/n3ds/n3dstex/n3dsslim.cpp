@@ -243,6 +243,7 @@ int SlimResources( const std::vector<std::string> & containers ) {
 	// everything else of the base folder as it is
 	uint64_t otherBytes = 0;
 	int otherFiles = 0;
+	int skippedVideos = 0;
 	for ( fs::recursive_directory_iterator it( opt.baseDir, ec ), endIt; it != endIt; it.increment( ec ) ) {
 		if ( ec ) {
 			break;
@@ -254,6 +255,14 @@ int SlimResources( const std::vector<std::string> & containers ) {
 		std::transform( ext.begin(), ext.end(), ext.begin(), ::tolower );
 		if ( ext == ".resources" ) {
 			continue;
+		}
+		if ( ext == ".bik" ) {
+			fs::path n3v = it->path();
+			n3v.replace_extension( ".n3v" );
+			if ( fs::exists( n3v, ec ) ) {
+				skippedVideos++;
+				continue;		// the console plays the .n3v (n3ds_cinematic.cpp), never the .bik
+			}
 		}
 		const fs::path abs = fs::weakly_canonical( it->path(), ec );
 		if ( abs.string().compare( 0, outDir.string().size(), outDir.string() ) == 0 ) {
@@ -273,7 +282,8 @@ int SlimResources( const std::vector<std::string> & containers ) {
 	}
 	Log( "\n.resources: %.0f MB -> %.0f MB (%d images left out, %d samples reduced to their header, %d entries copied)\n",
 		st.before / 1048576.0, st.after / 1048576.0, st.imagesDropped, st.soundsStubbed, st.copied );
-	Log( "other files copied: %d, %.0f MB (the packs among them)\n", otherFiles, otherBytes / 1048576.0 );
+	Log( "other files copied: %d, %.0f MB (the packs and .n3v videos among them; %d .bik left out, converted)\n", otherFiles,
+		otherBytes / 1048576.0, skippedVideos );
 	if ( failed > 0 ) {
 		Log( "ERROR: %d files failed\n", failed );
 		return 1;

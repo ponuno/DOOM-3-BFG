@@ -57,8 +57,16 @@ void idCinematic::ShutdownCinematic( void ) {
 idCinematic::Alloc
 ==============
 */
+#if defined( ID_3DS )
+idCinematic * N3DS_AllocCinematic();		// renderer/3DS/n3ds_cinematic.cpp: .n3v videos
+#endif
+
 idCinematic * idCinematic::Alloc() {
+#if defined( ID_3DS )
+	return N3DS_AllocCinematic();
+#else
 	return new idCinematic;
+#endif
 }
 
 /*

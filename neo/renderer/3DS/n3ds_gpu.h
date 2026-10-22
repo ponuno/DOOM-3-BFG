@@ -133,6 +133,17 @@ void			N3DSGPU_SetStencil( int func, int ref, int mask, int opFail, int opZFail,
 void			N3DSGPU_EndStages( void );
 // hang hunting: submit everything drawn so far, wait up to timeoutMs; 0 = the GPU did not finish
 int				N3DSGPU_DebugSync( unsigned int timeoutMs );
+// GPU hang report: where citro3d's GX queue stands (which transfer or command list
+// the GPU is stuck on), one line per entry into out; returns the number of lines
+int				N3DSGPU_HangQueueReport( char * out, int outSize );
+// writes the queue and every command list of the hung frame to path (decoded on the PC
+// by tools/n3ds/gpuhang.py), then, if withRegs, appends the GPU's registers as they stand
+// (which state the GPU is stuck in); 0 if the file could not be written
+int				N3DSGPU_HangDump( const char * path, int withRegs );
+// texture-copy destinations in the queue report are named through this (NULL: unknown)
+void			N3DSGPU_SetHangTexNamer( const char * ( *namer )( unsigned int address ) );
+// "ETC1 128x64 5 lv @18123400" (C3D_Tex: format, size, levels, data address)
+void			N3DSGPU_TexDescribe( void * tex, char * out, int outSize );
 // 1: clean the data cache over all linear memory at every frame end (citro3d default)
 void			N3DSGPU_SetFullFlush( int enable );
 

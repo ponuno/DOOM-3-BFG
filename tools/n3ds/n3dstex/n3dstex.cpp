@@ -422,8 +422,6 @@ static int PowerOfTwoBelow( int v ) {
 	return p;
 }
 
-// float images: 4 channels per pixel
-typedef std::vector<float> fimage_t;
 
 static void Halve( const fimage_t & src, int w, int h, bool hx, bool hy, fimage_t & dst ) {
 	const int nw = hx ? w / 2 : w;
@@ -473,7 +471,7 @@ static void AreaResample1D( const fimage_t & src, int w, int h, int tw, int th, 
 	}
 }
 
-static void FitTo( fimage_t & img, int & w, int & h, int tw, int th ) {
+void FitTo( fimage_t & img, int & w, int & h, int tw, int th ) {
 	fimage_t tmp;
 	while ( w >= tw * 2 || h >= th * 2 ) {
 		const bool hx = w >= tw * 2, hy = h >= th * 2;
@@ -518,7 +516,7 @@ static inline int Bits( float v, int bits ) {	// 0..1 -> 0..2^bits-1
 	return i < 0 ? 0 : ( i > maxv ? maxv : i );
 }
 
-static void EncodeLevel( const fimage_t & img, int w, int h, int fmt, std::vector<byte> & out ) {
+void EncodeLevel( const fimage_t & img, int w, int h, int fmt, std::vector<byte> & out, int etc1Quality ) {
 	const size_t base = out.size();
 	out.resize( base + N3DS_PackLevelBytes( fmt, w, h, 0 ), 0 );
 	byte * dst = &out[base];
@@ -526,7 +524,7 @@ static void EncodeLevel( const fimage_t & img, int w, int h, int fmt, std::vecto
 	if ( fmt == N3DS_PACKFMT_ETC1 || fmt == N3DS_PACKFMT_ETC1A4 ) {
 		rg_etc1::etc1_pack_params params;
 		params.clear();
-		params.m_quality = (rg_etc1::etc1_quality)opt.quality;
+		params.m_quality = (rg_etc1::etc1_quality)etc1Quality;
 		const bool alpha = ( fmt == N3DS_PACKFMT_ETC1A4 );
 		byte * o = dst;
 		for ( int ty = 0; ty < h; ty += 8 ) {
@@ -922,9 +920,9 @@ static void ConvertImage( const imageSource_t & src, FILE * f, result_t & res ) 
 				enc[i + 0] = x * 0.5f + 0.5f;
 				enc[i + 1] = y * 0.5f + 0.5f;
 			}
-			EncodeLevel( enc, w, h, fmt, res.data );
+			EncodeLevel( enc, w, h, fmt, res.data, opt.quality );
 		} else {
-			EncodeLevel( img, w, h, fmt, res.data );
+			EncodeLevel( img, w, h, fmt, res.data, opt.quality );
 		}
 		if ( level < maxLevel ) {
 			fimage_t half;
@@ -974,13 +972,17 @@ static const char * FormatName( int fmt ) {
 
 static void Usage() {
 	printf(
-		"n3dstex - DOOM 3 BFG textures and sounds -> New 3DS texture and sound packs\n\n"
+		"n3dstex - DOOM 3 BFG textures, sounds and videos -> New 3DS formats\n\n"
 		"usage: n3dstex <doom3 base folder> [options]\n"
 		"  the folder holding _common.resources, _sound_pc*.resources and maps/ (the PC game's base,\n"
 		"  or the SD card's doom3/base). Writes _n3ds_textures.pak and _n3ds_sounds.pak there.\n\n"
 		"options:\n"
 		"  -tex           textures only\n"
 		"  -snd           sounds only\n"
+		"  -vid           videos only (base/.../*.bik -> .n3v next to them)\n"
+		"  -videosize <n> video texture, long side (default 512)\n"
+		"  -videofps <n>  video frames per second at most (default 20)\n"
+		"  -vq <0|1|2>    video ETC1 quality (default 0, low: fast)\n"
 		"  -o <file>      texture pack (default: <base>/_n3ds_textures.pak)\n"
 		"  -sndout <file> sound pack (default: <base>/_n3ds_sounds.pak)\n"
 		"  -slim <dir>    after converting: write the base folder to <dir> without what the packs\n"
@@ -1043,9 +1045,21 @@ static bool ParseArgs( int argc, char ** argv ) {
 		} else if ( a == "-tex" ) {
 			opt.doTextures = true;
 			opt.doSounds = false;
+			opt.doVideos = false;
 		} else if ( a == "-snd" ) {
 			opt.doSounds = true;
 			opt.doTextures = false;
+			opt.doVideos = false;
+		} else if ( a == "-vid" ) {
+			opt.doVideos = true;
+			opt.doTextures = false;
+			opt.doSounds = false;
+		} else if ( a == "-videosize" ) {
+			if ( !next( opt.videoSize ) ) return false;
+		} else if ( a == "-videofps" ) {
+			if ( !next( opt.videoFps ) ) return false;
+		} else if ( a == "-vq" ) {
+			if ( !next( opt.videoQuality ) ) return false;
 		} else if ( a == "-slim" && i + 1 < argc ) {
 			opt.slimDir = argv[++i];
 		} else if ( a == "-sndout" && i + 1 < argc ) {
@@ -1069,6 +1083,9 @@ static bool ParseArgs( int argc, char ** argv ) {
 	pow2( opt.maxGui, 8, 1024 );
 	pow2( opt.maxFont, 8, 1024 );
 	opt.quality = std::max( 0, std::min( 2, opt.quality ) );
+	opt.videoQuality = std::max( 0, std::min( 2, opt.videoQuality ) );
+	pow2( opt.videoSize, 8, 1024 );
+	opt.videoFps = std::max( 1, std::min( 60, opt.videoFps ) );
 	if ( opt.output.empty() ) {
 		opt.output = ( fs::path( opt.baseDir ) / "_n3ds_textures.pak" ).string();
 	}
@@ -1086,7 +1103,7 @@ int main( int argc, char ** argv ) {
 		return 1;
 	}
 	FindContainers();
-	if ( containers.empty() ) {
+	if ( containers.empty() && ( opt.doTextures || opt.doSounds || !opt.slimDir.empty() ) ) {
 		Log( "no .resources files under %s\n", opt.baseDir.c_str() );
 		return 1;
 	}
@@ -1102,6 +1119,10 @@ int main( int argc, char ** argv ) {
 			Log( "\n" );
 		}
 		rc |= ConvertSounds( containers );
+	}
+	if ( opt.doVideos ) {
+		Log( "\n" );
+		rc |= ConvertVideos();
 	}
 	return rc;
 }

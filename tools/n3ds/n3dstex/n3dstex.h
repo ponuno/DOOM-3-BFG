@@ -31,6 +31,10 @@ struct options_t {
 	bool		doTextures = true;
 	bool		doSounds = true;
 	std::string	soundOutput;
+	bool		doVideos = true;
+	int			videoSize = 512;
+	int			videoFps = 20;
+	int			videoQuality = 0;
 	std::string	slimDir;			// -slim: write slimmed .resources there, convert nothing
 };
 extern options_t opt;
@@ -61,6 +65,11 @@ static inline uint16_t LE16( const byte * p ) {
 
 bool ReadAt( FILE * f, uint32_t offset, void * dst, uint32_t size );
 
+// float RGBA images (n3dstex.cpp): box / area resampling, PICA encoders
+typedef std::vector<float> fimage_t;
+void FitTo( fimage_t & img, int & w, int & h, int tw, int th );
+void EncodeLevel( const fimage_t & img, int w, int h, int fmt, std::vector<byte> & out, int etc1Quality );
+
 // every entry of a resource container's table (name lower case, forward slashes)
 struct resourceEntry_t {
 	std::string	name;
@@ -73,5 +82,7 @@ bool ReadResourceTable( const std::string & path, std::vector<resourceEntry_t> &
 int ConvertSounds( const std::vector<std::string> & containers );
 // slim copy of the base folder (n3dsslim.cpp)
 int SlimResources( const std::vector<std::string> & containers );
+// videos (n3dsvid.cpp): base/.../*.bik -> *.n3v next to them
+int ConvertVideos();
 
 #endif

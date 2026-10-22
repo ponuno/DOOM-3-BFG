@@ -939,6 +939,31 @@ bool N3DS_TexIsNormalMap( idImage * image ) {
 	return t != NULL && t->packed && t->gpuFormat == N3DS_TEX_HILO8;
 }
 
+void N3DS_TexDescribe( idImage * image, idStr & out ) {
+	if ( image == NULL ) {
+		out = "none";
+		return;
+	}
+	const n3dsTexture_t * t = (const n3dsTexture_t *)image->n3dsTex;
+	if ( t == NULL ) {
+		out = va( "%s: no texture", image->GetName() );
+		return;
+	}
+	char gpu[96];
+	N3DSGPU_TexDescribe( t->gpu, gpu, sizeof( gpu ) );
+	out = va( "%s: %s, %s%s%s", image->GetName(), gpu, t->packed ? "pack" : "decoded", t->gpu == NULL ? "" : ( t->inLinear ? ", linear" : ", VRAM" ),
+		t->unsupported ? ", unsupported" : "" );
+}
+
+const char * N3DS_TexNameForAddress( unsigned int address ) {
+	for ( const n3dsTexture_t * t = lruHead; t != NULL; t = t->lruNext ) {
+		if ( t->gpu != NULL && (unsigned int)(UINT_PTR)N3DSGPU_TexData( t->gpu ) == address ) {
+			return t->image->GetName();
+		}
+	}
+	return NULL;
+}
+
 void * N3DS_TexForImage( idImage * image ) {
 	if ( image == NULL || !n3ds_textures.GetBool() ) {
 		return NULL;

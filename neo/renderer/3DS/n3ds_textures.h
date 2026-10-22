@@ -15,6 +15,9 @@ void *		N3DS_TexForImage( idImage * image );		// GPU texture or NULL
 bool		N3DS_TexIsAlphaOnly( idImage * image );	// A8 on the GPU (fonts, coverage): no colour
 bool		N3DS_TexIsNormalMap( idImage * image );	// HILO8 from the texture pack: usable by the bump unit
 void		N3DS_TexStatsLine( idStr & line );
+// diagnostics: "name: ETC1 128x128 6 lv @18000000, pack, VRAM" (or why there is no GPU texture)
+void		N3DS_TexDescribe( idImage * image, idStr & out );
+const char *N3DS_TexNameForAddress( unsigned int address );	// resident texture whose data is there
 void		N3DS_TexLogMemory();						// memory diagnostics at MEM checkpoints
 
 #endif

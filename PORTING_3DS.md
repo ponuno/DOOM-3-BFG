@@ -50,8 +50,10 @@ Target: armv6k / MPCore, VFPv2, hard-float, C++14 (gnu), exceptions ON
     sdmc:/doom3/base/maps/<map>.resources
     sdmc:/doom3/base/_n3ds_textures.pak  (optional, made on the PC by n3dstex: see "Texture pack")
     sdmc:/doom3/base/_n3ds_sounds.pak    (optional, made by n3dstex too: see "Sound")
+    sdmc:/doom3/base/video/**/*.n3v      (optional, the game's videos converted by n3dstex: see "Videos")
     sdmc:/doom3/cmdline.txt          (optional: extra command line, e.g. "+map game/mars_city1")
     sdmc:/doom3/log.txt              (written by the game)
+    sdmc:/doom3/gpuhang.bin          (written when the GPU hangs: see "GPU hangs")
     sdmc:/doom3/save/                (fs_savepath)
 
 The `_sound_pc*.resources` hold the sample data: without them every sound is an empty
@@ -217,6 +219,7 @@ every mip level; the ETC1 blocks come from rg_etc1 (zlib licence), medium qualit
     n3dstex <base folder> -slim <dir>     (SD-ready copy without what the packs replace)
     n3dstex <base folder> [-o file] [-world 256] [-bump 128] [-spec 128] [-light 128] [-gui 512]
             [-font 1024] [-q 0|1|2] [-j threads] [-only text] [-preview dir] [-list] [-v]
+            [-tex | -snd | -vid] [-videosize 512] [-videofps 20] [-vq 0|1|2]
 
 `<base folder>`: the one with `_common.resources` and `maps/` (the PC game's `base`, or a copy
 of the SD card's `doom3/base`); the pack is written there unless `-o` says otherwise and goes to
@@ -240,6 +243,47 @@ first drawn, like the kept levels of the old path, and uploaded with one copy. T
 have, and everything with `+set n3ds_texPack 0`, take the old path (`n3ds_texMaxSize`, decoded on
 the console). The log says `citro3d: texture pack ...: N textures` or `no texture pack`, and the
 `PERF citro3d: tex` line counts uploads from the pack and packed textures.
+
+## Videos
+
+The PC source of BFG has no video player (Bink is not open source), so materials with a
+`videoMap` (the main menu's Mars, loading screens, screens in the levels) were left undrawn.
+`n3dstex` (default run, or `-vid` alone) converts every `base/**/*.bik` into `NAME.n3v` next to it
+(format: `neo/renderer/3DS/n3ds_video.h`): decoded with libbinkdec (LGPL, from RBDOOM-3-BFG,
+`tools/n3ds/n3dstex/libbinkdec`), BT.601 like `bink.pixel`, resampled to a power-of-two texture
+(`-videosize`, long side, default 512; aspect to the nearest power of two, the material stretches
+it back), at most `-videofps` (20) frames per second, flipped and ETC1-encoded like every texture
+(`-vq` 0..2). Frames are stored as the 8-byte ETC1 blocks that changed since the previous frame,
+with a whole frame every 2 s (looping, seeking back). No audio: the game plays video sound
+through sound shaders. All 31 videos: ~83 MB of Bink; mars_rotation (1567x406, 100 s) becomes
+512x128 at 20 fps, 26.5 MB.
+
+On the console `idCinematic::Alloc` makes an `idCinematic_3DS` (`n3ds_cinematic.cpp`): it opens
+`video/NAME.n3v` instead of `.bik` (log `video: ...`, or `video: no ... not drawn`), and the
+ambient/GUI stage code asks it for the GPU texture of the frame at the view time
+(`N3DS_GpuTexture`). A frame is built in RAM from the records since the one shown (or from the
+key frame), then copied into one of two ETC1 textures in linear memory, so the frame the GPU is
+still drawing keeps its own: no decoding, one short SD read and a 32 KB copy per frame. `-slim`
+leaves the `.bik` files out when their `.n3v` exists.
+
+## GPU hangs
+
+When the GPU has not finished a frame after 2 s, the log gets the frame's draws (lit draws with
+their diffuse / normal / specular textures: format, size, levels, address, pack or decoded, VRAM
+or linear), then where citro3d's GX queue stands: every entry (clear, texture copies with the
+texture they fill, command list, display transfer), which are done, and the one the GPU is
+stuck on (a transfer or the command list), and the GPU status register. Then
+`sdmc:/doom3/gpuhang.bin` is written: the queue, the frame's command list(s) as sent, and (cvar
+`n3ds_c3dHangRegs`, on by default; appended last, after the rest is safely on the card) the PICA
+registers as they stand. On the PC:
+
+    python3 tools/n3ds/gpuhang.py gpuhang.bin [-v]
+
+decodes every draw's state (vertex / index buffers, texture units, lighting and bump unit),
+flags impossible ones (addresses outside VRAM / FCRAM, textures running past memory, mip levels
+under 8 pixels, a bump map from a disabled unit, ...) and names the draws whose state matches
+the registers at the hang. Draw numbers are those of the log's list. `n3ds_c3dHangHunt <frame>`
+(slow) still waits for the GPU after every draw from that frame on.
 
 ## Memory modes and the second heap
 
@@ -361,6 +405,7 @@ turns it off.
 | `n3ds_specular` | 1 | lighting 2: specular maps x highlights |
 | `n3ds_specularPower` | 10 | lighting 2: highlight exponent (D0 table, uploaded when it changes) |
 | `n3ds_hwMaxLights` | 8 | lighting 2: most lights per surface, the brightest kept (fragment lighting costs GPU time per light per pixel) |
+| `n3ds_c3dHangRegs` | 1 | on a GPU hang, also read the GPU's registers into `gpuhang.bin` |
 | `n3ds_c3dHangHunt` | 0 | from this 3D frame on, wait for the GPU after every draw and log the one it never finishes (slow) |
 | `n3ds_c3dFullFlush` | 0 | 1 = clean the data cache over all linear memory at every frame end (citro3d's default; 69 MB per frame in the 178 MB mode). Off: only the command list; everything else the GPU reads is flushed where it is written |
 | `n3ds_soundMemoryKB` | 4096 | sound sample data budget |

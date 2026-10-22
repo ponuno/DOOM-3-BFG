@@ -1,13 +1,15 @@
 # n3dstex: host tool (PC), not part of the 3DS build.
 #   cmake -S tools/n3ds/n3dstex -B build-n3dstex && cmake --build build-n3dstex
 cmake_minimum_required(VERSION 3.10)
-project(n3dstex CXX)
+project(n3dstex C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE Release)
 endif()
-add_executable(n3dstex n3dstex.cpp n3dssnd.cpp n3dsslim.cpp rg_etc1.cpp)
+file(GLOB BINKDEC_SOURCES libbinkdec/src/*.cpp libbinkdec/src/*.c)
+add_executable(n3dstex n3dstex.cpp n3dssnd.cpp n3dsslim.cpp n3dsvid.cpp rg_etc1.cpp ${BINKDEC_SOURCES})
+target_include_directories(n3dstex PRIVATE libbinkdec/include)
 find_package(Threads REQUIRED)
 target_link_libraries(n3dstex PRIVATE Threads::Threads)
 if(MINGW)

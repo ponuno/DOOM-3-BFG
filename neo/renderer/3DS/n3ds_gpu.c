@@ -10,6 +10,7 @@
 #include <citro3d.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "n3ds_gpu.h"
 
@@ -321,6 +322,202 @@ int N3DSGPU_DebugSync( unsigned int timeoutMs ) {
 	}
 	C3D_FrameDrawOn( topTarget );	// no clear: the frame goes on
 	return 1;
+}
+
+/*
+================================================================================================
+
+	GPU hang report
+
+	citro3d runs a frame as entries of its GX command queue: the clear (memory fill),
+	texture copies queued during the frame, the command list(s), the display transfer.
+	libctru submits up to three at a time and counts the completion interrupts
+	(lastEntry), so the first entry not counted is the one the GPU is stuck on: a
+	transfer (the PPF engine) or a command list (P3D, the 3D pipeline).
+
+	The queue sits at the start of citro3d's context (citro3d/source/internal.h,
+	C3D_Context: gxQueue, cmdBuf, cmdBufSize); it is not public, the layout below is
+	that of the citro3d this port is built with.
+
+================================================================================================
+*/
+typedef struct {
+	gxCmdQueue_s	gxQueue;
+	u32 *			cmdBuf;
+	size_t			cmdBufSize;
+} n3dsC3DContextHead_t;
+extern n3dsC3DContextHead_t __C3D_Context;
+extern u32 __ctru_linear_heap;
+extern u32 __ctru_linear_heap_size;
+
+static const char * N3DS_GxCommandName( u32 id ) {
+	switch ( id & 0xFF ) {
+		case 0x00:	return "DMA";
+		case 0x01:	return "command list";
+		case 0x02:	return "memory fill";
+		case 0x03:	return "display transfer";
+		case 0x04:	return "texture copy";
+		case 0x05:	return "cache flush";
+		default:	return "?";
+	}
+}
+
+static const char * ( *hangTexNamer )( unsigned int address ) = NULL;
+
+void N3DSGPU_SetHangTexNamer( const char * ( *namer )( unsigned int address ) ) {
+	hangTexNamer = namer;
+}
+
+void N3DSGPU_TexDescribe( void * handle, char * out, int outSize ) {
+	static const char * const formats[] = { "RGBA8", "RGB8", "RGBA5551", "RGB565", "RGBA4", "LA8", "HILO8", "L8",
+		"A8", "LA4", "L4", "A4", "ETC1", "ETC1A4" };
+	const C3D_Tex * tex = (const C3D_Tex *)handle;
+	if ( tex == NULL ) {
+		snprintf( out, outSize, "none" );
+		return;
+	}
+	const unsigned int fmt = (unsigned int)tex->fmt;
+	snprintf( out, outSize, "%s %ux%u %u lv @%08lx%s", fmt < 14 ? formats[fmt] : "?", tex->width, tex->height,
+		tex->maxLevel + 1u, (u32)tex->data, tex == &placeholderTex ? " (placeholder)" : "" );
+}
+
+int N3DSGPU_HangQueueReport( char * out, int outSize ) {
+	if ( out == NULL || outSize <= 0 ) {
+		return 0;
+	}
+	out[0] = 0;
+	const gxCmdQueue_s * q = &__C3D_Context.gxQueue;
+	int len = 0, lines = 0;
+#define HANG_LINE( ... ) do { if ( len < outSize ) { len += snprintf( out + len, outSize - len, __VA_ARGS__ ); lines++; } } while ( 0 )
+	HANG_LINE( "GX queue: %u entries, %u submitted, %u finished (the GPU is on entry %u)\n",
+		q->numEntries, q->curEntry, q->lastEntry, q->lastEntry );
+	for ( int i = 0; i < q->numEntries && i < q->maxEntries; i++ ) {
+		const u32 * d = q->entries[i].data;
+		const char * state = ( i < q->lastEntry ) ? "done   " : ( ( i < q->curEntry ) ? "STUCK  " : "waiting" );
+		if ( i >= q->lastEntry && i < q->curEntry && i != q->lastEntry ) {
+			state = "running";		// submitted behind the stuck one
+		}
+		switch ( d[0] & 0xFF ) {
+			case 0x01:
+				HANG_LINE( "  %2d %s command list %08lx, %lu bytes\n", i, state, d[1], d[2] );
+				break;
+			case 0x02:
+				HANG_LINE( "  %2d %s memory fill %08lx-%08lx, %08lx-%08lx\n", i, state, d[1], d[3], d[4], d[6] );
+				break;
+			case 0x03:
+				HANG_LINE( "  %2d %s display transfer %08lx -> %08lx, in %08lx out %08lx, flags %08lx\n", i, state,
+					d[1], d[2], d[3], d[4], d[5] );
+				break;
+			case 0x04:
+				HANG_LINE( "  %2d %s texture copy %08lx -> %08lx, %lu bytes, in %08lx out %08lx, flags %08lx (%s)\n", i, state,
+					d[1], d[2], d[3], d[4], d[5], d[6], ( hangTexNamer != NULL && hangTexNamer( d[2] ) != NULL ) ? hangTexNamer( d[2] ) : "?" );
+				break;
+			default:
+				HANG_LINE( "  %2d %s %s %08lx %08lx %08lx %08lx\n", i, state, N3DS_GxCommandName( d[0] ), d[1], d[2], d[3], d[4] );
+				break;
+		}
+	}
+	// GPU status register (0x10400034): which engines are busy
+	u32 stat = 0;
+	if ( R_SUCCEEDED( GSPGPU_ReadHWRegs( 0x400034, &stat, 4 ) ) ) {
+		HANG_LINE( "GPU status %08lx\n", stat );
+	}
+#undef HANG_LINE
+	return lines;
+}
+
+static void N3DS_DumpPut32( FILE * f, u32 x ) {
+	fwrite( &x, 4, 1, f );
+}
+
+// GPU registers worth reading: no data ports (LUT, uniform, shader code uploads), no triggers
+static const u16 hangRegRanges[][2] = {
+	{ 0x000, 0x0A7 },		// misc, texture units
+	{ 0x0B8, 0x0E7 },		// combiners 0-3, combiner buffer, fog setup
+	{ 0x0F0, 0x10F },		// combiners 4-5, fragment operations
+	{ 0x112, 0x11F },		// framebuffer (0x110 / 0x111 are invalidate / flush triggers)
+	{ 0x140, 0x1C7 },		// lights, lighting config
+	{ 0x1D0, 0x22D },		// lighting LUT selection, vertex attribute buffers, index buffer
+	{ 0x238, 0x23B },		// command buffer sizes / addresses
+	{ 0x240, 0x25E },		// geometry pipeline
+	{ 0x2B0, 0x2BE },		// vertex shader setup
+	{ 0x2C0, 0x2C0 },
+	{ 0x2CB, 0x2CB },
+	{ 0x2D5, 0x2D5 },
+};
+
+int N3DSGPU_HangDump( const char * path, int withRegs ) {
+	FILE * f = fopen( path, "wb" );
+	if ( f == NULL ) {
+		return 0;
+	}
+	const gxCmdQueue_s * q = &__C3D_Context.gxQueue;
+	const int num = ( q->numEntries < q->maxEntries ) ? q->numEntries : q->maxEntries;
+	N3DS_DumpPut32( f, 0x4847334E );		// "N3GH"
+	N3DS_DumpPut32( f, 1 );
+	N3DS_DumpPut32( f, __ctru_linear_heap );
+	N3DS_DumpPut32( f, osConvertVirtToPhys( (const void *)__ctru_linear_heap ) );
+	N3DS_DumpPut32( f, __ctru_linear_heap_size );
+	N3DS_DumpPut32( f, (u32)num );
+	N3DS_DumpPut32( f, q->curEntry );
+	N3DS_DumpPut32( f, q->lastEntry );
+	for ( int i = 0; i < num; i++ ) {
+		fwrite( q->entries[i].data, 4, 8, f );
+	}
+	// the command lists, as the CPU wrote them
+	for ( int i = 0; i < num; i++ ) {
+		const u32 * d = q->entries[i].data;
+		if ( ( d[0] & 0xFF ) != 0x01 ) {
+			continue;
+		}
+		const u32 addr = d[1];
+		u32 size = d[2];
+		if ( addr < __ctru_linear_heap || addr + size > __ctru_linear_heap + __ctru_linear_heap_size ) {
+			size = 0;		// not in linear memory: not ours to read
+		}
+		N3DS_DumpPut32( f, 0x4C444D43 );	// "CMDL"
+		N3DS_DumpPut32( f, (u32)i );
+		N3DS_DumpPut32( f, size );
+		fwrite( (const void *)addr, 1, size, f );
+	}
+	N3DS_DumpPut32( f, 0x444E4521 );		// "!END"
+	const int ok = ( fclose( f ) == 0 );
+	if ( !ok || !withRegs ) {
+		return ok;
+	}
+	// the registers, appended once the rest is safely on the card
+	f = fopen( path, "ab" );
+	if ( f == NULL ) {
+		return ok;
+	}
+	N3DS_DumpPut32( f, 0x53474552 );		// "REGS": PICA register, value pairs
+	for ( unsigned int r = 0; r < sizeof( hangRegRanges ) / sizeof( hangRegRanges[0] ); r++ ) {
+		for ( u32 reg = hangRegRanges[r][0]; reg <= hangRegRanges[r][1]; reg++ ) {
+			u32 value = 0;
+			if ( R_SUCCEEDED( GSPGPU_ReadHWRegs( 0x401000 + reg * 4, &value, 4 ) ) ) {
+				N3DS_DumpPut32( f, reg );
+				N3DS_DumpPut32( f, value );
+			}
+		}
+	}
+	// external registers: memory fill, transfer engine, status
+	for ( u32 off = 0; off < 0x100; off += 4 ) {
+		u32 value = 0;
+		if ( R_SUCCEEDED( GSPGPU_ReadHWRegs( 0x400000 + off, &value, 4 ) ) ) {
+			N3DS_DumpPut32( f, 0x10000 | off );
+			N3DS_DumpPut32( f, value );
+		}
+	}
+	for ( u32 off = 0xC00; off < 0xC40; off += 4 ) {
+		u32 value = 0;
+		if ( R_SUCCEEDED( GSPGPU_ReadHWRegs( 0x400000 + off, &value, 4 ) ) ) {
+			N3DS_DumpPut32( f, 0x10000 | off );
+			N3DS_DumpPut32( f, value );
+		}
+	}
+	N3DS_DumpPut32( f, 0xFFFFFFFF );
+	fclose( f );
+	return ok;
 }
 
 void N3DSGPU_EndFrame( void ) {

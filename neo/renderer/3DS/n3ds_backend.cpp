@@ -46,6 +46,7 @@ void * NullGL_BufferStorage( GLuint name, bool * linear );	// gl_null.cpp
 bool r_n3dsC3D = false;
 
 idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: draw at most this many surfaces per frame (0 = all), for bisecting GPU hangs" );
+idCVar n3ds_c3dHangRegs( "n3ds_c3dHangRegs", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: when the GPU hangs, also read its registers into sdmc:/doom3/gpuhang.bin" );
 idCVar n3ds_c3dHangHunt( "n3ds_c3dHangHunt", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: from this 3D frame on, wait for the GPU after every draw and name the draw it never finishes (slow; 0 = off)" );
 static bool c3dHangFound = false;
 idCVar n3ds_c3dFullFlush( "n3ds_c3dFullFlush", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: clean the data cache over all linear memory at every frame end (old behaviour, ~69 MB per frame in the 178 MB mode)" );
@@ -95,9 +96,15 @@ struct c3dDrawRecord_t {
 	unsigned int		vbName;
 	unsigned int		ibName;
 	const char *		texName;		// stage draws: the texture's image
-	int					flags;			// stage draws: C3D_REC_*
+	int					flags;			// C3D_REC_*
+	// hardware-lit draws: diffuse, normal map, specular map (as drawn), lights
+	idImage *			images[3];
+	void *				gpuTex[3];
+	short				numLights;
+	short				alphaSource;
 };
-static const int C3D_REC_STAGE = 1, C3D_REC_A8 = 2, C3D_REC_STENCIL = 4, C3D_REC_SWF = 8, C3D_REC_ALPHATEST = 16, C3D_REC_GUIVIEW = 32;
+static const int C3D_REC_STAGE = 1, C3D_REC_A8 = 2, C3D_REC_STENCIL = 4, C3D_REC_SWF = 8, C3D_REC_ALPHATEST = 16, C3D_REC_GUIVIEW = 32,
+	C3D_REC_LIT = 64;
 static const int		C3D_MAX_RECORDS = 512;
 static c3dDrawRecord_t	c3dRecords[2][C3D_MAX_RECORDS];
 static int				c3dNumRecords[2];
@@ -109,6 +116,20 @@ static void N3DS_PrintRecord( int i, const c3dDrawRecord_t & r ) {
 		( r.flags & C3D_REC_STAGE ) ? " | stage, tex " : "", ( r.flags & C3D_REC_STAGE ) ? ( r.texName != NULL ? r.texName : "none" ) : "",
 		( r.flags & C3D_REC_A8 ) ? " A8" : "", ( r.flags & C3D_REC_STENCIL ) ? " stencil" : "", ( r.flags & C3D_REC_SWF ) ? " swf" : "",
 		( r.flags & C3D_REC_ALPHATEST ) ? " alphatest" : "", ( r.flags & C3D_REC_GUIVIEW ) ? " guiview" : "" );
+	if ( r.flags & C3D_REC_LIT ) {
+		static const char * const what[3] = { "diffuse", "normal map", "specular map" };
+		common->Printf( "        lit, %d lights, alpha source %d\n", r.numLights, r.alphaSource );
+		for ( int k = 0; k < 3; k++ ) {
+			if ( r.images[k] == NULL && r.gpuTex[k] == NULL ) {
+				continue;
+			}
+			idStr desc;
+			N3DS_TexDescribe( r.images[k], desc );
+			char gpu[96];
+			N3DSGPU_TexDescribe( r.gpuTex[k], gpu, sizeof( gpu ) );
+			common->Printf( "        %s: %s | drawn with %s\n", what[k], desc.c_str(), gpu );
+		}
+	}
 }
 
 static void N3DS_GPUHang( unsigned int waitedMs ) {
@@ -117,6 +138,17 @@ static void N3DS_GPUHang( unsigned int waitedMs ) {
 		waitedMs, c3dFrame3D, c3dNumRecords[prev] );
 	for ( int i = 0; i < c3dNumRecords[prev]; i++ ) {
 		N3DS_PrintRecord( i, c3dRecords[prev][i] );
+	}
+	// where the GPU stands: a transfer or the command list, then the whole frame on the card
+	static char report[4096];
+	N3DSGPU_HangQueueReport( report, sizeof( report ) );
+	common->Printf( "%s", report );
+	const char * dumpPath = "sdmc:/doom3/gpuhang.bin";
+	common->Printf( "citro3d: writing the hung frame to %s%s...\n", dumpPath, n3ds_c3dHangRegs.GetBool() ? " (with the GPU registers)" : "" );
+	if ( N3DSGPU_HangDump( dumpPath, n3ds_c3dHangRegs.GetBool() ? 1 : 0 ) ) {
+		common->Printf( "citro3d: %s written: send it with log.txt\n", dumpPath );
+	} else {
+		common->Printf( "citro3d: %s could not be written\n", dumpPath );
 	}
 }
 
@@ -132,6 +164,7 @@ bool RB_N3DS_Init() {
 		return false;
 	}
 	N3DSGPU_SetHangCallback( N3DS_GPUHang );
+	N3DSGPU_SetHangTexNamer( N3DS_TexNameForAddress );
 	common->Printf( "citro3d: initialized (stage 3: lit textured world, VRAM free %u KB, linear free %u KB)\n",
 		N3DSGPU_VRAMFree() / 1024, N3DSGPU_LinearFree() / 1024 );
 	r_n3dsC3D = true;
@@ -456,6 +489,10 @@ static const byte * N3DS_SurfaceBuffers( const drawSurf_t * surf, n3dsBuffers_t 
 	record->ibName = ibName;
 	record->texName = NULL;
 	record->flags = 0;
+	record->images[0] = record->images[1] = record->images[2] = NULL;
+	record->gpuTex[0] = record->gpuTex[1] = record->gpuTex[2] = NULL;
+	record->numLights = 0;
+	record->alphaSource = 0;
 	*indexes = (const unsigned short *)( b.ibBase + ib.GetOffset() );
 	return b.vbBase + vb.GetOffset();
 }
@@ -1074,11 +1111,14 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 		const bool lit = images.lit || images.color == NULL;
 		void * normalTex = NULL;
 		void * specTex = NULL;
+		idImage * recBump = NULL;
+		idImage * recSpec = NULL;
 		if ( lit && images.lit && hwSurfLights[i].numLights > 0 ) {
 			// normal and specular maps only matter where a light reaches; normal maps only
 			// from the texture pack (HILO8)
 			if ( useBump && alphaSource != 2 ) {
 				idImage * bumpImage = N3DS_StageImage( material, surf->shaderRegisters, SL_BUMP );
+				recBump = bumpImage;
 				if ( bumpImage != NULL && N3DS_TexIsNormalMap( bumpImage ) ) {
 					normalTex = N3DS_TexForImage( bumpImage );
 					if ( normalTex != NULL ) {
@@ -1090,6 +1130,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 			}
 			if ( useSpecular ) {
 				idImage * specImage = N3DS_StageImage( material, surf->shaderRegisters, SL_SPECULAR );
+				recSpec = specImage;
 				if ( specImage != NULL ) {
 					specTex = N3DS_TexForImage( specImage );
 					c3dStatSpec += ( specTex != NULL ) ? 1 : 0;
@@ -1158,6 +1199,15 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 			N3DS_MaterialColor( material, lit ? 1.0f : r );
 		}
 		N3DSGPU_SetHWPass( colorTex, maskTex, alphaSource, lit ? 1 : 0, combinerScale, normalTex, specTex );
+		record.flags |= lit ? C3D_REC_LIT : 0;
+		record.images[0] = images.color;
+		record.images[1] = recBump;
+		record.images[2] = recSpec;
+		record.gpuTex[0] = colorTex;
+		record.gpuTex[1] = normalTex;
+		record.gpuTex[2] = specTex;
+		record.numLights = lit ? (short)hwSurfLights[i].numLights : 0;
+		record.alphaSource = (short)alphaSource;
 		N3DS_Draw( surf, verts, indexes, record, test );
 	}
 }
@@ -1182,6 +1232,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 
 static int c3dStatStages = 0;
 static int c3dStatStagesSkipped = 0;
+static int c3dStatVideoStages = 0;
 
 // GLS source / destination blend bits -> GL-order factor numbers (see N3DSGPU_SetStageState)
 static int N3DS_SrcBlend( uint64 bits ) {
@@ -1241,7 +1292,7 @@ static void N3DS_DrawAmbientStages( const viewDef_t * viewDef, bool gui ) {
 			if ( ( stageGLState & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) == ( GLS_SRCBLEND_ZERO | GLS_DSTBLEND_ONE ) ) {
 				continue;
 			}
-			if ( pStage->newStage != NULL || pStage->texture.cinematic != NULL || pStage->texture.dynamic ) {
+			if ( pStage->newStage != NULL || pStage->texture.dynamic ) {
 				c3dStatStagesSkipped++;
 				continue;
 			}
@@ -1262,7 +1313,16 @@ static void N3DS_DrawAmbientStages( const viewDef_t * viewDef, bool gui ) {
 				continue;
 			}
 			void * tex = NULL;
-			if ( pStage->texture.image != NULL ) {
+			if ( pStage->texture.cinematic != NULL ) {
+				// a video (.n3v): the frame at the view's time, as the PC backend times it
+				tex = pStage->texture.cinematic->N3DS_GpuTexture( viewDef->renderView.time[0] +
+					idMath::Ftoi( 1000.0f * viewDef->renderView.shaderParms[11] ) );
+				if ( tex == NULL ) {
+					c3dStatStagesSkipped++;
+					continue;
+				}
+				c3dStatVideoStages++;
+			} else if ( pStage->texture.image != NULL ) {
 				tex = N3DS_TexForImage( pStage->texture.image );
 				if ( tex == NULL ) {
 					c3dStatStagesSkipped++;		// not on the GPU (yet): a white quad would be worse
@@ -1538,9 +1598,9 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights, light area %.1f screens) %.0f tris per frame, GPU %.1f ms, cmdbuf peak %.0f%%, bad draws %d\n",
 			c3dStatDraws / f, c3dStatTextured / f, c3dStatLightDraws / f, c3dStatLights / f, c3dStatScissorPixels / ( f * 96000.0f ),
 			c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad );
-		common->Printf( "PERF   citro3d stages: %.0f ambient/GUI stage draws per frame, %.0f skipped (texgen, cinematic, program, not loaded)\n",
-			c3dStatStages / f, c3dStatStagesSkipped / f );
-		c3dStatStages = c3dStatStagesSkipped = 0;
+		common->Printf( "PERF   citro3d stages: %.0f ambient/GUI stage draws per frame (%.0f video), %.0f skipped (texgen, video without .n3v, program, not loaded)\n",
+			c3dStatStages / f, c3dStatVideoStages / f, c3dStatStagesSkipped / f );
+		c3dStatStages = c3dStatStagesSkipped = c3dStatVideoStages = 0;
 		if ( c3dStatHWLit > 0 ) {
 			common->Printf( "PERF   citro3d HW lights: %.0f lit surfaces, %.2f lights each, %.0f slot loads, %.0f lights over the limit dropped, %.0f with normal map (%.0f waiting for it), %.0f with specular map per frame\n",
 				c3dStatHWLit / f, c3dStatHWLightsPerSurf / (float)c3dStatHWLit, c3dStatHWSlotLoads / f, c3dStatHWDropped / f,
