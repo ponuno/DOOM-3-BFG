@@ -136,7 +136,8 @@ void			N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd, int al
 // 4 decr, 5 invert, 6 incr wrap, 7 decr wrap). The stencil starts every frame at 128.
 void			N3DSGPU_SetStencil( int func, int ref, int mask, int opFail, int opZFail, int opPass );
 void			N3DSGPU_EndStages( void );
-// hang hunting: submit everything drawn so far, wait up to timeoutMs; 0 = the GPU did not finish
+// hang hunting: submit everything drawn so far, wait up to timeoutMs; 0 = the GPU did not finish,
+// 2 = it finished but its completion interrupt had to be counted by hand (lost)
 int				N3DSGPU_DebugSync( unsigned int timeoutMs );
 // GPU hang report: where citro3d's GX queue stands (which transfer or command list
 // the GPU is stuck on), one line per entry into out; returns the number of lines

@@ -322,21 +322,33 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 }
 
 // hang hunting: submit what was drawn so far and wait for the GPU to finish it
+static int N3DS_LostCompletion( u64 stuckSince );
+
 int N3DSGPU_DebugSync( unsigned int timeoutMs ) {
 	if ( !inFrame ) {
 		return 1;
 	}
 	C3D_FrameEnd( N3DS_FrameEndFlags() );
 	const u64 start = osGetTime();
+	int result = 1;
 	while ( !C3D_FrameBegin( C3D_FRAME_NONBLOCK ) ) {
-		if ( osGetTime() - start > timeoutMs ) {
+		const u64 waited = osGetTime() - start;
+		if ( waited > timeoutMs && result == 1 ) {
+			// the GPU idle: count the completion interrupt by hand and see whether the
+			// queue then finishes (an interrupt was lost) or not (the GPU is stuck)
+			if ( !N3DS_LostCompletion( start ) ) {
+				continue;		// not idle for 0.5 s yet
+			}
+			result = 2;
+		}
+		if ( waited > timeoutMs + 2000 ) {
 			inFrame = 0;		// the GPU is stuck on it; BeginFrame keeps reporting
 			return 0;
 		}
 		svcSleepThread( 200LL * 1000 );
 	}
 	C3D_FrameDrawOn( topTarget );	// no clear: the frame goes on
-	return 1;
+	return result;
 }
 
 /*

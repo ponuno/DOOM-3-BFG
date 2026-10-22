@@ -529,7 +529,16 @@ static void N3DS_Draw( const drawSurf_t * surf, const byte * verts, const unsign
 	}
 	const int hunt = n3ds_c3dHangHunt.GetInteger();
 	if ( hunt > 0 && c3dFrame3D >= hunt && !c3dHangFound ) {
-		if ( !N3DSGPU_DebugSync( 1500 ) ) {
+		const int sync = N3DSGPU_DebugSync( 1500 );
+		if ( sync == 2 ) {
+			static int lostLogged = 0;
+			if ( lostLogged++ < 20 ) {
+				common->Printf( "HANG HUNT: draw %d of 3D frame %d: the GPU went idle without its completion interrupt; counted by hand, the queue went on:\n",
+					c3dNumRecords[c3dRecordSet] - 1, c3dFrame3D );
+				N3DS_PrintRecord( c3dNumRecords[c3dRecordSet] - 1, record );
+			}
+		}
+		if ( sync == 0 ) {
 			c3dHangFound = true;
 			common->Printf( "HANG HUNT: the GPU never finished draw %d of 3D frame %d:\n", c3dNumRecords[c3dRecordSet] - 1, c3dFrame3D );
 			N3DS_PrintRecord( c3dNumRecords[c3dRecordSet] - 1, record );
@@ -537,6 +546,19 @@ static void N3DS_Draw( const drawSurf_t * surf, const byte * verts, const unsign
 			common->Printf( "HANG HUNT: draws before it in this frame (all finished):\n" );
 			for ( int i = Max( 0, n - 9 ); i < n - 1; i++ ) {
 				N3DS_PrintRecord( i, c3dRecords[c3dRecordSet][i] );
+			}
+			// its geometry as the GPU got it (the lit vertex shader can be replayed on the PC)
+			const float * mvp = (const float *)&surf->space->mvp;
+			const float * mv = surf->space->modelViewMatrix;
+			common->Printf( "HANG HUNT: mvp %g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g\n", mvp[0], mvp[1], mvp[2], mvp[3],
+				mvp[4], mvp[5], mvp[6], mvp[7], mvp[8], mvp[9], mvp[10], mvp[11], mvp[12], mvp[13], mvp[14], mvp[15] );
+			common->Printf( "HANG HUNT: modelView %g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g\n", mv[0], mv[1], mv[2], mv[3],
+				mv[4], mv[5], mv[6], mv[7], mv[8], mv[9], mv[10], mv[11], mv[12], mv[13], mv[14], mv[15] );
+			for ( int k = 0; k < surf->numIndexes && k < 48; k++ ) {
+				const idDrawVert & v = ( (const idDrawVert *)verts )[indexes[k]];
+				common->Printf( "HANG HUNT: idx %d = %d: xyz %g %g %g st %04x %04x normal %d %d %d %d tangent %d %d %d %d color %d %d %d %d\n",
+					k, indexes[k], v.xyz.x, v.xyz.y, v.xyz.z, v.st[0], v.st[1], v.normal[0], v.normal[1], v.normal[2], v.normal[3],
+					v.tangent[0], v.tangent[1], v.tangent[2], v.tangent[3], v.color[0], v.color[1], v.color[2], v.color[3] );
 			}
 			// the stuck command list holds just this draw (and the state set for it)
 			static char report[4096];
