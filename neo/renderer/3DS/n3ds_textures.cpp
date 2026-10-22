@@ -67,7 +67,7 @@ idCVar n3ds_texLinearKB( "n3ds_texLinearKB", "3072", CVAR_RENDERER | CVAR_INTEGE
 idCVar n3ds_texLinearReserveKB( "n3ds_texLinearReserveKB", "2048", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory the texture cache always leaves free (citro3d, staging copies)" );
 idCVar n3ds_texVRAMReserveKB( "n3ds_texVRAMReserveKB", "64", CVAR_RENDERER | CVAR_INTEGER, "citro3d: VRAM left free by the texture cache" );
 idCVar n3ds_texVerify( "n3ds_texVerify", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: 1 = check textures in VRAM against what was copied there (a few per frame) and log changed ones; 2 = also compare every packed upload with a fresh read of the pack" );
-idCVar n3ds_texPackDecode( "n3ds_texPackDecode", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d diagnostics: decode the pack's ETC1 / ETC1A4 / A4 textures on the console and upload them as RGB565 / RGBA4 / A8 like the old path (the GPU then never samples those formats)" );
+idCVar n3ds_texPackDecode( "n3ds_texPackDecode", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics, bits: 1 / 2 / 4 = decode the pack's ETC1 / ETC1A4 / A4 textures on the console and upload them like the old path (RGB565 / RGBA4 / A8); 8 = ETC1 / ETC1A4 kept but level 0 only (no mips); 16 = decode ETC1 / ETC1A4 textures with a side under 32" );
 idCVar n3ds_texPack( "n3ds_texPack", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_INIT, "citro3d: take textures from base/_n3ds_textures.pak (converted on the PC by n3dstex) when it is there" );
 idCVar n3ds_texWorldMaxSize( "n3ds_texWorldMaxSize", "256", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest world texture (larger pack levels are skipped)", 8, 1024 );
 idCVar n3ds_texBumpMaxSize( "n3ds_texBumpMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d texture pack: largest normal map", 8, 1024 );
@@ -923,7 +923,10 @@ static bool N3DS_TexDirectPack( const n3dsTexture_t * t ) {
 	if ( !t->packed ) {
 		return false;
 	}
-	if ( n3ds_texPackDecode.GetBool() && ( t->gpuFormat == N3DS_TEX_ETC1 || t->gpuFormat == N3DS_TEX_ETC1A4 || t->gpuFormat == N3DS_TEX_A4 ) ) {
+	const int mask = n3ds_texPackDecode.GetInteger();
+	const bool etc = ( t->gpuFormat == N3DS_TEX_ETC1 || t->gpuFormat == N3DS_TEX_ETC1A4 );
+	if ( ( ( mask & 1 ) && t->gpuFormat == N3DS_TEX_ETC1 ) || ( ( mask & 2 ) && t->gpuFormat == N3DS_TEX_ETC1A4 ) ||
+		( ( mask & 4 ) && t->gpuFormat == N3DS_TEX_A4 ) || ( ( mask & 16 ) && etc && Min( t->width, t->height ) < 32 ) ) {
 		return false;
 	}
 	return true;
@@ -1011,6 +1014,11 @@ static bool N3DS_TexUpload( n3dsTexture_t * t ) {
 		layout.maxLevel = t->packMaxLevel;
 		layout.format = t->gpuFormat;
 		layout.bytes = t->dataSize;
+		if ( ( n3ds_texPackDecode.GetInteger() & 8 ) && ( t->gpuFormat == N3DS_TEX_ETC1 || t->gpuFormat == N3DS_TEX_ETC1A4 ) ) {
+			// diagnostics: the top level alone (it comes first in the chain)
+			layout.maxLevel = 0;
+			layout.bytes = t->width * t->height * ( t->gpuFormat == N3DS_TEX_ETC1 ? 4 : 8 ) / 8;
+		}
 	} else if ( !N3DS_DecodeLevel( t->format, t->colorFormat, t->width, t->height, t->data, t->dataSize, rgba.Ptr() ) ) {
 		t->unsupported = true;
 		statFailed++;
