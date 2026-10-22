@@ -15,7 +15,8 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 	New 3DS bottom screen: a touch panel for the console's own features above the log.
 
 	The bottom screen is two libctru text consoles (8x8 cells, 40 x 30):
-		rows 0-5	panel: title, the GYRO AIM button (touch toggles n3ds_gyro), a status
+		rows 0-5	panel: title, the GYRO AIM button (touch toggles n3ds_gyro), the GPU TEST
+					button (touch starts n3ds_gpuBench, results in the log), a status
 					line, a separator
 		rows 6-29	where the log is written; the log itself only after a fatal error
 					(Sys_LogWrite prints to stdout, which goes there, only then)
@@ -51,6 +52,11 @@ static const int	PANEL_ROWS = 6;
 // the button: rows 1-3, columns 2-25 (pixels: 8 per cell)
 static const int	BUTTON_X0 = 2 * 8, BUTTON_X1 = 26 * 8;
 static const int	BUTTON_Y0 = 1 * 8, BUTTON_Y1 = 4 * 8;
+// GPU TEST: rows 1-3, columns 28-38
+static const int	BENCH_X0 = 28 * 8, BENCH_X1 = 39 * 8;
+static int			drawnBench = -1;
+
+bool RB_N3DS_BenchRunning();
 
 void N3DS_BottomInit() {
 	consoleInit( GFX_BOTTOM, &panelConsole );
@@ -74,7 +80,7 @@ void N3DS_BottomShowLog() {
 }
 
 // panel console selected, log lock held
-static void N3DS_PanelDraw( int state, float yawDps, float pitchDps ) {
+static void N3DS_PanelDraw( int state, float yawDps, float pitchDps, bool bench ) {
 	// title bar
 	printf( "\x1b[1;1H\x1b[37;44m DOOM 3 BFG  New 3DS                    \x1b[0m" );
 	// button
@@ -83,10 +89,15 @@ static void N3DS_PanelDraw( int state, float yawDps, float pitchDps ) {
 	printf( "\x1b[2;3H%s                        \x1b[0m", colour );
 	printf( "\x1b[3;3H%s   GYRO AIM:  %-3s        \x1b[0m", colour, on ? "ON" : "OFF" );
 	printf( "\x1b[4;3H%s                        \x1b[0m", colour );
-	printf( "\x1b[2;29H\x1b[37mtouch to\x1b[0m" );
-	printf( "\x1b[3;29H\x1b[37mswitch  \x1b[0m" );
+	// GPU TEST button
+	const char * benchColour = bench ? "\x1b[30;43m" : "\x1b[37;45m";
+	printf( "\x1b[2;29H%s           \x1b[0m", benchColour );
+	printf( "\x1b[3;29H%s%s\x1b[0m", benchColour, bench ? "  RUNNING  " : " GPU TEST  " );
+	printf( "\x1b[4;29H%s           \x1b[0m", benchColour );
 	// status
-	if ( state == 0 ) {
+	if ( bench ) {
+		printf( "\x1b[5;1H\x1b[33m GPU test: stand still ~15 s            \x1b[0m" );
+	} else if ( state == 0 ) {
 		printf( "\x1b[5;1H\x1b[37m gyro off                               \x1b[0m" );
 	} else if ( state == 1 ) {
 		printf( "\x1b[5;1H\x1b[33m calibrating: hold the console still    \x1b[0m" );
@@ -103,14 +114,16 @@ static void N3DS_PanelRefresh( bool force ) {
 	const int state = Sys_N3DSGyroState( yawDps, pitchDps );
 	const int now = Sys_Milliseconds();
 	// the rates line is refreshed twice a second while the gyro is on
-	if ( !force && state == drawnState && ( state != 2 || now - lastStatusMs < 500 ) ) {
+	const int bench = RB_N3DS_BenchRunning() ? 1 : 0;
+	if ( !force && state == drawnState && bench == drawnBench && ( state != 2 || now - lastStatusMs < 500 ) ) {
 		return;
 	}
 	drawnState = state;
+	drawnBench = bench;
 	lastStatusMs = now;
 	Sys_N3DSConsoleLock();
 	consoleSelect( &panelConsole );
-	N3DS_PanelDraw( state, yawDps, pitchDps );
+	N3DS_PanelDraw( state, yawDps, pitchDps, bench != 0 );
 	consoleSelect( &logConsole );
 	Sys_N3DSConsoleUnlock();
 }
@@ -133,6 +146,9 @@ void N3DS_BottomFrame() {
 		if ( t.px >= BUTTON_X0 && t.px < BUTTON_X1 && t.py >= BUTTON_Y0 && t.py < BUTTON_Y1 ) {
 			n3ds_gyro.SetBool( !n3ds_gyro.GetBool() );
 			common->Printf( "gyro aim %s (touch)\n", n3ds_gyro.GetBool() ? "on" : "off" );
+		} else if ( t.px >= BENCH_X0 && t.px < BENCH_X1 && t.py >= BUTTON_Y0 && t.py < BUTTON_Y1 && !RB_N3DS_BenchRunning() ) {
+			cvarSystem->SetCVarBool( "n3ds_gpuBench", true );
+			common->Printf( "GPU TEST: asked for (touch)\n" );
 		}
 	}
 	touchWasDown = down;

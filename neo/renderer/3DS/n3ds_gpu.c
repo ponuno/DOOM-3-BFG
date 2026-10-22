@@ -131,7 +131,9 @@ static float				gpuSpanMs = 0.0f;		// first part submitted -> last finished, pre
 static int					fillProbe = 0;			// scissor everything to a small box (see N3DSGPU_SetFillProbe)
 static u32					frameVBlankCount = 0;	// top screen vblanks counted at the last frame start
 static u64					statWaitGpuTicks = 0;	// waiting for the previous frame's GPU work
-static u64					statWaitVBlankTicks = 0;	// waiting for a vblank before submitting
+static u64					statWaitVBlankTicks = 0;
+static u64					lastWaitGpuTicks = 0;		// the same, the last frame only
+static u64					lastWaitVBlankTicks = 0;	// waiting for a vblank before submitting
 static C3D_RenderTarget *	topTarget = NULL;
 static void					N3DS_WritePendingColorBuffer( void );
 static void					N3DS_RingPicture( void );
@@ -361,7 +363,8 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 		}
 		svcSleepThread( 200LL * 1000 );
 	}
-	statWaitGpuTicks += svcGetSystemTick() - waitStart;
+	lastWaitGpuTicks = svcGetSystemTick() - waitStart;
+	statWaitGpuTicks += lastWaitGpuTicks;
 	// citro3d's drawing time runs from C3D_FrameEnd; the frame started on the GPU earlier
 	if ( queueStarted ) {
 		gpuSpanMs = C3D_GetDrawingTime() + (float)( frameEndTick - firstKickTick ) * 1000.0f / (float)SYSCLOCK_ARM11;
@@ -956,13 +959,20 @@ void N3DSGPU_EndFrame( void ) {
 	while ( C3D_FrameCounter( 0 ) == frameVBlankCount ) {
 		gspWaitForAnyEvent();
 	}
-	statWaitVBlankTicks += svcGetSystemTick() - waitStart;
+	lastWaitVBlankTicks = svcGetSystemTick() - waitStart;
+	statWaitVBlankTicks += lastWaitVBlankTicks;
 	// If the queue ran dry, the display transfer starts the moment C3D_FrameEnd queues it,
 	// and C3D_FrameEnd sets needSwapTop right after: the transfer (~0.5 ms of PPF work)
 	// finishes long after that, so the swap is not missed.
 	frameEndTick = svcGetSystemTick();
 	C3D_FrameEnd( N3DS_FrameEndFlags() );
 	inFrame = 0;
+}
+
+void N3DSGPU_LastWaits( float * gpuMs, float * vblankMs ) {
+	const float toMs = 1000.0f / (float)SYSCLOCK_ARM11;
+	*gpuMs = lastWaitGpuTicks * toMs;
+	*vblankMs = lastWaitVBlankTicks * toMs;
 }
 
 void N3DSGPU_WaitStats( float * gpuMs, float * vblankMs ) {

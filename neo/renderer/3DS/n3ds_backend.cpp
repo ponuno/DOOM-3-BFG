@@ -49,6 +49,7 @@ idCVar n3ds_c3dMaxDraws( "n3ds_c3dMaxDraws", "0", CVAR_RENDERER | CVAR_INTEGER, 
 idCVar n3ds_c3dHangRegs( "n3ds_c3dHangRegs", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: when the GPU hangs, also read its registers into sdmc:/doom3/gpuhang.bin" );
 idCVar n3ds_c3dHangHunt( "n3ds_c3dHangHunt", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d: from this 3D frame on, wait for the GPU after every draw and name the draw it never finishes (slow; 0 = off)" );
 static bool c3dHangFound = false;
+idCVar n3ds_gpuBench( "n3ds_gpuBench", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d diagnostics: GPU test (bottom screen button): the same view drawn ~2.5 s each normally, with pixel work cut to a 30x50 box, without light passes, without textures, normally again; GPU time and back end CPU time per mode go to the log" );
 idCVar n3ds_c3dKickDraws( "n3ds_c3dKickDraws", "48", CVAR_RENDERER | CVAR_INTEGER, "citro3d: hand the frame to the GPU in parts of this many draws, so it draws while the rest is recorded (0 = only at the frame end, before the vblank wait)", 0, 1000 );
 idCVar n3ds_gpuFillProbe( "n3ds_gpuFillProbe", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d diagnostics: draw everything into a 30x50 pixel box. Pixel work drops to ~1/64, vertex work stays: if the GPU time in the PERF lines drops a lot, the GPU is limited by pixels, otherwise by vertices" );
 idCVar n3ds_c3dFullFlush( "n3ds_c3dFullFlush", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d: clean the data cache over all linear memory at every frame end (old behaviour, ~69 MB per frame in the 178 MB mode)" );
@@ -599,6 +600,8 @@ static bool N3DS_SkipSurface( const drawSurf_t * surf ) {
 	return ( material->Coverage() == MC_TRANSLUCENT || material->GetSort() >= SS_POST_PROCESS );
 }
 
+static bool		c3dBenchNoLights = false;		// GPU test: the light passes are left out
+
 static void N3DS_DrawView( const viewDef_t * viewDef ) {
 	const int test = n3ds_c3dTest.GetInteger();
 	if ( test == 1 ) {
@@ -684,7 +687,7 @@ static void N3DS_DrawView( const viewDef_t * viewDef ) {
 		}
 	}
 
-	if ( !lighting || test != 0 ) {
+	if ( !lighting || test != 0 || c3dBenchNoLights ) {
 		return;
 	}
 
@@ -1833,11 +1836,114 @@ static void N3DS_LogWeaponSurfaces( const viewDef_t * viewDef ) {
 RB_N3DS_ExecuteBackEndCommands
 ========================
 */
+/*
+================================================================================================
+
+	GPU test (n3ds_gpuBench, the bottom screen's GPU TEST button)
+
+	The player stands still; the same view is drawn in each mode for 15 frames to settle and
+	60 measured frames. Per mode the log gets the GPU time (first part handed over -> frame
+	done), the back end's own CPU time (without its waits) and the frame time. Comparing the
+	modes tells what the GPU time goes to:
+		pixels in a 30x50 box	what is left is vertex work, triangle setup and command
+								processing; the difference is pixel work (fill, blending,
+								texture sampling)
+		no light passes			what the per-light passes cost (n3ds_lighting 1)
+		no textures				what texture sampling and its memory traffic cost
+
+================================================================================================
+*/
+extern idCVar n3ds_textures;
+
+static const int		C3D_BENCH_SETTLE = 15;
+static const int		C3D_BENCH_FRAMES = 60;
+static const char *		c3dBenchNames[] = { "normal", "pixels in a 30x50 box", "no light passes", "no textures", "normal again" };
+static const int		C3D_BENCH_STEPS = sizeof( c3dBenchNames ) / sizeof( c3dBenchNames[0] );
+static int				c3dBenchStep = -1;
+static int				c3dBenchFrame = 0;
+static bool				c3dBenchTexturesWere = true;
+static double			c3dBenchGpu, c3dBenchCpu, c3dBenchFrameMs;
+static int				c3dBenchDraws, c3dBenchTris, c3dBenchCount;
+static float			c3dBenchResult[C3D_BENCH_STEPS][3];
+static uint64			c3dBenchLastStart = 0;
+
+static void N3DS_BenchApply() {
+	N3DSGPU_SetFillProbe( ( n3ds_gpuFillProbe.GetBool() || c3dBenchStep == 1 ) ? 1 : 0 );
+	c3dBenchNoLights = ( c3dBenchStep == 2 );
+	if ( c3dBenchStep == 3 ) {
+		n3ds_textures.SetBool( false );
+	} else if ( c3dBenchStep >= 0 ) {
+		n3ds_textures.SetBool( c3dBenchTexturesWere );
+	}
+}
+
+// frame start: begin a test, move to the next mode
+static void N3DS_BenchFrameStart() {
+	if ( c3dBenchStep < 0 ) {
+		if ( !n3ds_gpuBench.GetBool() ) {
+			N3DSGPU_SetFillProbe( n3ds_gpuFillProbe.GetBool() ? 1 : 0 );
+			return;
+		}
+		c3dBenchStep = 0;
+		c3dBenchFrame = 0;
+		c3dBenchTexturesWere = n3ds_textures.GetBool();
+		common->Printf( "GPU TEST: start (%d modes, %d frames each; n3ds_lighting %d)\n", C3D_BENCH_STEPS, C3D_BENCH_SETTLE + C3D_BENCH_FRAMES, n3ds_lighting.GetInteger() );
+	}
+	if ( c3dBenchFrame == 0 ) {
+		c3dBenchGpu = c3dBenchCpu = c3dBenchFrameMs = 0.0;
+		c3dBenchDraws = c3dBenchTris = c3dBenchCount = 0;
+	}
+	N3DS_BenchApply();
+}
+
+// frame end of a 3D frame: gpuMs is the previous frame's GPU time (the same mode once settled)
+static void N3DS_BenchFrameEnd( float gpuMs, float cpuMs, float frameMs, int draws, int tris ) {
+	if ( c3dBenchStep < 0 ) {
+		return;
+	}
+	if ( c3dBenchFrame > C3D_BENCH_SETTLE ) {
+		c3dBenchGpu += gpuMs;
+		c3dBenchCpu += cpuMs;
+		c3dBenchFrameMs += frameMs;
+		c3dBenchDraws += draws;
+		c3dBenchTris += tris;
+		c3dBenchCount++;
+	}
+	if ( ++c3dBenchFrame < C3D_BENCH_SETTLE + C3D_BENCH_FRAMES + 1 ) {
+		return;
+	}
+	const double n = Max( c3dBenchCount, 1 );
+	c3dBenchResult[c3dBenchStep][0] = (float)( c3dBenchGpu / n );
+	c3dBenchResult[c3dBenchStep][1] = (float)( c3dBenchCpu / n );
+	c3dBenchResult[c3dBenchStep][2] = (float)( c3dBenchFrameMs / n );
+	common->Printf( "GPU TEST %d/%d %-22s GPU %5.1f ms | back end CPU %5.1f ms | frame %5.1f ms (%4.1f fps) | %d draws, %d tris per frame\n",
+		c3dBenchStep + 1, C3D_BENCH_STEPS, c3dBenchNames[c3dBenchStep], c3dBenchGpu / n, c3dBenchCpu / n, c3dBenchFrameMs / n,
+		c3dBenchFrameMs > 0.0 ? 1000.0 * n / c3dBenchFrameMs : 0.0, (int)( c3dBenchDraws / n ), (int)( c3dBenchTris / n ) );
+	c3dBenchStep++;
+	c3dBenchFrame = 0;
+	if ( c3dBenchStep < C3D_BENCH_STEPS ) {
+		return;
+	}
+	const float base = 0.5f * ( c3dBenchResult[0][0] + c3dBenchResult[4][0] );
+	common->Printf( "GPU TEST: GPU %.1f ms (normal runs %.1f / %.1f): pixel work ~%.1f ms, light passes ~%.1f ms, textures ~%.1f ms\n",
+		base, c3dBenchResult[0][0], c3dBenchResult[4][0], base - c3dBenchResult[1][0], base - c3dBenchResult[2][0], base - c3dBenchResult[3][0] );
+	c3dBenchStep = -1;
+	n3ds_textures.SetBool( c3dBenchTexturesWere );
+	c3dBenchNoLights = false;
+	n3ds_gpuBench.SetBool( false );
+}
+
+bool RB_N3DS_BenchRunning() {
+	return c3dBenchStep >= 0 || n3ds_gpuBench.GetBool();
+}
+
 void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	if ( cmds->commandId == RC_NOP && !cmds->next ) {
 		return;
 	}
 	const uint64 start = Sys_Microseconds();
+	const float frameMs = c3dBenchLastStart != 0 ? ( start - c3dBenchLastStart ) * 0.001f : 0.0f;
+	const int benchDraws0 = c3dStatDraws, benchTris0 = c3dStatTris;
 
 	// is there a 3D view this frame? (for tracing the first ones)
 	bool has3D = false;
@@ -1857,7 +1963,7 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: waiting for GPU" );
 	N3DSGPU_SetFullFlush( n3ds_c3dFullFlush.GetBool() ? 1 : 0 );
 	N3DSGPU_SetKickDraws( n3ds_c3dKickDraws.GetInteger() );
-	N3DSGPU_SetFillProbe( n3ds_gpuFillProbe.GetBool() ? 1 : 0 );
+	N3DS_BenchFrameStart();
 	N3DSGPU_BeginFrame( 0x000000FF );
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: drawing" );
 	N3DS_TexBeginFrame( has3D );
@@ -1969,6 +2075,14 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 	if ( has3D ) {
 		c3dFrame3D++;
+	}
+
+	if ( has3D ) {
+		float waitGpu, waitVBlank;
+		N3DSGPU_LastWaits( &waitGpu, &waitVBlank );
+		const float cpuMs = ( Sys_Microseconds() - start ) * 0.001f - waitGpu - waitVBlank;
+		N3DS_BenchFrameEnd( N3DSGPU_DrawingTimeMs(), cpuMs, frameMs, c3dStatDraws - benchDraws0, c3dStatTris - benchTris0 );
+		c3dBenchLastStart = start;
 	}
 
 	// a line every 2 seconds next to the PERF lines

@@ -48,6 +48,8 @@ float			N3DSGPU_CmdBufUsage( void );
 float			N3DSGPU_DrawingTimeMs( void );
 // time spent waiting since the last call: for the previous frame's GPU work, for a vblank before submitting
 void			N3DSGPU_WaitStats( float * gpuMs, float * vblankMs );
+// the same for the frame being drawn now (gpu: at its start) and the one before (vblank)
+void			N3DSGPU_LastWaits( float * gpuMs, float * vblankMs );
 // hand what was recorded of the frame so far to the GPU (it draws while the rest is recorded)
 void			N3DSGPU_Kick( void );
 // N3DSGPU_Kick every this many draws (0: only at the frame end)
