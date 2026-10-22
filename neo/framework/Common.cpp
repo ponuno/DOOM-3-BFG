@@ -80,10 +80,20 @@ idCVar net_inviteOnly( "net_inviteOnly", "1", CVAR_BOOL | CVAR_ARCHIVE, "whether
 
 extern idCVar g_demoMode;
 
+#if defined( ID_3DS )
+// New 3DS: game logic at 30 Hz, like the console versions of the time. A frame is only
+// drawn after a game tick, so this also caps the frame rate at 30; at 60 Hz the CPU ran
+// two or three 4-6 ms ticks per drawn frame.
+idCVar com_engineHz( "com_engineHz", "30", CVAR_FLOAT | CVAR_ARCHIVE, "Frames per second the engine runs at", 10.0f, 1024.0f );
+float com_engineHz_latched = 30.0f; // Latched version of cvar, updated between map loads
+int64 com_engineHz_numerator = 100LL * 1000LL;
+int64 com_engineHz_denominator = 100LL * 30LL;
+#else
 idCVar com_engineHz( "com_engineHz", "60", CVAR_FLOAT | CVAR_ARCHIVE, "Frames per second the engine runs at", 10.0f, 1024.0f );
 float com_engineHz_latched = 60.0f; // Latched version of cvar, updated between map loads
 int64 com_engineHz_numerator = 100LL * 1000LL;
 int64 com_engineHz_denominator = 100LL * 60LL;
+#endif
 
 #if !defined( ID_3DS )
 HWND com_hwndMsg = NULL;

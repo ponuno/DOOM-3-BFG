@@ -17,7 +17,8 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 	The bottom screen is two libctru text consoles (8x8 cells, 40 x 30):
 		rows 0-5	panel: title, the GYRO AIM button (touch toggles n3ds_gyro), a status
 					line, a separator
-		rows 6-29	the log, as before (stdout goes there)
+		rows 6-29	where the log is written; the log itself only after a fatal error
+					(Sys_LogWrite prints to stdout, which goes there, only then)
 	The panel is redrawn under the log lock (Sys_N3DSConsoleLock) so it never cuts into a
 	log line. Touch is read once per frame on the main thread (IN_Frame).
 
@@ -57,8 +58,19 @@ void N3DS_BottomInit() {
 	consoleSetWindow( &panelConsole, 0, 0, 40, PANEL_ROWS );
 	consoleSetWindow( &logConsole, 0, PANEL_ROWS, 40, 30 - PANEL_ROWS );
 	consoleSelect( &logConsole );
+	printf( "\x1b[2;2H\x1b[37mThe log is written to\x1b[0m" );
+	printf( "\x1b[3;2H\x1b[36m%s\x1b[0m", N3DS_LOG_FILE );
 	bottomReady = true;
 	drawnState = -1;
+}
+
+// a fatal error is about to be printed: the log area is cleared for it
+void N3DS_BottomShowLog() {
+	if ( !bottomReady ) {
+		return;
+	}
+	consoleSelect( &logConsole );
+	consoleClear();
 }
 
 // panel console selected, log lock held

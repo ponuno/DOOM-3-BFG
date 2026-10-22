@@ -182,7 +182,8 @@ deleted only once the frames that may sample them are finished, and are unbound 
 ## Bottom screen and gyro aim
 
 The bottom screen is two libctru consoles (`sys/3ds/3ds_bottom.cpp`): rows 0-5 a touch panel, rows
-6-29 the log as before. The panel has the GYRO AIM button (touch toggles `n3ds_gyro`, which is
+6-29 the path of the log file. The log itself goes only to `log.txt`; the bottom screen shows it
+only after a fatal error (`Sys_Error`), so the error can be read without the SD card. The panel has the GYRO AIM button (touch toggles `n3ds_gyro`, which is
 saved in the config) and a status line (off / calibrating / the current yaw and pitch rates). It is
 redrawn under the log's lock, so it never cuts into a log line.
 
@@ -442,6 +443,8 @@ turns it off.
 | `n3ds_ambientStages` | 1 | ambient/blended stages and fullscreen GUIs |
 | `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD texture |
 | `n3ds_soundPack` | 1 | play samples from `base/_n3ds_sounds.pak` (DSP-ADPCM, decoded by the DSP) when it is there |
+| `n3ds_showFPS` | 1 | frame counter in the top right corner of the top screen (green 30+, yellow 20+, red below; refreshed twice a second) |
+| `com_engineHz` | 30 | game ticks per second (engine default 60). A frame is drawn only after a tick, so this also caps the frame rate; 60 costs two or three 4-6 ms ticks per drawn frame |
 | `n3ds_gyro` | 0 | gyro aim (bottom screen button; saved) |
 | `n3ds_gyroSensitivity` | 1.5 | view degrees per degree the console turns |
 | `n3ds_gyroDeadzone` | 1.5 | rates below this (deg/s) count as rest |

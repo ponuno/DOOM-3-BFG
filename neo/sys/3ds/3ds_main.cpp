@@ -201,6 +201,8 @@ static char			sys_exePath[MAX_OSPATH] = "sdmc:/3ds/doom3ds.3dsx";
 Sys_LogWrite
 ==============
 */
+static bool screenLog = false;	// true once a fatal error is being shown
+
 static void Sys_LogWrite( const char * text ) {
 	if ( logLockInit ) {
 		LightLock_Lock( &logLock );
@@ -217,7 +219,10 @@ static void Sys_LogWrite( const char * text ) {
 		clean[j++] = text[i];
 	}
 	clean[j] = '\0';
-	fputs( clean, stdout );
+	// the bottom screen shows the log only for a fatal error (the full log is in the file)
+	if ( screenLog ) {
+		fputs( clean, stdout );
+	}
 
 	if ( logFile != NULL ) {
 		fputs( clean, logFile );
@@ -418,6 +423,8 @@ void Sys_Error( const char *error, ... ) {
 	idStr::vsnPrintf( text, sizeof( text ), error, argptr );
 	va_end( argptr );
 
+	screenLog = true;
+	N3DS_BottomShowLog();
 	Sys_LogWrite( "\n********************\nERROR: " );
 	Sys_LogWrite( text );
 	Sys_LogWrite( "\n********************\n" );
