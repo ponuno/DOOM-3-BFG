@@ -835,6 +835,8 @@ static n3dsHWLight_t	hwFrameLights[N3DS_MAX_FRAME_LIGHTS];
 	from one frame to the next (a light flickering while the camera moves shows up as a
 	light that comes and goes, or whose surfaces / colour jump).
 */
+idCVar n3ds_hwQuat( "n3ds_hwQuat", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: normal quaternion per vertex: 0 = from the tangent frame, 1 = same but sign made consistent with the shortest Z -> N rotation, 2 = shortest Z -> N rotation only (normal maps then turn wrong)", 0, 2 );
+idCVar n3ds_hwReloadLights( "n3ds_hwReloadLights", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d diagnostics: load every light of every surface into its slot again (no slot reuse between surfaces)" );
 idCVar n3ds_hwLightLog( "n3ds_hwLightLog", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: log lights of the view whose state, surface count or colour changes between frames (value = most lines to print)" );
 
 struct n3dsLightLog_t {
@@ -1068,6 +1070,8 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 	}
 
 	const int maxSurfLights = idMath::ClampInt( 1, N3DS_MAX_SURF_LIGHTS, n3ds_hwMaxLights.GetInteger() );
+	N3DSGPU_HWQuatMode( n3ds_hwQuat.GetInteger() );
+	const bool reloadLights = n3ds_hwReloadLights.GetBool();
 	int numLights = 0;
 	const bool lightLog = n3ds_hwLightLog.GetInteger() > 0 && !viewDef->isSubview;
 	if ( lightLog ) {
@@ -1274,6 +1278,12 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 		for ( int pass = 0; pass < numPasses; pass++ ) {
 		if ( lit ) {
 			// slots: keep lights already loaded, load the rest into free slots
+			if ( reloadLights ) {
+				for ( int k = 0; k < 8; k++ ) {
+					slotLight[k] = -1;
+				}
+				N3DSGPU_HWForgetLights();
+			}
 			const int first = pass * 8;
 			const int count = Min( 8, sl.numLights - first );
 			int used = 0;

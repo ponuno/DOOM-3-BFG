@@ -48,6 +48,8 @@ static int					litOk = 0;
 static int					litMvp = -1;
 static int					litMv = -1;
 static int					litColor = -1;
+static int					litQuatMode = -1;
+static int					hwQuatMode = 0;
 static int					litPow2 = -1;
 static int					activeLit = 0;			// program in use: 0 base, 1 lit, 2 ambient/gui
 // ambient / GUI program (n3ds_vshader_amb.v.pica)
@@ -193,6 +195,7 @@ int N3DSGPU_Init( void ) {
 		litMvp = shaderInstanceGetUniformLocation( programLit.vertexShader, "mvp" );
 		litMv = shaderInstanceGetUniformLocation( programLit.vertexShader, "mv" );
 		litColor = shaderInstanceGetUniformLocation( programLit.vertexShader, "surfColor" );
+		litQuatMode = shaderInstanceGetUniformLocation( programLit.vertexShader, "quatMode" );
 		litPow2 = shaderInstanceGetUniformLocation( programLit.vertexShader, "pow2" );
 		litOk = ( litMvp >= 0 && litMv >= 0 && litColor >= 0 && litPow2 >= 0 );
 	}
@@ -1261,6 +1264,24 @@ void N3DSGPU_SetModelView( const float * rows ) {
 	C3D_FVUnifSet( GPU_VERTEX_SHADER, litMv + 0, rows[0], rows[1], rows[2], rows[3] );
 	C3D_FVUnifSet( GPU_VERTEX_SHADER, litMv + 1, rows[4], rows[5], rows[6], rows[7] );
 	C3D_FVUnifSet( GPU_VERTEX_SHADER, litMv + 2, rows[8], rows[9], rows[10], rows[11] );
+	if ( litQuatMode >= 0 ) {
+		C3D_FVUnifSet( GPU_VERTEX_SHADER, litQuatMode, hwQuatMode == 2 ? 1.0f : 0.0f, hwQuatMode == 1 ? 1.0f : 0.0f, 0.0f, 0.0f );
+	}
+}
+
+// diagnostics (n3ds_hwQuat): 0 = TBN quaternion as built, 1 = sign made consistent with
+// the shortest Z -> N rotation, 2 = that shortest rotation only (no tangent twist)
+void N3DSGPU_HWQuatMode( int mode ) {
+	hwQuatMode = mode;
+}
+
+// diagnostics (n3ds_hwReloadLights): forget what the light slots hold, so that the next
+// surface loads every light, enable mask and spot table again
+void N3DSGPU_HWForgetLights( void ) {
+	hwEnabledMask = -1;
+	for ( int i = 0; i < 8; i++ ) {
+		hwSpotCos[i] = -9.0f;
+	}
 }
 
 void N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, float invRadius,

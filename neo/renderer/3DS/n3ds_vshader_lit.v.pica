@@ -24,6 +24,9 @@
 
 ; Uniforms
 .fvec mvp[4], mv[3], surfColor
+; diagnostics (n3ds_hwQuat): x = 1 output the rotation from Z to N alone (no tangent twist),
+; y = 1 turn q into the hemisphere of that rotation (consistent sign between vertices)
+.fvec quatMode
 ; half float exponent table, set once by n3ds_gpu.c (see n3ds_vshader.v.pica)
 .fvec pow2[32]
 
@@ -144,6 +147,12 @@
 	mul r12.xyz, r13.yzx, r14.zxy
 	mad r12.xyz, -r14.yzx, r13.zxy, r12
 
+	; r15 = the shortest rotation from Z to N: axis Z x N, w = 1 + Nz (not normalized)
+	mov r15.x, -r14.y
+	mov r15.y, r14.x
+	mov r15.z, zeros
+	add r15.w, ones, r14.z
+
 	; ---- quaternion of the matrix with columns T B N ----
 	; r12 = (Tx, Ty, Tz, Bz)
 	; r13 = (Tx, By, Nz, 1 )
@@ -191,6 +200,17 @@
 			add r0.xyz, r12.wzyy, r14.yxww
 		.end
 	.end
+
+	; diagnostics: hemisphere / shortest rotation (quatMode, normally 0 0)
+	dp4 r1.x, r0, r15
+	slt r1.y, r1.x, zeros
+	mul r1.y, quatMode.y, r1.y
+	mul r1.y, halfK.w, r1.y
+	add r1.z, ones, r1.y
+	mul r0, r1.zzzz, r0
+	add r2, r15, -r0
+	mul r2, quatMode.xxxx, r2
+	add r0, r0, r2
 
 	; renormalize and output
 	dp4 r1.x, r0, r0
