@@ -434,8 +434,14 @@ void N3DS_TexPrefetch( idImage ** images, int count ) {
 		if ( t->prefetchFrame != 0 && texFrame - t->prefetchFrame < 600 ) {
 			continue;
 		}
-		if ( queued >= 2 || ramBytes + t->dataSize > budget ) {
+		// the RAM cache is always full of data already on the GPU: N3DS_TexRamKeep makes
+		// room by dropping the least recently used (0110 checked the free budget here and
+		// so read almost nothing ahead)
+		if ( queued >= 3 ) {
 			break;
+		}
+		if ( t->dataSize > budget / 4 ) {
+			continue;
 		}
 		t->prefetchFrame = texFrame;
 		if ( N3DS_TexRequest( t ) ) {
