@@ -214,12 +214,21 @@ open the `.bimage` files at all at map load (the pack entry carries the header f
 Cube maps are left out (the backend does not draw them). Normal maps are renormalized on
 every mip level; the ETC1 blocks come from rg_etc1 (zlib licence), medium quality by default.
 
+    n3dstex <base folder> -slim <dir>     (SD-ready copy without what the packs replace)
     n3dstex <base folder> [-o file] [-world 256] [-bump 128] [-spec 128] [-light 128] [-gui 512]
             [-font 1024] [-q 0|1|2] [-j threads] [-only text] [-preview dir] [-list] [-v]
 
 `<base folder>`: the one with `_common.resources` and `maps/` (the PC game's `base`, or a copy
 of the SD card's `doom3/base`); the pack is written there unless `-o` says otherwise and goes to
-`sdmc:/doom3/base/`. It must stay under 2 GB. `tools/n3ds/n3dstex/build.sh` builds the Linux
+`sdmc:/doom3/base/`. It must stay under 2 GB.
+
+`n3dstex <base> -slim <dir>` (after converting) writes an SD-ready base folder without what the
+packs replace: every `.resources` is written again with the images the texture pack has left out
+and the samples the sound pack has reduced to their `.idwav` header (format, length, amplitude
+table; no buffers), everything else byte for byte; all other files of the base folder (cfg,
+strings, the packs) are copied. The engine never opens those images (pack lookup first) and reads
+only the header of those samples (`N3DS_UsePack`). Without the packs such images are missing and
+such samples silent. The originals are kept: `<dir>` must not be the base folder. `tools/n3ds/n3dstex/build.sh` builds the Linux
 binary and, with llvm-mingw, a static `n3dstex.exe`; `CMakeLists.txt` there builds it on any PC.
 
 On the console (`n3ds_textures.cpp`): the pack index (40 bytes per texture) is read at the first

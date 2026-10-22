@@ -31,6 +31,7 @@ struct options_t {
 	bool		doTextures = true;
 	bool		doSounds = true;
 	std::string	soundOutput;
+	std::string	slimDir;			// -slim: write slimmed .resources there, convert nothing
 };
 extern options_t opt;
 
@@ -70,5 +71,7 @@ bool ReadResourceTable( const std::string & path, std::vector<resourceEntry_t> &
 
 // sound pack (n3dssnd.cpp): returns the process exit code
 int ConvertSounds( const std::vector<std::string> & containers );
+// slim copy of the base folder (n3dsslim.cpp)
+int SlimResources( const std::vector<std::string> & containers );
 
 #endif

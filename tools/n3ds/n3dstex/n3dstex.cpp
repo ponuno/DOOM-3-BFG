@@ -983,6 +983,9 @@ static void Usage() {
 		"  -snd           sounds only\n"
 		"  -o <file>      texture pack (default: <base>/_n3ds_textures.pak)\n"
 		"  -sndout <file> sound pack (default: <base>/_n3ds_sounds.pak)\n"
+		"  -slim <dir>    after converting: write the base folder to <dir> without what the packs\n"
+		"                 replace (images left out, samples reduced to their header), the packs and\n"
+		"                 all other files copied; <dir> then goes to sdmc:/doom3/base\n"
 		"  -world <n>     largest world / diffuse texture (default 256)\n"
 		"  -bump <n>      largest normal map (default 128)\n"
 		"  -spec <n>      largest specular map (default 128)\n"
@@ -1043,6 +1046,8 @@ static bool ParseArgs( int argc, char ** argv ) {
 		} else if ( a == "-snd" ) {
 			opt.doSounds = true;
 			opt.doTextures = false;
+		} else if ( a == "-slim" && i + 1 < argc ) {
+			opt.slimDir = argv[++i];
 		} else if ( a == "-sndout" && i + 1 < argc ) {
 			opt.soundOutput = argv[++i];
 		} else if ( a == "-v" ) {
@@ -1084,6 +1089,9 @@ int main( int argc, char ** argv ) {
 	if ( containers.empty() ) {
 		Log( "no .resources files under %s\n", opt.baseDir.c_str() );
 		return 1;
+	}
+	if ( !opt.slimDir.empty() ) {
+		return SlimResources( containers );
 	}
 	int rc = 0;
 	if ( opt.doTextures ) {
