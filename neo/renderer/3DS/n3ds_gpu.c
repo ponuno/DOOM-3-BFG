@@ -89,6 +89,9 @@ static C3D_Tex *			boundTex[3];
 // and 2 (C3D_TexBind reads the texture's type), and a unit must never hold a freed one
 static C3D_Tex				placeholderTex;
 static int					placeholderOk = 0;
+static C3D_Tex				flatNormalTex;			// HILO8 (0, 0): the normal (0, 0, 1)
+static int					flatNormalOk = 0;
+static int					hwFlatUnit1 = 0;		// diagnostics (n3ds_hwFlatUnit1)
 
 // C3D_FrameEnd( 0 ) cleans the CPU data cache over the whole linear heap every frame:
 // 69 MB in the 178 MB mode. Everything the GPU reads is flushed where it is written
@@ -238,6 +241,11 @@ int N3DSGPU_Init( void ) {
 	C3D_AlphaBlend( GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO );
 
 	// 8x8 black placeholder (linear memory)
+	if ( C3D_TexInit( &flatNormalTex, 8, 8, GPU_HILO8 ) ) {
+		memset( flatNormalTex.data, 0x80, flatNormalTex.size );
+		GSPGPU_FlushDataCache( flatNormalTex.data, flatNormalTex.size );
+		flatNormalOk = 1;
+	}
 	if ( C3D_TexInit( &placeholderTex, 8, 8, GPU_RGB565 ) ) {
 		memset( placeholderTex.data, 0, placeholderTex.size );
 		GSPGPU_FlushDataCache( placeholderTex.data, placeholderTex.size );
@@ -272,6 +280,10 @@ void N3DSGPU_Shutdown( void ) {
 	}
 	litOk = 0;
 	activeLit = 0;
+	if ( flatNormalOk ) {
+		C3D_TexDelete( &flatNormalTex );
+		flatNormalOk = 0;
+	}
 	if ( placeholderOk ) {
 		C3D_TexDelete( &placeholderTex );
 		placeholderOk = 0;
@@ -1278,6 +1290,10 @@ void N3DSGPU_SetModelView( const float * rows ) {
 // diagnostics (n3ds_hwKeepEnv, n3ds_hwEnvDirty): keep the light environment bound for
 // unlit surfaces of the HW pass; send the whole environment (registers, every table,
 // every light) again: 1 = once per view, 2 = before every lit surface
+void N3DSGPU_HWFlatUnit1( int on ) {
+	hwFlatUnit1 = on;
+}
+
 void N3DSGPU_HWEnvDiag( int keepEnv, int envDirty ) {
 	hwKeepEnv = keepEnv;
 	hwEnvDirty = envDirty;
@@ -1394,6 +1410,10 @@ void N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, i
 		N3DS_BindTex( 1, (C3D_Tex *)mask );
 	} else if ( bump ) {
 		N3DS_BindTex( 1, (C3D_Tex *)normalMap );
+	} else if ( lit && hwFlatUnit1 && flatNormalOk ) {
+		// diagnostics: unit 1 is the lighting's bump unit; without a normal map it kept
+		// whatever the previous surface had there (normal map, mask)
+		N3DS_BindTex( 1, &flatNormalTex );
 	}
 	if ( spec ) {
 		N3DS_BindTex( 2, (C3D_Tex *)specMap );

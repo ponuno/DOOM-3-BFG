@@ -837,6 +837,7 @@ static n3dsHWLight_t	hwFrameLights[N3DS_MAX_FRAME_LIGHTS];
 	light that comes and goes, or whose surfaces / colour jump).
 */
 idCVar n3ds_hwQuat( "n3ds_hwQuat", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: normal quaternion per vertex: 0 = from the tangent frame, 1 = same but sign made consistent with the shortest Z -> N rotation, 2 = shortest Z -> N rotation only (normal maps then turn wrong)", 0, 2 );
+idCVar n3ds_hwFlatUnit1( "n3ds_hwFlatUnit1", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d diagnostics: lit surfaces without a normal map or mask get a flat normal texture on unit 1 (the lighting's bump unit) instead of what the previous surface left there" );
 idCVar n3ds_hwKeepEnv( "n3ds_hwKeepEnv", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d diagnostics: keep the fragment lighting environment bound for unlit surfaces in the HW pass" );
 idCVar n3ds_hwEnvDirty( "n3ds_hwEnvDirty", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: send the whole lighting environment (registers, tables, lights) again: 1 = once per view, 2 = before every lit surface", 0, 2 );
 idCVar n3ds_hwReloadLights( "n3ds_hwReloadLights", "0", CVAR_RENDERER | CVAR_BOOL, "citro3d diagnostics: load every light of every surface into its slot again (no slot reuse between surfaces)" );
@@ -1178,6 +1179,7 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 	const int maxSurfLights = idMath::ClampInt( 1, N3DS_MAX_SURF_LIGHTS, n3ds_hwMaxLights.GetInteger() );
 	N3DSGPU_HWQuatMode( n3ds_hwQuat.GetInteger() );
 	N3DSGPU_HWEnvDiag( n3ds_hwKeepEnv.GetBool() ? 1 : 0, n3ds_hwEnvDirty.GetInteger() );
+	N3DSGPU_HWFlatUnit1( n3ds_hwFlatUnit1.GetBool() ? 1 : 0 );
 	const bool surfLog = n3ds_hwSurfLog.GetInteger() > 0 && !viewDef->isSubview;
 	if ( surfLog ) {
 		c3dSurfLogFrame++;
