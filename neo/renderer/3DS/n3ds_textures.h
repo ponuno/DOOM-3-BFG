@@ -12,6 +12,7 @@
 
 void		N3DS_TexBeginFrame( bool has3D );
 void *		N3DS_TexForImage( idImage * image );		// GPU texture or NULL
+bool		N3DS_TexIsAlphaOnly( idImage * image );	// A8 on the GPU (fonts, coverage): no colour
 void		N3DS_TexStatsLine( idStr & line );
 void		N3DS_TexLogMemory();						// memory diagnostics at MEM checkpoints
 

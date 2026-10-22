@@ -45,6 +45,7 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 
 idCVar n3ds_textures( "n3ds_textures", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: draw textures (0 = flat colours)" );
 idCVar n3ds_texMaxSize( "n3ds_texMaxSize", "128", CVAR_RENDERER | CVAR_INTEGER, "citro3d: largest texture size; the level kept at load is the largest one not over this", 8, 512 );
+idCVar n3ds_texFontMaxSize( "n3ds_texFontMaxSize", "1024", CVAR_RENDERER | CVAR_INTEGER, "citro3d: largest font atlas size (fonts are alpha-only A8 textures)", 8, 1024 );
 idCVar n3ds_texGuiMaxSize( "n3ds_texGuiMaxSize", "512", CVAR_RENDERER | CVAR_INTEGER, "citro3d: largest texture size for GUI / HUD / font images (guis/, generated/swf/, newfonts/, fonts/)", 8, 1024 );
 idCVar n3ds_texMips( "n3ds_texMips", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: build mip maps" );
 idCVar n3ds_texUploadsPerFrame( "n3ds_texUploadsPerFrame", "4", CVAR_RENDERER | CVAR_INTEGER, "citro3d: textures decoded and copied to VRAM per frame at most", 1, 64 );
@@ -395,8 +396,13 @@ int RB_N3DS_TexKeepSize( textureUsage_t usage, const char * name ) {
 		default:
 			return 0;
 	}
+	// a 1024x1280 font atlas keeps 512x640 (24-pixel glyphs, A8 512x512 on the GPU):
+	// glyphs are drawn 8-14 pixels tall, so the mip chain below has something to filter
+	if ( usage == TD_FONT ) {
+		return n3ds_texFontMaxSize.GetInteger();
+	}
 	// GUIs are drawn at about screen size: their atlases need far more than world textures
-	if ( usage == TD_FONT || N3DS_IsGuiImage( name ) ) {
+	if ( N3DS_IsGuiImage( name ) ) {
 		return n3ds_texGuiMaxSize.GetInteger();
 	}
 	return n3ds_texMaxSize.GetInteger();
@@ -634,6 +640,11 @@ The GPU texture of an image for this frame, uploading it if needed; NULL when th
 image has no kept level, cannot be decoded, or has to wait for a later frame.
 ========================
 */
+bool N3DS_TexIsAlphaOnly( idImage * image ) {
+	const n3dsTexture_t * t = ( image != NULL ) ? (const n3dsTexture_t *)image->n3dsTex : NULL;
+	return t != NULL && t->alphaOnly;
+}
+
 void * N3DS_TexForImage( idImage * image ) {
 	if ( image == NULL || !n3ds_textures.GetBool() ) {
 		return NULL;

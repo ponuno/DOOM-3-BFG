@@ -150,8 +150,11 @@ the lit passes every SL_AMBIENT stage is drawn as RB_DrawShaderPasses does (blen
 state from drawStateBits, stage colour x vertex colour, texture matrix, polygon offset); unlit opaque
 materials are filled black so their stages land on black. RC_DRAW_VIEW_GUI views (HUD, menus,
 loading screens) are drawn the same way without depth; SWF stages (GLS_OVERRIDE) add the colour2
-transform and premultiply alpha like gui.pixel. GUI/font images keep a level up to
-`n3ds_texGuiMaxSize` (512). SWF stages are laid out for 720 lines; fitted to the 240-line screen
+transform and premultiply alpha like gui.pixel; SWF masks use the stencil (cleared to 128 every
+frame, test/incr/decr from the GL state bits). GUI images keep a level up to `n3ds_texGuiMaxSize`
+(512); fonts up to `n3ds_texFontMaxSize` (1024: a 1024x1280 atlas keeps 512x640) as alpha-only A8
+textures (white x vertex colour). Sides that are not a power of two are area-resampled to the one
+below (nearest sampling used to drop whole rows of glyphs). SWF stages are laid out for 720 lines; fitted to the 240-line screen
 they shrink to a third, so `n3ds_hudScale`/`n3ds_uiScale` enlarge them (edge-anchored sprites such as
 `_bottomLeft` stay pinned to the screen edges); the log prints every SWF's stage size at load. Not yet: TG_SCREEN/cube texgens, cinematics, program stages, scissor.
 Skinned models are skinned on the CPU (`r_useGPUSkinning` forced to 0 with citro3d).
@@ -251,11 +254,12 @@ least-recently-played eviction. Needs the DSP firmware dump
 | `n3ds_soundPreloadKB` | 16 | samples up to this size are read at level load; bigger ones by the loader thread when first played |
 | `n3ds_soundVolume` | 1 | DSP master volume |
 | `n3ds_ambientStages` | 1 | ambient/blended stages and fullscreen GUIs |
-| `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD / font texture |
+| `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD texture |
+| `n3ds_texFontMaxSize` | 1024 | largest font atlas level kept (A8) |
 | `n3ds_texStream` | 1 | texture levels read from SD when first drawn instead of all kept in RAM (applies to images loaded afterwards) |
 | `n3ds_texRAMCacheKB` | 1024 | RAM for already uploaded streamed levels, so VRAM evictions come back without a read |
 | `n3ds_tourFrames` | 600 | map tour: frames each map runs before the next |
-| `n3ds_hudScale` | 1.5 | HUD size relative to fitting the 720-line SWF stage to the 240-line screen; edge-anchored elements stay at the edges |
+| `n3ds_hudScale` | 1.8 | HUD size relative to fitting the 720-line SWF stage to the 240-line screen; edge-anchored elements stay at the edges |
 | `n3ds_uiScale` | 1.35 | same for menus, PDA, loading screen and dialogs; too large crops unanchored elements |
 | `n3ds_polygonOffset` | 4 | depth bias per material polygonOffset unit (decals) |
 | `n3ds_debugPhysics` | 0 | heavy physics diagnostics: NaN checks per AF step, LCP dumps, trace counters, SLOW AF lines |

@@ -1264,7 +1264,21 @@ static void N3DS_DrawAmbientStages( const viewDef_t * viewDef, bool gui ) {
 			N3DSGPU_SetStageState( N3DS_SrcBlend( stageGLState ), N3DS_DstBlend( stageGLState ), blendOp, depthFunc, writeMask,
 				alphaRef, idMath::ClampInt( 0, 255, stageBias ) );
 			N3DSGPU_SetStageUniforms( color, vcMod, vcAdd, texS, texT );
-			N3DSGPU_SetStageTexEnv( tex, swf ? 1 : 0, swfAdd );
+			// SWF masks: stencil test / increment / decrement from the GL state
+			{
+				const int sFunc = (int)( ( stageGLState & GLS_STENCIL_FUNC_BITS ) >> 36 );
+				const int sFail = (int)( ( stageGLState & GLS_STENCIL_OP_FAIL_BITS ) >> 39 );
+				const int sZFail = (int)( ( stageGLState & GLS_STENCIL_OP_ZFAIL_BITS ) >> 42 );
+				const int sPass = (int)( ( stageGLState & GLS_STENCIL_OP_PASS_BITS ) >> 45 );
+				if ( sFunc == 0 && sFail == 0 && sZFail == 0 && sPass == 0 ) {
+					N3DSGPU_SetStencil( -1, 0, 0, 0, 0, 0 );
+				} else {
+					N3DSGPU_SetStencil( sFunc, (int)( ( stageGLState & GLS_STENCIL_FUNC_REF_BITS ) >> GLS_STENCIL_FUNC_REF_SHIFT ),
+						(int)( ( stageGLState & GLS_STENCIL_FUNC_MASK_BITS ) >> GLS_STENCIL_FUNC_MASK_SHIFT ), sFail, sZFail, sPass );
+				}
+			}
+			const bool alphaTex = tex != NULL && N3DS_TexIsAlphaOnly( pStage->texture.image );
+			N3DSGPU_SetStageTexEnv( tex, swf ? 1 : 0, swfAdd, alphaTex ? 1 : 0 );
 			N3DS_Draw( surf, verts, indexes, record, test );
 			draws++;
 			c3dStatStages++;

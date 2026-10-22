@@ -40,7 +40,7 @@ idCVar swf_forceAlpha( "swf_forceAlpha", "0", CVAR_FLOAT, "force an alpha value 
 // The SWFs are laid out for 720 lines and fit to the screen height, which makes them a third of
 // their size on the 240-line top screen. Edge-anchored sprites (_left, _bottomRight, ...) stay
 // pinned to the screen edges at any scale, so the whole stage can be enlarged.
-idCVar n3ds_hudScale( "n3ds_hudScale", "1.5", CVAR_FLOAT, "3DS: size of the in-game HUD relative to fitting the SWF stage to the screen height", 0.5f, 3.0f );
+idCVar n3ds_hudScale( "n3ds_hudScale", "1.8", CVAR_FLOAT, "3DS: size of the in-game HUD relative to fitting the SWF stage to the screen height", 0.5f, 3.0f );
 idCVar n3ds_uiScale( "n3ds_uiScale", "1.35", CVAR_FLOAT, "3DS: size of menus, PDA, loading screen and dialogs relative to fitting the SWF stage to the screen height", 0.5f, 3.0f );
 #endif
 

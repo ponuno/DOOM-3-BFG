@@ -265,7 +265,7 @@ void idImage::N3DS_KeepLevel( idBinaryImage & im, int keepSize, int streamIndex,
 			im.GetImageData( streamIndex ) == NULL ) {
 		const bimageImage_t & img = im.GetImageHeader( streamIndex );
 		RB_N3DS_ImageLevelStreamed( this, opts.format, opts.colorFormat, img.width, img.height, img.dataSize,
-			streamPath, streamOffset, wrap, usage == TD_COVERAGE, keepSize );
+			streamPath, streamOffset, wrap, usage == TD_COVERAGE || usage == TD_FONT, keepSize );
 		return;
 	}
 	int pick = -1;
@@ -286,7 +286,7 @@ void idImage::N3DS_KeepLevel( idBinaryImage & im, int keepSize, int streamIndex,
 	}
 	const bimageImage_t & img = im.GetImageHeader( pick );
 	RB_N3DS_ImageLevel( this, opts.format, opts.colorFormat, img.width, img.height,
-		im.GetImageData( pick ), img.dataSize, wrap, usage == TD_COVERAGE, keepSize );
+		im.GetImageData( pick ), img.dataSize, wrap, usage == TD_COVERAGE || usage == TD_FONT, keepSize );
 }
 #endif
 

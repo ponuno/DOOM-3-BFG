@@ -241,6 +241,45 @@ static void N3DS_Halve( const byte * src, int w, int h, bool halveX, bool halveY
 	}
 }
 
+// RGBA8 w x h -> tw x th, each target pixel the coverage-weighted average of the source
+// pixels under it (both directions, any ratio)
+static void N3DS_AreaResample( const byte * src, int w, int h, int tw, int th, byte * dst ) {
+	// weights in 1/256 source pixels: target pixel t covers [t * w / tw, (t + 1) * w / tw)
+	for ( int y = 0; y < th; y++ ) {
+		const int y0 = ( y * h * 256 ) / th;
+		const int y1 = ( ( y + 1 ) * h * 256 ) / th;
+		for ( int x = 0; x < tw; x++ ) {
+			const int x0 = ( x * w * 256 ) / tw;
+			const int x1 = ( ( x + 1 ) * w * 256 ) / tw;
+			int sum[4] = { 0, 0, 0, 0 };
+			int total = 0;
+			for ( int sy = y0 >> 8; sy < h && ( sy << 8 ) < y1; sy++ ) {
+				const int wy = Min( y1, ( sy + 1 ) << 8 ) - Max( y0, sy << 8 );
+				if ( wy <= 0 ) {
+					continue;
+				}
+				for ( int sx = x0 >> 8; sx < w && ( sx << 8 ) < x1; sx++ ) {
+					const int wx = Min( x1, ( sx + 1 ) << 8 ) - Max( x0, sx << 8 );
+					if ( wx <= 0 ) {
+						continue;
+					}
+					const int wgt = wx * wy;
+					const byte * p = src + ( sy * w + sx ) * 4;
+					sum[0] += p[0] * wgt;
+					sum[1] += p[1] * wgt;
+					sum[2] += p[2] * wgt;
+					sum[3] += p[3] * wgt;
+					total += wgt;
+				}
+			}
+			byte * o = dst + ( y * tw + x ) * 4;
+			for ( int k = 0; k < 4; k++ ) {
+				o[k] = (byte)( total > 0 ? ( sum[k] + total / 2 ) / total : 0 );
+			}
+		}
+	}
+}
+
 static const byte mortonX[8] = { 0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15 };
 static const byte mortonY[8] = { 0x00, 0x02, 0x08, 0x0a, 0x20, 0x22, 0x28, 0x2a };
 
@@ -299,15 +338,11 @@ void N3DS_BuildTexture( const byte * rgba, int width, int height, const n3dsTexL
 		}
 		SwapValues( bufA, bufB );
 	}
-	// whatever is left (non power of two sizes, tiny images): nearest sample
+	// whatever is left (a non power of two side, less than twice the target): area
+	// resample. Nearest sampling here dropped whole rows: a 256x320 font atlas made
+	// 256x256 lost every fifth row of every glyph.
 	if ( w != tw || h != th ) {
-		for ( int y = 0; y < th; y++ ) {
-			const int sy = ( y * h ) / th;
-			for ( int x = 0; x < tw; x++ ) {
-				const int sx = ( x * w ) / tw;
-				memcpy( bufB + ( y * tw + x ) * 4, bufA + ( sy * w + sx ) * 4, 4 );
-			}
-		}
+		N3DS_AreaResample( bufA, w, h, tw, th, bufB );
 		SwapValues( bufA, bufB );
 		w = tw;
 		h = th;

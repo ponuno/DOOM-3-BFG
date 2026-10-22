@@ -247,7 +247,8 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 		linearFree( pendingStaging[pendingSet][i] );
 	}
 	numPendingStaging[pendingSet] = 0;
-	C3D_RenderTargetClear( topTarget, C3D_CLEAR_ALL, clearRGBA, 0 );
+	// depth 0 (far, the depth buffer is reversed), stencil 128: SWF masks count from there
+	C3D_RenderTargetClear( topTarget, C3D_CLEAR_ALL, clearRGBA, 128u << 24 );
 	C3D_FrameDrawOn( topTarget );
 	inFrame = 1;
 }
@@ -884,18 +885,24 @@ void N3DSGPU_SetStageState( int srcBlend, int dstBlend, int blendOp, int depthFu
 	C3D_DepthMap( true, -1.0f, (float)depthBiasUnits * ( 1.0f / 65536.0f ) );
 }
 
-void N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd ) {
+void N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd, int alphaTex ) {
 	// normal stage: texture x vertex colour. SWF GUI (as gui.pixel): texture x vertex
-	// colour + add colour, then the colour premultiplied by its alpha
+	// colour + add colour, then the colour premultiplied by its alpha. An A8 texture
+	// (font, coverage) has no colour: white x vertex colour, alpha x vertex alpha
 	if ( tex != NULL ) {
 		C3D_TexBind( 0, (C3D_Tex *)tex );
 	}
-	const int key = 0x800 | ( tex != NULL ? 1 : 0 ) | ( swf ? 2 : 0 );
+	const int key = 0x800 | ( tex != NULL ? 1 : 0 ) | ( swf ? 2 : 0 ) | ( ( tex != NULL && alphaTex ) ? 4 : 0 );
 	if ( key != texEnvMode || swf ) {
 		texEnvMode = key;
 		C3D_TexEnv * env = C3D_GetTexEnv( 0 );
 		C3D_TexEnvInit( env );
-		if ( tex != NULL ) {
+		if ( tex != NULL && alphaTex ) {
+			C3D_TexEnvSrc( env, C3D_RGB, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_RGB, GPU_REPLACE );
+			C3D_TexEnvSrc( env, C3D_Alpha, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
+			C3D_TexEnvFunc( env, C3D_Alpha, GPU_MODULATE );
+		} else if ( tex != NULL ) {
 			C3D_TexEnvSrc( env, C3D_Both, GPU_TEXTURE0, GPU_PRIMARY_COLOR, GPU_PRIMARY_COLOR );
 			C3D_TexEnvFunc( env, C3D_Both, GPU_MODULATE );
 		} else {
@@ -927,7 +934,28 @@ void N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd ) {
 	}
 }
 
+static int stencilKey = -1;
+
+void N3DSGPU_SetStencil( int func, int ref, int mask, int opFail, int opZFail, int opPass ) {
+	const int key = ( func < 0 ) ? 0 : ( 1 | ( ( func & 7 ) << 1 ) | ( ( ref & 0xFF ) << 4 ) | ( ( mask & 0xFF ) << 12 ) |
+		( ( opFail & 7 ) << 20 ) | ( ( opZFail & 7 ) << 23 ) | ( ( opPass & 7 ) << 26 ) );
+	if ( key == stencilKey ) {
+		return;
+	}
+	stencilKey = key;
+	if ( func < 0 ) {
+		C3D_StencilTest( false, GPU_ALWAYS, 0, 0xFF, 0 );
+		C3D_StencilOp( GPU_STENCIL_KEEP, GPU_STENCIL_KEEP, GPU_STENCIL_KEEP );
+		return;
+	}
+	static const GPU_TESTFUNC funcs[8] = { GPU_ALWAYS, GPU_LESS, GPU_LEQUAL, GPU_GREATER, GPU_GEQUAL, GPU_EQUAL, GPU_NOTEQUAL, GPU_NEVER };
+	// the GL op order is the PICA's
+	C3D_StencilTest( true, funcs[func & 7], ref & 0xFF, mask & 0xFF, 0xFF );
+	C3D_StencilOp( (GPU_STENCILOP)( opFail & 7 ), (GPU_STENCILOP)( opZFail & 7 ), (GPU_STENCILOP)( opPass & 7 ) );
+}
+
 void N3DSGPU_EndStages( void ) {
+	N3DSGPU_SetStencil( -1, 0, 0, 0, 0, 0 );
 	// back to the opaque setup
 	C3D_DepthMap( true, -1.0f, 0.0f );
 	C3D_DepthTest( true, GPU_GREATER, GPU_WRITE_ALL );

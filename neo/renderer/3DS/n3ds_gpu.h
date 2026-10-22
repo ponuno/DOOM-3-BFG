@@ -108,8 +108,13 @@ void			N3DSGPU_SetStageUniforms( const float * color, float vcModulate, float vc
 // in 1/65536 units towards the viewer
 void			N3DSGPU_SetStageState( int srcBlend, int dstBlend, int blendOp, int depthFunc, int writeMask,
 									int alphaRef, int depthBiasUnits );
-// texture (or NULL) x vertex colour; swf: + swfAdd[4] (signed) and premultiplied alpha
-void			N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd );
+// texture (or NULL) x vertex colour; swf: + swfAdd[4] (signed) and premultiplied alpha;
+// alphaTex: an A8 texture, only its alpha is used
+void			N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd, int alphaTex );
+// stencil (SWF masks): func -1 = off, else GL order (0 always, 1 less, 2 lequal, 3 greater,
+// 4 gequal, 5 equal, 6 notequal, 7 never); ops GL order (0 keep, 1 zero, 2 replace, 3 incr,
+// 4 decr, 5 invert, 6 incr wrap, 7 decr wrap). The stencil starts every frame at 128.
+void			N3DSGPU_SetStencil( int func, int ref, int mask, int opFail, int opZFail, int opPass );
 void			N3DSGPU_EndStages( void );
 
 // scissor in render target pixels (240 x 400, the 3DS framebuffer orientation),
