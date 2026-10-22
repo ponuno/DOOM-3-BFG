@@ -851,6 +851,94 @@ struct n3dsLightLog_t {
 static const int		N3DS_LIGHTLOG_MAX = 2048;
 static n3dsLightLog_t	lightLog[N3DS_LIGHTLOG_MAX];
 static int				c3dLightLogFrame = 0;
+static int				hwFrameLightDef[64];		// lightDef index of hwFrameLights[i]
+static const char *		hwFrameLightName[64];
+
+/*
+	n3ds_hwSurfLog: per drawn surface (static geometry, keyed by its vertex cache handle), the
+	set of lights it is lit with; a line when that set changes between two consecutive frames
+	in which the surface is drawn. A wall that flickers while the camera turns shows which
+	light it loses and gets back.
+*/
+idCVar n3ds_hwSurfLog( "n3ds_hwSurfLog", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: log surfaces whose set of lights changes between frames (value = most lines to print)" );
+
+static const int		N3DS_SURFLOG_LIGHTS = 24;	// = N3DS_MAX_SURF_LIGHTS
+struct n3dsSurfLog_t {
+	uint64	key;
+	int		frame;
+	byte	num;
+	short	lights[N3DS_SURFLOG_LIGHTS];
+};
+static const int		N3DS_SURFLOG_SIZE = 8192;
+static n3dsSurfLog_t	surfLog[N3DS_SURFLOG_SIZE];
+static int				c3dSurfLogFrame = 0;
+static int				c3dSurfLogLines = 0;
+
+static void N3DS_SurfLogEntry( const drawSurf_t * surf, const byte * lights, int num ) {
+	const int limit = n3ds_hwSurfLog.GetInteger();
+	if ( limit <= 0 || c3dSurfLogLines >= limit ) {
+		return;
+	}
+	const uint64 key = (uint64)surf->ambientCache;
+	unsigned int h = (unsigned int)( ( key * 0x9E3779B97F4A7C15ull ) >> 51 ) & ( N3DS_SURFLOG_SIZE - 1 );
+	for ( int probe = 0; probe < 32; probe++, h = ( h + 1 ) & ( N3DS_SURFLOG_SIZE - 1 ) ) {
+		n3dsSurfLog_t & e = surfLog[h];
+		if ( e.key != key && e.frame >= c3dSurfLogFrame - 2 ) {
+			continue;		// another surface seen recently
+		}
+		short now[N3DS_SURFLOG_LIGHTS];
+		for ( int k = 0; k < num; k++ ) {
+			now[k] = (short)hwFrameLightDef[ lights[k] ];
+		}
+		// sorted, so that only the set counts
+		for ( int a = 1; a < num; a++ ) {
+			const short v = now[a];
+			int b = a - 1;
+			while ( b >= 0 && now[b] > v ) {
+				now[b + 1] = now[b];
+				b--;
+			}
+			now[b + 1] = v;
+		}
+		if ( e.key == key && e.frame == c3dSurfLogFrame - 1 && ( e.num != num || memcmp( e.lights, now, num * sizeof( short ) ) != 0 ) ) {
+			idStr lost, gained;
+			for ( int k = 0; k < e.num; k++ ) {
+				bool still = false;
+				for ( int j = 0; j < num; j++ ) {
+					still |= ( now[j] == e.lights[k] );
+				}
+				if ( !still ) {
+					lost += va( " %d", e.lights[k] );
+				}
+			}
+			for ( int j = 0; j < num; j++ ) {
+				bool before = false;
+				int light = -1;
+				for ( int k = 0; k < e.num; k++ ) {
+					before |= ( e.lights[k] == now[j] );
+				}
+				if ( !before ) {
+					for ( int l = 0; l < 64; l++ ) {
+						if ( hwFrameLightDef[l] == now[j] ) {
+							light = l;
+							break;
+						}
+					}
+					gained += va( " %d(%s)", now[j], light >= 0 && hwFrameLightName[light] != NULL ? hwFrameLightName[light] : "?" );
+				}
+			}
+			c3dSurfLogLines++;
+			common->Printf( "SURFLOG f%d: %s (%d tris): %d -> %d lights, lost%s, gained%s\n", c3dSurfLogFrame,
+				surf->material != NULL ? surf->material->GetName() : "?", surf->numIndexes / 3, e.num, num,
+				lost.Length() > 0 ? lost.c_str() : " -", gained.Length() > 0 ? gained.c_str() : " -" );
+		}
+		e.key = key;
+		e.frame = c3dSurfLogFrame;
+		e.num = (byte)num;
+		memcpy( e.lights, now, num * sizeof( short ) );
+		return;
+	}
+}
 static int				c3dLightLogLines = 0;
 
 static void N3DS_LightLogEntry( const viewLight_t * vLight, char state, int surfaces, int unmatched, float strength, float radius ) {
@@ -1077,6 +1165,10 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 
 	const int maxSurfLights = idMath::ClampInt( 1, N3DS_MAX_SURF_LIGHTS, n3ds_hwMaxLights.GetInteger() );
 	N3DSGPU_HWQuatMode( n3ds_hwQuat.GetInteger() );
+	const bool surfLog = n3ds_hwSurfLog.GetInteger() > 0 && !viewDef->isSubview;
+	if ( surfLog ) {
+		c3dSurfLogFrame++;
+	}
 	const bool reloadLights = n3ds_hwReloadLights.GetBool();
 	int numLights = 0;
 	const bool lightLog = n3ds_hwLightLog.GetInteger() > 0 && !viewDef->isSubview;
@@ -1104,6 +1196,8 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 			continue;
 		}
 		n3dsHWLight_t & light = hwFrameLights[numLights];
+		hwFrameLightDef[numLights] = ( vLight->lightDef != NULL ) ? vLight->lightDef->index : -1;
+		hwFrameLightName[numLights] = lightShader->GetName();
 		if ( !N3DS_SetupHWLight( viewDef, vLight, (float)combinerScale, light ) ) {
 			if ( lightLog ) {
 				N3DS_LightLogEntry( vLight, 'X', 0, 0, 0.0f, 0.0f );
@@ -1279,6 +1373,9 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 			}
 			c3dStatHWLit++;
 			c3dStatHWLightsPerSurf += sl.numLights;
+			if ( surfLog ) {
+				N3DS_SurfLogEntry( surf, sl.lights, sl.numLights );
+			}
 		}
 		const int numPasses = ( lit && sl.numLights > 8 ) ? ( sl.numLights + 7 ) / 8 : 1;
 		for ( int pass = 0; pass < numPasses; pass++ ) {
