@@ -67,13 +67,20 @@ bool idResourceContainer::Init( const char *_fileName, uint8 containerIndex ) {
 
 	resourceFile->ReadBig( resourceMagic );
 	if ( resourceMagic != RESOURCE_FILE_MAGIC ) {
-		idLib::FatalError( "resourceFileMagic != RESOURCE_FILE_MAGIC" );
+		idLib::FatalError( "%s: resourceFileMagic != RESOURCE_FILE_MAGIC (0x%08X)", _fileName, resourceMagic );
 	}
 
 	fileName = _fileName;
 
 	resourceFile->ReadBig( tableOffset );
 	resourceFile->ReadBig( tableLength );
+	// a damaged or half-copied file: say which and what is wrong, instead of trying to
+	// allocate whatever the header claims
+	const int fileLength = resourceFile->Length();
+	if ( tableOffset < 12 || tableLength <= 4 || tableOffset > fileLength || tableLength > fileLength - tableOffset ) {
+		idLib::FatalError( "%s is damaged: table at %d, %d bytes, but the file is %d bytes long (copy it again)",
+			_fileName, tableOffset, tableLength, fileLength );
+	}
 	// read this into a memory buffer with a single read
 	char * const buf = (char *)Mem_Alloc( tableLength, TAG_RESOURCE );
 	resourceFile->Seek( tableOffset, FS_SEEK_SET );
