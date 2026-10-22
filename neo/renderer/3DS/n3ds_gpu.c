@@ -282,6 +282,21 @@ static int N3DS_LostCompletion( u64 stuckSince );
 static const char * N3DS_GxCommandName( u32 id );
 
 static void ( *noticeCallback )( const char * text ) = NULL;
+static Thread		gpuThread = NULL;		// the thread that runs frames (set at BeginFrame)
+static int			threadWarnings = 0;
+static int			freeWarnings = 0;
+
+// diagnostics: textures and their VRAM must only be handled by the frame thread (libctru's
+// VRAM / linear allocators and the pending lists here take no locks)
+static void N3DS_CheckThread( const char * what ) {
+	if ( gpuThread == NULL || threadGetCurrent() == gpuThread || threadWarnings >= 10 || noticeCallback == NULL ) {
+		return;
+	}
+	threadWarnings++;
+	char text[160];
+	snprintf( text, sizeof( text ), "citro3d: %s called from another thread than the frame thread (#%d)\n", what, threadWarnings );
+	noticeCallback( text );
+}
 
 void N3DSGPU_SetNoticeCallback( void ( *callback )( const char * text ) ) {
 	noticeCallback = callback;
@@ -291,6 +306,7 @@ void N3DSGPU_BeginFrame( unsigned int clearRGBA ) {
 	if ( !initialized || inFrame ) {
 		return;
 	}
+	gpuThread = threadGetCurrent();
 	// non-blocking polls so a hung GPU is reported instead of freezing silently
 	const u64 start = osGetTime();
 	int reported = 0;
@@ -831,6 +847,7 @@ static void * N3DS_TexCreateIn( int width, int height, int format, int maxLevel,
 	if ( !initialized ) {
 		return NULL;
 	}
+	N3DS_CheckThread( "N3DSGPU_TexCreate" );
 	C3D_Tex * tex = (C3D_Tex *)malloc( sizeof( C3D_Tex ) );
 	if ( tex == NULL ) {
 		return NULL;
@@ -872,6 +889,7 @@ static void * N3DS_TexCreateIn( int width, int height, int format, int maxLevel,
 }
 
 int N3DSGPU_TexUpload( void * handle, void * staging, unsigned int size ) {
+	N3DS_CheckThread( "N3DSGPU_TexUpload" );
 	C3D_Tex * tex = (C3D_Tex *)handle;
 	if ( tex == NULL || staging == NULL ) {
 		return 0;
@@ -903,6 +921,21 @@ void N3DSGPU_TexFree( void * handle ) {
 	C3D_Tex * tex = (C3D_Tex *)handle;
 	if ( tex == NULL ) {
 		return;
+	}
+	N3DS_CheckThread( "N3DSGPU_TexFree" );
+	// diagnostics: a texture released twice would give its memory back twice
+	for ( int set = 0; set < 2; set++ ) {
+		for ( int i = 0; i < numPendingFree[set]; i++ ) {
+			if ( pendingFree[set][i] == tex ) {
+				if ( noticeCallback != NULL && freeWarnings < 10 ) {
+					freeWarnings++;
+					char text[160];
+					snprintf( text, sizeof( text ), "citro3d: texture %p (data %p) released twice - ignored (#%d)\n", (void *)tex, tex->data, freeWarnings );
+					noticeCallback( text );
+				}
+				return;
+			}
+		}
 	}
 	// a copy not done yet: dropped (the texture was never handed out)
 	for ( int i = 0; i < numDeferred; i++ ) {
