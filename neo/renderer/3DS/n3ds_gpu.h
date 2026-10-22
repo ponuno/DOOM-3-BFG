@@ -153,6 +153,7 @@ int				N3DSGPU_HangQueueReport( char * out, int outSize );
 // writes the queue and every command list of the hung frame to path (decoded on the PC
 // by tools/n3ds/gpuhang.py), then, if withRegs, appends the GPU's registers as they stand
 // (which state the GPU is stuck in); 0 if the file could not be written
+int				N3DSGPU_DumpKeysHeld( void );		// diagnostics: touch on the lower half of the bottom screen
 int				N3DSGPU_HangDump( const char * path, int withRegs );
 // texture-copy destinations in the queue report are named through this (NULL: unknown)
 void			N3DSGPU_SetHangTexNamer( const char * ( *namer )( unsigned int address ) );

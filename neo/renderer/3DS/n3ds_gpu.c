@@ -600,6 +600,17 @@ static const u16 hangRegRanges[][2] = {
 	{ 0x2D5, 0x2D5 },
 };
 
+// diagnostics: the frame dump trigger - a touch on the lower half of the bottom screen
+// (the gyro button is at the top; no game button is involved)
+int N3DSGPU_DumpKeysHeld( void ) {
+	if ( ( hidKeysHeld() & KEY_TOUCH ) == 0 ) {
+		return 0;
+	}
+	touchPosition t;
+	hidTouchRead( &t );
+	return t.py >= 120;
+}
+
 int N3DSGPU_HangDump( const char * path, int withRegs ) {
 	FILE * f = fopen( path, "wb" );
 	if ( f == NULL ) {

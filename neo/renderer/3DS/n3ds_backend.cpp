@@ -136,6 +136,12 @@ static void N3DS_GPUNotice( const char * text ) {
 	common->Printf( "%s", text );
 }
 
+// n3ds_c3dFrameDump: a touch on the lower half of the bottom screen writes the GPU command lists of the next frames
+idCVar n3ds_c3dFrameDump( "n3ds_c3dFrameDump", "8", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: touching the lower half of the bottom screen writes the GPU command lists of this many following frames to sdmc:/doom3/frameN.bin and their draws to the log (0 = off)" );
+static int	c3dDumpLeft = 0;
+static int	c3dDumpIndex = 0;
+static bool	c3dDumpKeysWere = false;
+
 static void N3DS_GPUHang( unsigned int waitedMs ) {
 	const int prev = c3dRecordSet;		// not flipped yet: the frame the GPU is still on
 	common->Printf( "citro3d: GPU has not finished the previous frame after %u ms (3D frame %d); its %d draws:\n",
@@ -1816,6 +1822,14 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 	c3dRecordSet ^= 1;
 	c3dNumRecords[c3dRecordSet] = 0;
+	{
+		const bool keys = n3ds_c3dFrameDump.GetInteger() > 0 && N3DSGPU_DumpKeysHeld();
+		if ( keys && !c3dDumpKeysWere && c3dDumpLeft == 0 ) {
+			c3dDumpLeft = n3ds_c3dFrameDump.GetInteger();
+			common->Printf( "FRAMEDUMP: touch: writing the next %d frames\n", c3dDumpLeft );
+		}
+		c3dDumpKeysWere = keys;
+	}
 	if ( trace ) {
 		common->Printf( "citro3d: 3D frame %d: GPU ready, previous frame %.2f ms\n", c3dFrame3D, N3DSGPU_DrawingTimeMs() );
 	}
@@ -1857,6 +1871,18 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: submitting" );
 	N3DSGPU_EndFrame();
 	N3DS_STAGE( N3DS_STAGE_RENDER, "c3d: idle" );
+	if ( c3dDumpLeft > 0 && has3D ) {
+		// the frame just submitted is still in the GX queue (cleared at the next frame start)
+		const char * path = va( "sdmc:/doom3/frame%d.bin", c3dDumpIndex );
+		const int ok = N3DSGPU_HangDump( path, 0 );
+		common->Printf( "FRAMEDUMP %d: 3D frame %d, %d draws, %s %s\n", c3dDumpIndex, c3dFrame3D,
+			c3dNumRecords[c3dRecordSet], path, ok ? "written" : "NOT written" );
+		for ( int i = 0; i < c3dNumRecords[c3dRecordSet]; i++ ) {
+			N3DS_PrintRecord( i, c3dRecords[c3dRecordSet][i] );
+		}
+		c3dDumpIndex++;
+		c3dDumpLeft--;
+	}
 	if ( trace ) {
 		common->Printf( "citro3d: 3D frame %d: submitted\n", c3dFrame3D );
 	}
