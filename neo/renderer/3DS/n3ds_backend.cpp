@@ -830,6 +830,61 @@ struct n3dsHWLight_t {
 
 static n3dsHWLight_t	hwFrameLights[N3DS_MAX_FRAME_LIGHTS];
 
+/*
+	n3ds_hwLightLog: what happens to every light of the main view, logged when it changes
+	from one frame to the next (a light flickering while the camera moves shows up as a
+	light that comes and goes, or whose surfaces / colour jump).
+*/
+idCVar n3ds_hwLightLog( "n3ds_hwLightLog", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: log lights of the view whose state, surface count or colour changes between frames (value = most lines to print)" );
+
+struct n3dsLightLog_t {
+	int		frame;			// c3dLightLogFrame it was last seen in
+	char	state;			// L lit, A ambient, N no interactions, X black / not set up, F fog / blend, O over the frame limit
+	short	surfaces;		// interactions matched to a drawn surface
+	short	unmatched;		// interactions with no drawn surface
+	float	strength;
+	float	radius;
+};
+static const int		N3DS_LIGHTLOG_MAX = 2048;
+static n3dsLightLog_t	lightLog[N3DS_LIGHTLOG_MAX];
+static int				c3dLightLogFrame = 0;
+static int				c3dLightLogLines = 0;
+
+static void N3DS_LightLogEntry( const viewLight_t * vLight, char state, int surfaces, int unmatched, float strength, float radius ) {
+	const int limit = n3ds_hwLightLog.GetInteger();
+	if ( limit <= 0 || vLight->lightDef == NULL ) {
+		return;
+	}
+	const int idx = vLight->lightDef->index;
+	if ( idx < 0 || idx >= N3DS_LIGHTLOG_MAX ) {
+		return;
+	}
+	n3dsLightLog_t & e = lightLog[idx];
+	const bool wasThere = ( e.frame == c3dLightLogFrame - 1 );
+	bool changed = !wasThere || e.state != state || ( ( e.surfaces == 0 ) != ( surfaces == 0 ) ) ||
+		abs( e.surfaces - surfaces ) * 2 > Max( (int)e.surfaces, surfaces ) + 1 || unmatched != e.unmatched ||
+		idMath::Fabs( e.strength - strength ) > 0.25f * Max( e.strength, strength ) + 0.01f;
+	if ( changed && c3dLightLogLines < limit ) {
+		c3dLightLogLines++;
+		const idVec3 & o = vLight->globalLightOrigin;
+		if ( !wasThere ) {
+			common->Printf( "LIGHTLOG f%d: light %d (%s) at %.0f %.0f %.0f appears: %c, %d surfaces, %d unmatched, strength %.2f, radius %.0f\n",
+				c3dLightLogFrame, idx, vLight->lightShader != NULL ? vLight->lightShader->GetName() : "?", o.x, o.y, o.z,
+				state, surfaces, unmatched, strength, radius );
+		} else {
+			common->Printf( "LIGHTLOG f%d: light %d (%s): %c -> %c, surfaces %d -> %d, unmatched %d -> %d, strength %.2f -> %.2f, radius %.0f\n",
+				c3dLightLogFrame, idx, vLight->lightShader != NULL ? vLight->lightShader->GetName() : "?",
+				e.state, state, e.surfaces, surfaces, e.unmatched, unmatched, e.strength, strength, radius );
+		}
+	}
+	e.frame = c3dLightLogFrame;
+	e.state = state;
+	e.surfaces = (short)surfaces;
+	e.unmatched = (short)unmatched;
+	e.strength = strength;
+	e.radius = radius;
+}
+
 static float N3DS_LightStrength( const n3dsHWLight_t & l ) {
 	return l.color[0] + l.color[1] + l.color[2];
 }
@@ -1014,22 +1069,39 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 
 	const int maxSurfLights = idMath::ClampInt( 1, N3DS_MAX_SURF_LIGHTS, n3ds_hwMaxLights.GetInteger() );
 	int numLights = 0;
+	const bool lightLog = n3ds_hwLightLog.GetInteger() > 0 && !viewDef->isSubview;
+	if ( lightLog ) {
+		c3dLightLogFrame++;
+	}
 	for ( const viewLight_t * vLight = viewDef->viewLights; vLight != NULL; vLight = vLight->next ) {
 		const idMaterial * lightShader = vLight->lightShader;
 		if ( lightShader == NULL || lightShader->IsFogLight() || lightShader->IsBlendLight() ) {
+			if ( lightLog ) {
+				N3DS_LightLogEntry( vLight, 'F', 0, 0, 0.0f, 0.0f );
+			}
 			continue;
 		}
 		if ( vLight->localInteractions == NULL && vLight->globalInteractions == NULL ) {
+			if ( lightLog ) {
+				N3DS_LightLogEntry( vLight, 'N', 0, 0, 0.0f, 0.0f );
+			}
 			continue;
 		}
 		if ( numLights >= N3DS_MAX_FRAME_LIGHTS ) {
-			break;
+			if ( lightLog ) {
+				N3DS_LightLogEntry( vLight, 'O', 0, 0, 0.0f, 0.0f );
+			}
+			continue;
 		}
 		n3dsHWLight_t & light = hwFrameLights[numLights];
 		if ( !N3DS_SetupHWLight( viewDef, vLight, (float)combinerScale, light ) ) {
+			if ( lightLog ) {
+				N3DS_LightLogEntry( vLight, 'X', 0, 0, 0.0f, 0.0f );
+			}
 			continue;
 		}
 		c3dStatLights++;
+		int logMatched = 0, logUnmatched = 0;
 		for ( int list = 0; list < 2; list++ ) {
 			for ( const drawSurf_t * inter = ( list == 0 ) ? vLight->localInteractions : vLight->globalInteractions;
 					inter != NULL; inter = inter->nextOnLight ) {
@@ -1044,8 +1116,10 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 					h = ( h + 1 ) & ( hashSize - 1 );
 				}
 				if ( found < 0 ) {
+					logUnmatched++;
 					continue;
 				}
+				logMatched++;
 				n3dsSurfLights_t & sl = hwSurfLights[found];
 				if ( light.ambient ) {
 					for ( int c = 0; c < 3; c++ ) {
@@ -1079,6 +1153,10 @@ static void N3DS_DrawViewHW( const viewDef_t * viewDef ) {
 					c3dStatHWDropped++;
 				}
 			}
+		}
+		if ( lightLog ) {
+			N3DS_LightLogEntry( vLight, light.ambient ? 'A' : 'L', logMatched, logUnmatched, N3DS_LightStrength( light ),
+				light.invRadius > 0.0f ? 1.0f / light.invRadius : 0.0f );
 		}
 		numLights++;
 	}

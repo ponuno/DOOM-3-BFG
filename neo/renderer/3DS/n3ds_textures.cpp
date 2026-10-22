@@ -138,6 +138,8 @@ static int				boostFrames = 0;		// 3D frames with a raised upload limit after a 
 static int				statUploads = 0;
 static int				statEvictions = 0;
 static int				statDeferred = 0;
+static int				statPrefetched = 0;		// reads asked for ahead of time
+static int				statPrefetchUsed = 0;	// uploads whose data was read ahead
 static int				statFailed = 0;
 static uint64			statUploadUs = 0;
 static int				keptCount = 0;
@@ -436,7 +438,9 @@ void N3DS_TexPrefetch( idImage ** images, int count ) {
 			break;
 		}
 		t->prefetchFrame = texFrame;
-		N3DS_TexRequest( t );
+		if ( N3DS_TexRequest( t ) ) {
+			statPrefetched++;
+		}
 	}
 }
 
@@ -1312,6 +1316,10 @@ void * N3DS_TexForImage( idImage * image ) {
 		if ( !N3DS_TexUpload( t ) ) {
 			return NULL;
 		}
+		if ( t->prefetchFrame != 0 && texFrame - t->prefetchFrame < 600 ) {
+			statPrefetchUsed++;
+			t->prefetchFrame = 0;
+		}
 		if ( t->streamPath >= 0 ) {
 			N3DS_TexRamKeep( t );
 		}
@@ -1339,11 +1347,12 @@ void N3DS_TexStatsLine( idStr & line ) {
 	statReadUs = 0;
 	const int queued = texQueueCount;
 	texLoadLock.Unlock();
-	line.Format( "tex %d resident %d KB (%d KB in linear memory, %d put there), VRAM free %u KB, %d uploads (%d from the pack, %.1f ms each), %d evictions, %d waiting, %d undecodable | kept %d levels %d KB | streamed %d levels %d KB (%d packed), %d reads %d KB (%.1f ms each), %d failed, %d waits, %d queued, RAM cache %d KB",
+	line.Format( "tex %d resident %d KB (%d KB in linear memory, %d put there), VRAM free %u KB, %d uploads (%d from the pack, %.1f ms each), %d evictions, %d waiting, %d undecodable | kept %d levels %d KB | streamed %d levels %d KB (%d packed), %d reads %d KB (%.1f ms each), %d failed, %d waits, %d queued, RAM cache %d KB, %d read ahead, %d uploads from read-ahead data",
 		residentCount, residentBytes / 1024, linearTexBytes / 1024, statLinearUploads, N3DSGPU_VRAMFree() / 1024, statUploads, statPackedUploads,
 		statUploads > 0 ? statUploadUs * 0.001f / statUploads : 0.0f, statEvictions, statDeferred, statFailed,
 		keptCount, keptBytes / 1024, streamedCount, streamedBytes / 1024, packedCount, reads, readBytes / 1024,
-		reads > 0 ? readUs * 0.001f / reads : 0.0f, readFailures, statStreamWaits, queued, ramBytes / 1024 );
+		reads > 0 ? readUs * 0.001f / reads : 0.0f, readFailures, statStreamWaits, queued, ramBytes / 1024, statPrefetched, statPrefetchUsed );
+	statPrefetched = statPrefetchUsed = 0;
 	statUploads = statEvictions = statDeferred = statFailed = statStreamWaits = statLinearUploads = statPackedUploads = 0;
 	statUploadUs = 0;
 }
