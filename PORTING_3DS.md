@@ -454,7 +454,7 @@ turns it off.
 | `n3ds_texGuiMaxSize` | 512 | largest GUI / HUD texture |
 | `n3ds_soundPack` | 1 | play samples from `base/_n3ds_sounds.pak` (DSP-ADPCM, decoded by the DSP) when it is there |
 | `n3ds_c3dKickDraws` | 48 | the frame goes to the GPU in parts of this many draws (`N3DSGPU_Kick`: `C3D_FrameSplit` + the GX queue started at the first part), so the GPU draws while the CPU records the rest; the last part goes before the vblank wait. 0 = only at the frame end |
-| `n3ds_spikeMs` | 36 | a `SPIKE` line for every frame longer than this (at most 6 a second): game / draw thread ticks and times since the last frame, how long the main thread waited for it, the back end's CPU time, its waits for the GPU and vblank, the GPU time, draws, texture uploads / evictions / reads in that frame. At 30 fps a frame over 33.3 ms is shown for 50 ms, so a few ms more while moving drop the rate to ~25. 0 = off |
+| `n3ds_spikeMs` | 36 | a `SPIKE` line for every frame longer than this (at most 6 a second): game / draw thread ticks and times since the last frame, how long the main thread waited for it, the back end's CPU time, its waits for the GPU and vblank, the GPU time, draws, texture uploads / evictions / reads in that frame; a second line splits the main thread's frame into its parts (outside Frame, events, SwapCommandBuffers, waiting for the next tick, session / usercmds, back end, waiting for the game thread, send, sound with its lock waits, rest). At 30 fps a frame over 33.3 ms is shown for 50 ms, so a few ms more while moving drop the rate to ~25. 0 = off |
 | `n3ds_gpuBench` | 0 | GPU test, started by the bottom screen's GPU TEST button: the same view (stand still) drawn 15 + 60 frames in each mode: normal, pixels in a 30x50 box, no light passes, no textures, one triangle per draw (draw count and state changes kept), normal again. `GPU TEST` lines in the log: GPU time, back end CPU time (without waits), frame time per mode, and a summary of what pixel work, light passes and textures cost |
 | `n3ds_gpuFillProbe` | 0 | diagnostics: everything drawn into a 30x50 box. If `GPU span` drops a lot, the GPU is limited by pixel work, otherwise by vertex work |
 | `n3ds_cstickScale` | 1 | C-Stick look speed multiplier on `joy_yawSpeed` / `joy_pitchSpeed` (bottom screen slider, 0.25-3.00, saved) |
@@ -475,6 +475,7 @@ turns it off.
 | `n3ds_texLinearKB` | 3072 | textures that do not fit in VRAM go to linear memory (FCRAM) up to this much; the GPU samples them from there |
 | `n3ds_texLinearReserveKB` | 2048 | linear memory the texture cache always leaves free |
 | `n3ds_texStream` | 1 | texture levels read from SD when first drawn instead of all kept in RAM (applies to images loaded afterwards) |
+| `n3ds_memReserveKB` | 6144 | heap kept free for the game: the texture RAM cache only uses heap above it and gives memory back (least recently used first) when free heap falls below it; checked twice a second |
 | `n3ds_texRAMCacheKB` | 6144 | RAM for already uploaded streamed levels, so VRAM evictions come back without a read |
 | `n3ds_texPrefetch` | 1 | read the textures of the view's area and of every area one portal away (closed doors too) from the pack into the RAM cache while the SD card is idle, so a room entered next uploads from RAM |
 | `n3ds_tourFrames` | 600 | map tour: frames each map runs before the next |

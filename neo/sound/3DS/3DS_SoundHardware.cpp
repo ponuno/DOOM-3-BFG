@@ -23,9 +23,26 @@ idCVar n3ds_soundStats( "n3ds_soundStats", "1", CVAR_SOUND | CVAR_BOOL, "New 3DS
 
 static bool soundLockReady = false;
 
+// diagnostics: time the main thread spends waiting for the sound lock (the feeder thread on
+// the time-sliced system core holds it while it refills a voice)
+static uintptr_t		soundMainThread = 0;
+static uint64			soundMainLockWaitUs = 0;
+
+float N3DS_SoundLockWaitMs() {
+	const float ms = soundMainLockWaitUs * 0.001f;
+	soundMainLockWaitUs = 0;
+	return ms;
+}
+
 void N3DS_SoundLock() {
 	if ( soundLockReady ) {
-		N3DSAudio_Lock();
+		if ( soundMainThread != 0 && Sys_GetCurrentThreadID() == soundMainThread ) {
+			const uint64 start = Sys_Microseconds();
+			N3DSAudio_Lock();
+			soundMainLockWaitUs += Sys_Microseconds() - start;
+		} else {
+			N3DSAudio_Lock();
+		}
 	}
 }
 
@@ -66,6 +83,7 @@ idSoundHardware_3DS::Init
 ========================
 */
 void idSoundHardware_3DS::Init() {
+	soundMainThread = Sys_GetCurrentThreadID();		// Init runs on the main thread
 	// New 3DS: stereo speakers / headphones
 	outputChannels = 2;
 	channelMask = ( 1 << idWaveFile::CHANNEL_INDEX_FRONT_LEFT ) | ( 1 << idWaveFile::CHANNEL_INDEX_FRONT_RIGHT );

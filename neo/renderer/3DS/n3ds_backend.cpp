@@ -1951,6 +1951,8 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	if ( cmds->commandId == RC_NOP && !cmds->next ) {
 		return;
 	}
+	// another thread shows a fatal error on the screens: the GPU is left alone
+	Sys_N3DSFatalCheck();
 	const uint64 start = Sys_Microseconds();
 	const float frameMs = c3dBenchLastStart != 0 ? ( start - c3dBenchLastStart ) * 0.001f : 0.0f;
 	const int benchDraws0 = c3dStatDraws, benchTris0 = c3dStatTris, lightDraws0 = c3dStatLightDraws;

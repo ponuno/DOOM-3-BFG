@@ -339,6 +339,23 @@ Cheap numbers for the map tour (n3ds_mapTour): KB in malloc blocks, KB malloc ha
 taken from the heap (its high-water footprint), the heap size, free linear memory.
 ==============
 */
+/*
+==============
+Sys_N3DSMallocAvailableKB
+
+What malloc can still hand out: free memory inside its arena plus the heap it has not
+taken yet (the heap window and the second region). Fragmentation not counted.
+==============
+*/
+int Sys_N3DSMallocAvailableKB() {
+	struct mallinfo mi = Mem_MallInfo();
+	int h2Size, h2Taken;
+	Mem_HeapRegionStats( h2Size, h2Taken );
+	const int64 total = (int64)__ctru_heap_size + h2Size;
+	const int64 avail = total - (int64)mi.arena + (int64)mi.fordblks;
+	return (int)( Max( avail, (int64)0 ) / 1024 );
+}
+
 void Sys_N3DSMemSample( int & mallocUsedKB, int & mallocArenaKB, int & heapKB, int & linearFreeKB ) {
 	struct mallinfo mi = Mem_MallInfo();
 	int h2Size, h2Taken;
@@ -410,6 +427,52 @@ static void Sys_WaitForStart() {
 }
 
 /*
+================================================================================================
+
+	One fatal error at a time
+
+	The thread that reaches Sys_Error first owns the screens until the user presses START.
+	Out of memory, other threads usually fail right after it; they went through
+	idCommonLocal::FatalError's recursive branch to Sys_Quit, whose gfxExit unmapped GSP's
+	shared memory under the thread showing the error (a data abort at 0x10002280 in
+	gspPresentBuffer instead of the message). Any other thread that gets to Sys_Error or
+	Sys_Quit now, and the main thread before it touches the GPU again
+	(Sys_N3DSFatalCheck), stops where it is.
+
+================================================================================================
+*/
+static volatile u32		fatalThreadId = 0;		// 0: no fatal error is being shown
+
+static u32 Sys_N3DSThreadId() {
+	u32 id = 0;
+	svcGetThreadId( &id, CUR_THREAD_HANDLE );
+	return id;
+}
+
+// another thread shows a fatal error: never come back
+static void Sys_N3DSStopForFatal() {
+	for ( ;; ) {
+		svcSleepThread( 1000LL * 1000 * 1000 );
+	}
+}
+
+// true if this thread is now the one showing the fatal error (or already was)
+static bool Sys_N3DSClaimFatal() {
+	const u32 me = Sys_N3DSThreadId();
+	if ( __sync_bool_compare_and_swap( &fatalThreadId, 0u, me ) ) {
+		return true;
+	}
+	return fatalThreadId == me;
+}
+
+void Sys_N3DSFatalCheck() {
+	const u32 owner = fatalThreadId;
+	if ( owner != 0 && owner != Sys_N3DSThreadId() ) {
+		Sys_N3DSStopForFatal();
+	}
+}
+
+/*
 ==============
 Sys_Error
 
@@ -417,6 +480,9 @@ Show the early console as an error dialog
 ==============
 */
 void Sys_Error( const char *error, ... ) {
+	if ( !Sys_N3DSClaimFatal() ) {
+		Sys_N3DSStopForFatal();
+	}
 	char text[4096];
 	va_list argptr;
 	va_start( argptr, error );
@@ -456,6 +522,8 @@ Sys_Quit
 ==============
 */
 void Sys_Quit() {
+	// a fatal error shown by another thread keeps the screens until START
+	Sys_N3DSFatalCheck();
 	Sys_LogWrite( "Sys_Quit\n" );
 	if ( logFile != NULL ) {
 		fclose( logFile );

@@ -82,6 +82,31 @@ static uint64	n3dsPerfGameUs = 0;
 static uint64	n3dsPerfGameMaxUs = 0;
 static uint64	n3dsPerfDrawUs = 0;
 static uint64	n3dsWaitGameUs = 0;		// main thread waiting for the game / draw thread, this frame
+
+// main thread time per part of idCommonLocal::Frame, this frame (N3DS_MARK adds the time since
+// the previous mark to a part)
+enum {
+	N3DS_MAIN_OUTSIDE,		// between two Frame() calls (the platform's loop)
+	N3DS_MAIN_EVENTS,		// events, input
+	N3DS_MAIN_SWAP,			// SwapCommandBuffers
+	N3DS_MAIN_PACE,			// waiting for the next game tick
+	N3DS_MAIN_SESSION,		// session, GUI events, usercmds, starting the game thread
+	N3DS_MAIN_BACKEND,		// RenderCommandBuffers
+	N3DS_MAIN_WAITGAME,		// waiting for the game / draw thread
+	N3DS_MAIN_SEND,			// usercmds, snapshots
+	N3DS_MAIN_SOUND,		// soundSystem->Render
+	N3DS_MAIN_REST,			// game return, lobby, frame done
+	N3DS_MAIN_PARTS
+};
+static uint64	n3dsMainUs[N3DS_MAIN_PARTS];
+static uint64	n3dsMainMark = 0;
+static void N3DS_MARK( int part ) {
+	const uint64 now = Sys_Microseconds();
+	if ( n3dsMainMark != 0 ) {
+		n3dsMainUs[part] += now - n3dsMainMark;
+	}
+	n3dsMainMark = now;
+}
 idCVar n3ds_spikeMs( "n3ds_spikeMs", "36", CVAR_SYSTEM | CVAR_FLOAT, "New 3DS: log a SPIKE line with the frame's breakdown for every frame longer than this (ms; 0 = off). At 30 fps a frame over 33.3 ms is shown for 50 ms", 0.0f, 1000.0f );
 
 /*
@@ -112,6 +137,8 @@ static void N3DS_SpikeFrame( bool mapSpawned ) {
 	lastGameUs = gameUs;
 	lastDrawUs = drawUs;
 	lastTicks = ticks;
+	extern float N3DS_SoundLockWaitMs();		// main thread, since the last call
+	const float soundLockMs = N3DS_SoundLockWaitMs();
 	const float limit = n3ds_spikeMs.GetFloat();
 	if ( !mapSpawned || limit <= 0.0f || frameMs <= limit ) {
 		return;
@@ -130,6 +157,17 @@ static void N3DS_SpikeFrame( bool mapSpawned ) {
 	common->Printf( "SPIKE %.1f ms: game thread %d ticks %.1f ms + draw %.1f ms, main waited for it %.1f ms | back end %.1f ms (CPU %.1f, waited GPU %.1f, vblank %.1f), GPU %.1f ms, %d draws (%d light) %d tris | tex %d uploads %.1f ms, %d evicted, %d reads, %d waits\n",
 		frameMs, frameTicks, gameMs, drawMs, n3dsWaitGameUs * 0.001f, b.totalMs, backCpu, b.waitGpuMs, b.waitVBlankMs, b.gpuMs,
 		b.draws, b.lightDraws, b.tris, b.texUploads, b.texUploadMs, b.texEvictions, b.texReads, b.texWaits );
+	const float * m = NULL;
+	float mainMs[N3DS_MAIN_PARTS];
+	for ( int i = 0; i < N3DS_MAIN_PARTS; i++ ) {
+		mainMs[i] = n3dsMainUs[i] * 0.001f;
+	}
+	m = mainMs;
+	common->Printf( "SPIKE   main thread: outside Frame %.1f, events %.1f, swap %.1f, waiting for the tick %.1f, session/usercmds %.1f, back end %.1f, waiting for the game thread %.1f, send %.1f, sound %.1f (lock waits %.1f), rest %.1f ms\n",
+		m[N3DS_MAIN_OUTSIDE], m[N3DS_MAIN_EVENTS], m[N3DS_MAIN_SWAP], m[N3DS_MAIN_PACE], m[N3DS_MAIN_SESSION], m[N3DS_MAIN_BACKEND],
+		m[N3DS_MAIN_WAITGAME], m[N3DS_MAIN_SEND], m[N3DS_MAIN_SOUND], soundLockMs, m[N3DS_MAIN_REST] );
+	// the lines just written are not counted in the next frame
+	lastUs = Sys_Microseconds();
 }
 #endif
 
@@ -636,6 +674,9 @@ void idCommonLocal::Frame() {
 		PerformGameSwitch();
 
 		// pump all the events
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_OUTSIDE );
+#endif
 		N3DS_STAGE( N3DS_STAGE_MAIN, "events" );
 		Sys_GenerateEvents();
 
@@ -685,6 +726,9 @@ void idCommonLocal::Frame() {
 		// this should exit right after vsync, with the GPU idle and ready to draw
 		// This may block if the GPU isn't finished renderng the previous frame.
 		frameTiming.startSyncTime = Sys_Microseconds();
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_EVENTS );
+#endif
 		const emptyCommand_t * renderCommands = NULL;
 		N3DS_STAGE( N3DS_STAGE_MAIN, "swap command buffers" );
 		if ( com_smp.GetBool() ) {
@@ -695,6 +739,9 @@ void idCommonLocal::Frame() {
 			renderSystem->SwapCommandBuffers_FinishRendering( &time_frontend, &time_backend, &time_shadows, &time_gpu );
 		}
 		frameTiming.finishSyncTime = Sys_Microseconds();
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_SWAP );
+#endif
 
 		//--------------------------------------------
 		// Determine how many game tics we are going to run,
@@ -802,6 +849,9 @@ void idCommonLocal::Frame() {
 		//--------------------------------------------
 
 		// Update session and syncronize to the new session state after sleeping
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_PACE );
+#endif
 		session->UpdateSignInManager();
 		session->Pump();
 		session->ProcessSnapAckQueue();
@@ -901,8 +951,14 @@ void idCommonLocal::Frame() {
 		// ASAP to minimize the pipeline bubble.
 		//----------------------------------------
 		frameTiming.startRenderTime = Sys_Microseconds();
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_SESSION );
+#endif
 		N3DS_STAGE( N3DS_STAGE_MAIN, "render command buffers" );
 		renderSystem->RenderCommandBuffers( renderCommands );
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_BACKEND );
+#endif
 		N3DS_STAGE( N3DS_STAGE_MAIN, "after render" );
 		if ( com_sleepRender.GetInteger() > 0 ) {
 			// debug tool to test frame adaption
@@ -916,6 +972,7 @@ void idCommonLocal::Frame() {
 		const uint64 n3dsWaitGameStart = Sys_Microseconds();
 		gameThread.WaitForThread();
 		n3dsWaitGameUs = Sys_Microseconds() - n3dsWaitGameStart;
+		N3DS_MARK( N3DS_MAIN_WAITGAME );
 #else
 		gameThread.WaitForThread();
 #endif
@@ -936,7 +993,13 @@ void idCommonLocal::Frame() {
 			soundWorld->UnPause();
 			soundSystem->SetPlayingSoundWorld( soundWorld );
 		}
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_SEND );
+#endif
 		soundSystem->Render();
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_SOUND );
+#endif
 
 		// process the game return for map changes, etc
 		ProcessGameReturn( ret );
@@ -957,7 +1020,10 @@ void idCommonLocal::Frame() {
 			Sys_N3DSFrameDone();
 		}
 		N3DS_TourFrame( mapSpawned );
+		N3DS_MARK( N3DS_MAIN_REST );
 		N3DS_SpikeFrame( mapSpawned );
+		memset( n3dsMainUs, 0, sizeof( n3dsMainUs ) );
+		n3dsMainMark = Sys_Microseconds();		// SPIKE lines written are not counted
 		// New 3DS: one line every 2 seconds once a map is running
 		{
 			static int perfStart = 0;

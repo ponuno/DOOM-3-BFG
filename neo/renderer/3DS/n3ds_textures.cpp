@@ -63,6 +63,7 @@ idCVar n3ds_texUploadsAfterLoad( "n3ds_texUploadsAfterLoad", "256", CVAR_RENDERE
 idCVar n3ds_texFlip( "n3ds_texFlip", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: store texture rows bottom-up (the PICA samples t = 0 at the last row); toggle if textures are upside down" );
 idCVar n3ds_texStream( "n3ds_texStream", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: read texture levels from disk when first drawn instead of keeping them all in RAM (set at startup; applies to images loaded afterwards)" );
 idCVar n3ds_texPrefetch( "n3ds_texPrefetch", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: read the textures of the view's area and the areas next to it (through any portal, open or not) from the pack before they come into view" );
+idCVar n3ds_memReserveKB( "n3ds_memReserveKB", "6144", CVAR_RENDERER | CVAR_INTEGER, "citro3d: heap kept free for the game: the texture RAM cache only uses memory above this and gives memory back when the free heap falls below it (checked twice a second)" );
 idCVar n3ds_texRAMCacheKB( "n3ds_texRAMCacheKB", "6144", CVAR_RENDERER | CVAR_INTEGER, "citro3d: RAM kept for streamed texture levels already uploaded, so that textures evicted from VRAM come back without a read" );
 idCVar n3ds_texLinearKB( "n3ds_texLinearKB", "3072", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory (FCRAM) for textures that do not fit in VRAM; the GPU samples them from there" );
 idCVar n3ds_texLinearReserveKB( "n3ds_texLinearReserveKB", "2048", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory the texture cache always leaves free (citro3d, staging copies)" );
@@ -215,6 +216,8 @@ static int					statStreamWaits = 0;	// main thread
 static n3dsTexture_t *		ramHead = NULL;			// RAM cache, most recently uploaded first
 static n3dsTexture_t *		ramTail = NULL;
 static int					ramBytes = 0;
+static int					ramBudget = 0;			// n3ds_texRAMCacheKB, cut down to the heap above n3ds_memReserveKB
+static int					ramShrinkLogs = 0;
 
 // called with texLoadLock held
 static void N3DS_TexDelete( n3dsTexture_t * t ) {
@@ -368,7 +371,7 @@ static void RAM_Unlink( n3dsTexture_t * t ) {
 // a streamed level was just uploaded: keep its data while the RAM cache has room
 static void N3DS_TexRamKeep( n3dsTexture_t * t ) {
 	RAM_Unlink( t );
-	const int budget = Max( 0, n3ds_texRAMCacheKB.GetInteger() ) * 1024;
+	const int budget = ramBudget;
 	while ( ramTail != NULL && ramBytes + t->dataSize > budget ) {
 		n3dsTexture_t * old = ramTail;
 		RAM_Unlink( old );
@@ -408,7 +411,7 @@ void N3DS_TexPrefetch( idImage ** images, int count ) {
 	if ( images == NULL || count <= 0 || !n3ds_texPrefetch.GetBool() || !n3ds_textures.GetBool() ) {
 		return;
 	}
-	const int budget = Max( 0, n3ds_texRAMCacheKB.GetInteger() ) * 1024;
+	const int budget = ramBudget;
 	for ( int i = 0; i < count; i++ ) {
 		n3dsTexture_t * t = ( images[i] != NULL ) ? (n3dsTexture_t *)images[i]->n3dsTex : NULL;
 		if ( t == NULL || t->unsupported || t->streamPath < 0 || t->gpu != NULL ) {
@@ -930,8 +933,48 @@ static void N3DS_VerifySome( int count ) {
 	}
 }
 
+/*
+========================
+N3DS_TexRamBudget
+
+The RAM cache only uses heap above n3ds_memReserveKB. phobos3 had 8 MB free after loading
+and the game grew by ~6 MB besides the cache; with the cache filling its 6 MB the heap ran
+out (and fragmented: 4.6 MB free, no 259 KB block). Twice a second: below the reserve the
+least recently used levels are freed until the shortfall is covered or the cache is empty,
+and the cache does not grow; above it the budget is what is left over the reserve, at most
+n3ds_texRAMCacheKB.
+========================
+*/
+static void N3DS_TexRamBudget() {
+	if ( ( texFrame % 15 ) != 1 ) {
+		return;
+	}
+	const int cap = Max( 0, n3ds_texRAMCacheKB.GetInteger() ) * 1024;
+	const int reserve = Max( 0, n3ds_memReserveKB.GetInteger() ) * 1024;
+	const int avail = Sys_N3DSMallocAvailableKB() * 1024;
+	if ( avail >= reserve ) {
+		ramBudget = Min( cap, ramBytes + ( avail - reserve ) );
+		return;
+	}
+	const int target = Max( 0, ramBytes - ( reserve - avail ) );
+	const int before = ramBytes;
+	while ( ramTail != NULL && ramBytes > target ) {
+		n3dsTexture_t * old = ramTail;
+		RAM_Unlink( old );
+		Mem_Free( old->data );
+		old->data = NULL;
+	}
+	ramBudget = ramBytes;
+	if ( before != ramBytes && ramShrinkLogs < 20 ) {
+		ramShrinkLogs++;
+		common->Printf( "citro3d: heap %d KB free, under the %d KB reserve: texture RAM cache %d -> %d KB (#%d)\n",
+			avail / 1024, reserve / 1024, before / 1024, ramBytes / 1024, ramShrinkLogs );
+	}
+}
+
 void N3DS_TexBeginFrame( bool has3D ) {
 	texFrame++;
+	N3DS_TexRamBudget();
 	N3DS_VerifySome( 6 );
 	uploadsThisFrame = 0;
 	uploadLimit = n3ds_texUploadsPerFrame.GetInteger();
@@ -1361,11 +1404,11 @@ void N3DS_TexStatsLine( idStr & line ) {
 	statReadUs = 0;
 	const int queued = texQueueCount;
 	texLoadLock.Unlock();
-	line.Format( "tex %d resident %d KB (%d KB in linear memory, %d put there), VRAM free %u KB, %d uploads (%d from the pack, %.1f ms each), %d evictions, %d waiting, %d undecodable | kept %d levels %d KB | streamed %d levels %d KB (%d packed), %d reads %d KB (%.1f ms each), %d failed, %d waits, %d queued, RAM cache %d KB, %d read ahead, %d uploads from read-ahead data",
+	line.Format( "tex %d resident %d KB (%d KB in linear memory, %d put there), VRAM free %u KB, %d uploads (%d from the pack, %.1f ms each), %d evictions, %d waiting, %d undecodable | kept %d levels %d KB | streamed %d levels %d KB (%d packed), %d reads %d KB (%.1f ms each), %d failed, %d waits, %d queued, RAM cache %d / %d KB, %d read ahead, %d uploads from read-ahead data",
 		residentCount, residentBytes / 1024, linearTexBytes / 1024, statLinearUploads, N3DSGPU_VRAMFree() / 1024, statUploads, statPackedUploads,
 		statUploads > 0 ? statUploadUs * 0.001f / statUploads : 0.0f, statEvictions, statDeferred, statFailed,
 		keptCount, keptBytes / 1024, streamedCount, streamedBytes / 1024, packedCount, reads, readBytes / 1024,
-		reads > 0 ? readUs * 0.001f / reads : 0.0f, readFailures, statStreamWaits, queued, ramBytes / 1024, statPrefetched, statPrefetchUsed );
+		reads > 0 ? readUs * 0.001f / reads : 0.0f, readFailures, statStreamWaits, queued, ramBytes / 1024, ramBudget / 1024, statPrefetched, statPrefetchUsed );
 	statPrefetched = statPrefetchUsed = 0;
 	statUploads = statEvictions = statDeferred = statFailed = statStreamWaits = statLinearUploads = statPackedUploads = 0;
 	statUploadUs = 0;
