@@ -240,7 +240,12 @@ Sys_Yield
 ========================
 */
 void Sys_Yield() {
-	svcSleepThread( 0 );
+	// A timed sleep, not svcSleepThread( 0 ): that only yields to threads of the same or a
+	// higher priority. libctru's APT event thread runs on core 0 at 0x31, below the main and
+	// job threads (0x30): a job thread spinning here while the main thread waited in
+	// aptMainLoop for the end of sleep mode kept it from ever delivering the wake-up (the
+	// game hung after the console woke up). 1 us lets every thread on the core run.
+	svcSleepThread( 1000 );
 }
 
 /*

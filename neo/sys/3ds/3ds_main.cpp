@@ -637,7 +637,8 @@ Sys_Sleep
 ==============
 */
 void Sys_Sleep( int msec ) {
-	svcSleepThread( (s64)msec * 1000000LL );
+	// 0 (the main loop waiting for the next game tick): a timed sleep, see Sys_Yield
+	svcSleepThread( msec > 0 ? (s64)msec * 1000000LL : 1000LL );
 }
 
 /*
@@ -1059,6 +1060,14 @@ static void Sys_BuildCommandLine() {
 	idStr::Copynz( sys_cmdline, cmd.c_str(), sizeof( sys_cmdline ) );
 }
 
+// sleep / HOME menu transitions in the log (these hooks run on the main thread)
+static aptHookCookie n3dsAptCookie;
+static void N3DS_AptLogHook( APT_HookType hook, void * ) {
+	static const char * names[] = { "suspend (HOME menu)", "restore", "sleep", "wake-up", "exit" };
+	const int i = (int)hook;
+	Sys_Printf( "APT: %s\n", ( i >= 0 && i < 5 ) ? names[i] : "?" );
+}
+
 /*
 ==================
 N3DS_Main
@@ -1108,7 +1117,14 @@ int N3DS_Main( int argc, char ** argv ) {
 	Sys_N3DSInitSecondHeap();
 	Sys_LogMemory( "common->Init done" );
 
-	while ( aptMainLoop() && !n3ds.quitRequested ) {
+	// sleep mode and the HOME menu are handled inside aptMainLoop (it waits there); the
+	// stage tells the watchdog so
+	aptHook( &n3dsAptCookie, N3DS_AptLogHook, NULL );
+	for ( ;; ) {
+		N3DS_STAGE( N3DS_STAGE_MAIN, "aptMainLoop (sleep / HOME menu)" );
+		if ( !aptMainLoop() || n3ds.quitRequested ) {
+			break;
+		}
 		common->Frame();
 	}
 
