@@ -30,6 +30,7 @@ the Free Software Foundation, either version 3 of the License, or
 #include "../../idlib/precompiled.h"
 #include "../sys_local.h"
 #include "3ds_local.h"
+#include "../../sound/3DS/n3ds_audio.h"
 
 #include <dirent.h>
 #include <sys/stat.h>
@@ -209,7 +210,13 @@ static char			sys_exePath[MAX_OSPATH] = "sdmc:/3ds/doom3ds.3dsx";
 Sys_LogWrite
 ==============
 */
-static bool screenLog = false;	// true once a fatal error is being shown
+static bool screenLog = false;
+static volatile u64 logWriteSince = 0;
+static volatile bool n3dsLoadingMap = false;
+
+void Sys_N3DSSetLoading( bool loading ) {
+	n3dsLoadingMap = loading;
+}	// a log line is being written since (0: none)	// true once a fatal error is being shown
 
 static void Sys_LogWrite( const char * text ) {
 	if ( logLockInit ) {
@@ -227,6 +234,7 @@ static void Sys_LogWrite( const char * text ) {
 		clean[j++] = text[i];
 	}
 	clean[j] = '\0';
+	logWriteSince = svcGetSystemTick();		// the watchdog sees a write that does not end
 	// the bottom screen shows the log only for a fatal error (the full log is in the file)
 	if ( screenLog ) {
 		fputs( clean, stdout );
@@ -239,6 +247,7 @@ static void Sys_LogWrite( const char * text ) {
 		}
 	}
 
+	logWriteSince = 0;
 	if ( logLockInit ) {
 		LightLock_Unlock( &logLock );
 	}
@@ -972,6 +981,34 @@ idN3DSSlowScope::~idN3DSSlowScope() {
 	}
 }
 
+/*
+==============
+N3DS_WatchdogScreen
+
+A frozen game may have frozen the log too (a thread stuck holding its lock, or the SD card
+not answering): the state also goes to the bottom screen, written without the log lock
+and without touching the SD card. Every 2 s while no frame is drawn.
+==============
+*/
+static void N3DS_WatchdogScreen( int stalledMs, uint32 frames ) {
+	unsigned int feeds = 0, dspFrames = 0;
+	N3DSAudio_Heartbeat( &feeds, &dspFrames );
+	const u64 since = logWriteSince;
+	const float logMs = since != 0 ? (float)( (double)( svcGetSystemTick() - since ) * 1000.0 / SYSCLOCK_ARM11 ) : 0.0f;
+	char text[512];
+	idStr::snPrintf( text, sizeof( text ),
+		"\x1b[37;41m NO FRAME FOR %4d s (frame %u)             \x1b[0m\n"
+		" main:   %.30s\n"
+		" game:   %.30s\n"
+		" render: %.30s\n"
+		" log write busy: %s%.1f s\n"
+		" sound feeder runs %u, DSP frames %u\n"
+		" Take a photo of this screen.\n",
+		stalledMs / 1000, frames, n3dsStages[N3DS_STAGE_MAIN], n3dsStages[N3DS_STAGE_GAME], n3dsStages[N3DS_STAGE_RENDER],
+		since != 0 ? "YES " : "no ", logMs / 1000.0f, feeds, dspFrames );
+	N3DS_BottomWatchdog( text );
+}
+
 static void N3DS_WatchdogMain( void * ) {
 	uint32 lastFrames = n3dsFramesDone;
 	int stalledMs = 0;
@@ -998,15 +1035,15 @@ static void N3DS_WatchdogMain( void * ) {
 			Sys_Printf( "WATCHDOG: still stuck %.0f s: main '%s', game thread '%s', render '%s'\n",
 				stalledMs * 0.001f, n3dsStages[N3DS_STAGE_MAIN], n3dsStages[N3DS_STAGE_GAME], n3dsStages[N3DS_STAGE_RENDER] );
 		}
+		if ( frames > 0 && stalledMs >= 5000 && ( stalledMs % 2000 ) == 0 && !n3dsLoadingMap ) {
+			N3DS_WatchdogScreen( stalledMs, frames );
+		}
 	}
 }
 
 void Sys_Init() {
 	Sys_Printf( "%s\n", Sys_GetProcessorString() );
 
-	// higher priority than the engine threads so it runs even if one of them spins
-	// 64 KB stack: Sys_Printf alone puts a MAX_PRINT_MSG (16 KB) buffer on it
-	n3dsWatchdogThread = threadCreate( N3DS_WatchdogMain, NULL, 64 * 1024, 0x19, -2, true );
 
 	// let threads placed on core 1 actually run (0 = none of its time is ours)
 	const int core1 = idMath::ClampInt( 0, 80, n3ds_core1Percent.GetInteger() );
@@ -1014,6 +1051,19 @@ void Sys_Init() {
 		Result rc = APT_SetAppCpuTimeLimit( core1 );
 		Sys_Printf( "core 1 time limit %d%%: %s\n", core1, R_SUCCEEDED( rc ) ? "ok" : "failed" );
 	}
+
+	// after the core 1 time limit: threads can only be created there once it is set
+	// higher priority than the engine threads so it runs even if one of them spins
+	// 64 KB stack: Sys_Printf alone puts a MAX_PRINT_MSG (16 KB) buffer on it.
+	// On the system core (core 1, the app's time share): a freeze that holds core 0 (main
+	// thread, loaders) or core 2 (game thread, sound feeder) cannot stop it; core 0 if
+	// core 1 is not available.
+	n3dsWatchdogThread = threadCreate( N3DS_WatchdogMain, NULL, 64 * 1024, 0x18, 1, true );
+	const bool n3dsWatchdogOnCore1 = n3dsWatchdogThread != NULL;
+	if ( n3dsWatchdogThread == NULL ) {
+		n3dsWatchdogThread = threadCreate( N3DS_WatchdogMain, NULL, 64 * 1024, 0x19, -2, true );
+	}
+	Sys_Printf( "watchdog: %s\n", n3dsWatchdogOnCore1 ? "core 1" : "core 0" );
 	Sys_Printf( "switches: animQuant %d noShadows %d mapEntitiesOnly %d lazySaveBuffer %d skipImageData %d lazyInteractions %d discardStaticGeo %d\n",
 		n3ds_animQuant.GetBool(), n3ds_noShadows.GetBool(), n3ds_mapEntitiesOnly.GetBool(), n3ds_lazySaveBuffer.GetBool(), n3ds_skipImageData.GetBool(), n3ds_lazyInteractions.GetBool(), n3ds_discardStaticGeo.GetBool() );
 	Sys_LogMemory( "Sys_Init" );

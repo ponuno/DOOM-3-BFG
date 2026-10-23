@@ -137,6 +137,19 @@ void N3DS_BottomShowLog() {
 	consoleClear();
 }
 
+// watchdog thread, the game frozen: its state over the log area, without the log lock (the
+// frozen thread may hold it); the screen is lit so it can be read
+void N3DS_BottomWatchdog( const char * text ) {
+	if ( !bottomReady ) {
+		return;
+	}
+	N3DS_SetHidden( false );
+	consoleSelect( &logConsole );
+	consoleClear();
+	fputs( text, stdout );
+	fflush( stdout );
+}
+
 // exit: leave the backlight on
 void N3DS_BottomShutdown() {
 	if ( !bottomReady ) {

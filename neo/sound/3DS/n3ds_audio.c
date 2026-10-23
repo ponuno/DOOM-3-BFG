@@ -19,6 +19,7 @@ static LightEvent			frameEvent;
 static n3dsFeedCallback_t	feedCallback = NULL;
 static void *				feedUser = NULL;
 static volatile u64			feedTicks = 0;
+static volatile u32			feedCalls = 0;		// feeder runs (watchdog: is the feeder alive)
 static u64					feedTicksReported = 0;
 static u64					reportStart = 0;
 
@@ -42,6 +43,11 @@ void N3DSAudio_Unlock( void ) {
 	if ( initialized ) {
 		LightLock_Unlock( &mixLock );
 	}
+}
+
+void N3DSAudio_Heartbeat( unsigned int * feeds, unsigned int * dspFrames ) {
+	*feeds = feedCalls;
+	*dspFrames = initialized ? ndspGetFrameCount() : 0;
 }
 
 float N3DSAudio_FeedMsPerSecond( void ) {
@@ -174,6 +180,7 @@ static void N3DS_FeedThread( void * arg ) {
 		const u64 start = svcGetSystemTick();
 		feedCallback( feedUser );
 		feedTicks += svcGetSystemTick() - start;
+		feedCalls++;
 		LightEvent_Wait( &frameEvent );
 	}
 }

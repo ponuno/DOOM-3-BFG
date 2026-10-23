@@ -84,7 +84,7 @@ extern idCVar g_demoMode;
 // New 3DS: game logic at 30 Hz, like the console versions of the time. A frame is only
 // drawn after a game tick, so this also caps the frame rate at 30; at 60 Hz the CPU ran
 // two or three 4-6 ms ticks per drawn frame.
-idCVar com_engineHz( "com_engineHz", "30", CVAR_FLOAT | CVAR_ARCHIVE, "Frames per second the engine runs at", 10.0f, 1024.0f );
+idCVar com_engineHz( "com_engineHz", "30", CVAR_FLOAT | CVAR_ARCHIVE, "Frames per second the engine runs at (New 3DS: at most 60)", 10.0f, 60.0f );
 float com_engineHz_latched = 30.0f; // Latched version of cvar, updated between map loads
 int64 com_engineHz_numerator = 100LL * 1000LL;
 int64 com_engineHz_denominator = 100LL * 30LL;
@@ -1073,6 +1073,14 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 			Printf( "config: version %d -> 1: com_engineHz %s -> 30\n", n3ds_configVersion.GetInteger(), com_engineHz.GetString() );
 			com_engineHz.SetInteger( 30 );
 			n3ds_configVersion.SetInteger( 1 );
+		}
+		// Version 2: com_engineHz 30 again. The system options menu offered only 60 and 120,
+		// and 120 (le_hell: ~105 game ticks a second, 6 per drawn frame) ran the logic four
+		// times as often; the menu now offers 30 / 60 and the cvar stops at 60.
+		if ( n3ds_configVersion.GetInteger() < 2 ) {
+			Printf( "config: version %d -> 2: com_engineHz %s -> 30\n", n3ds_configVersion.GetInteger(), com_engineHz.GetString() );
+			com_engineHz.SetInteger( 30 );
+			n3ds_configVersion.SetInteger( 2 );
 		}
 #endif
 

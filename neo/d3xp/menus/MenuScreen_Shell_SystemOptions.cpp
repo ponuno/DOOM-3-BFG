@@ -421,7 +421,12 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 	switch ( fieldIndex ) {
 		case SYSTEM_FIELD_FRAMERATE: {
 			static const int numValues = 2;
+#if defined( ID_3DS )
+			// New 3DS: 30 Hz is the default; 120 ran the game logic four times as often
+			static const int values[numValues] = { 30, 60 };
+#else
 			static const int values[numValues] = { 60, 120 };
+#endif
 			com_engineHz.SetInteger( AdjustOption( com_engineHz.GetInteger(), values, numValues, adjustAmount ) );
 			break;
 		}

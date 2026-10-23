@@ -63,7 +63,9 @@ void			N3DSAudio_BufQueueAdpcm( int ch, int buf, const void * frames, int bytes,
 int				N3DSAudio_ChnBusy( int ch );								// something queued or playing
 
 // diagnostics
-float			N3DSAudio_FeedMsPerSecond( void );		// feeder time per second of wall time, since the last call
+float			N3DSAudio_FeedMsPerSecond( void );
+// watchdog: how often the feeder ran and how many DSP frames went by (both keep growing while sound works)
+void			N3DSAudio_Heartbeat( unsigned int * feeds, unsigned int * dspFrames );		// feeder time per second of wall time, since the last call
 
 #ifdef __cplusplus
 }

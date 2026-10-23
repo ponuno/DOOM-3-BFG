@@ -54,6 +54,7 @@ void	Sys_LogMemory( const char * when );	// prints heap / linear heap usage to t
 // 3ds_bottom.cpp: bottom screen = touch panel (gyro aim button) above the log
 void	N3DS_BottomInit();
 void	N3DS_BottomShowLog();
+void	N3DS_BottomWatchdog( const char * text );	// the game froze: its state on the bottom screen
 void	N3DS_BottomShutdown();			// at exit: backlight back on			// before a fatal error is printed
 void	N3DS_BottomFrame();				// main thread, once per frame after hidScanInput
 

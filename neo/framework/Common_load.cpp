@@ -424,6 +424,13 @@ Exits with mapSpawned = true
 ===============
 */
 void idCommonLocal::ExecuteMapChange() {
+#if defined( ID_3DS )
+	// the watchdog's on-screen report is for a frozen game, not for a long level load
+	struct n3dsLoadingScope_t {
+		n3dsLoadingScope_t() { Sys_N3DSSetLoading( true ); }
+		~n3dsLoadingScope_t() { Sys_N3DSSetLoading( false ); }
+	} n3dsLoadingScope;
+#endif
 	if ( session->GetState() != idSession::LOADING ) {
 		idLib::Warning( "Session state is not LOADING in ExecuteMapChange" );
 		return;
