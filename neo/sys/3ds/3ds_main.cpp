@@ -1035,6 +1035,7 @@ static void N3DS_WatchdogLog( const char * fmt, ... ) {
 }
 
 void Sys_N3DSYieldReport( char * out, int size );
+static volatile bool n3dsSuspended;	// in the HOME menu / asleep (N3DS_AptLogHook)
 
 static void N3DS_WatchdogMain( void * ) {
 	static char yieldText[512];
@@ -1057,7 +1058,7 @@ static void N3DS_WatchdogMain( void * ) {
 		stalledMs += 500;
 		// who spins on Sys_Yield while no frame comes (in the HOME menu a spinning thread
 		// starves the system)
-		if ( frames > 0 && ( stalledMs % 2000 ) == 0 && !n3dsLoadingMap ) {
+		if ( ( frames > 0 || n3dsSuspended ) && ( stalledMs % 2000 ) == 0 && !n3dsLoadingMap ) {
 			Sys_N3DSYieldReport( yieldText, sizeof( yieldText ) );
 			N3DS_WatchdogLog( "WATCHDOG %.0f s, main '%s': Sys_Yield calls in 2 s: %s\n", stalledMs * 0.001f,
 				n3dsStages[N3DS_STAGE_MAIN], yieldText );
@@ -1154,6 +1155,7 @@ static void N3DS_AptLogHook( APT_HookType hook, void * ) {
 	static const char * names[] = { "suspend (HOME menu)", "restore", "sleep", "wake-up", "exit" };
 	const int i = (int)hook;
 	Sys_Printf( "APT: %s\n", ( i >= 0 && i < 5 ) ? names[i] : "?" );
+	n3dsSuspended = ( hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP );
 	if ( hook == APTHOOK_ONSUSPEND ) {
 		N3DS_STAGE( N3DS_STAGE_MAIN, "HOME: citro3d waits for GPU" );
 	} else if ( hook == APTHOOK_ONSLEEP ) {
