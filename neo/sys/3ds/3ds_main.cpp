@@ -1149,8 +1149,7 @@ static void N3DS_AptLogHook( APT_HookType hook, void * ) {
 		N3DSAudio_SetBackground( lower );
 		lowered = lower;
 		if ( Sys_N3DSDebug() ) {
-			Sys_Printf( "APT: engine threads %s
-", lower ? "lowered to priority 0x3F" : "back to their priorities" );
+			Sys_Printf( "APT: engine threads %s\n", lower ? "lowered to priority 0x3F" : "back to their priorities" );
 		}
 	}
 	if ( hook == APTHOOK_ONSUSPEND ) {
