@@ -645,9 +645,13 @@ double Sys_ClockTicksPerSecond() {
 Sys_Sleep
 ==============
 */
+idCVar n3ds_yieldNs( "n3ds_yieldNs", "0", CVAR_SYSTEM | CVAR_INTEGER, "New 3DS: nanoseconds Sys_Yield sleeps (job threads waiting); 0 = yield to equal priorities only (0139), 1000 = 0140", 0, 1000000 );
+idCVar n3ds_idleNs( "n3ds_idleNs", "0", CVAR_SYSTEM | CVAR_INTEGER, "New 3DS: nanoseconds Sys_Sleep( 0 ) sleeps (the main loop waiting for the next game tick); 0 = yield to equal priorities only (0139), 1000 = 0140", 0, 1000000 );
+extern int n3dsYieldNs;
+
 void Sys_Sleep( int msec ) {
-	// 0 (the main loop waiting for the next game tick): a timed sleep, see Sys_Yield
-	svcSleepThread( msec > 0 ? (s64)msec * 1000000LL : 1000LL );
+	// 0: the main loop waiting for the next game tick (n3ds_idleNs, see Sys_Yield)
+	svcSleepThread( msec > 0 ? (s64)msec * 1000000LL : (s64)n3ds_idleNs.GetInteger() );
 }
 
 /*
@@ -1192,6 +1196,7 @@ int N3DS_Main( int argc, char ** argv ) {
 	// stage tells the watchdog so
 	aptHook( &n3dsAptCookie, N3DS_AptLogHook, NULL );
 	for ( ;; ) {
+		n3dsYieldNs = n3ds_yieldNs.GetInteger();
 		N3DS_STAGE( N3DS_STAGE_MAIN, "aptMainLoop (sleep / HOME menu)" );
 		if ( !aptMainLoop() || n3ds.quitRequested ) {
 			break;

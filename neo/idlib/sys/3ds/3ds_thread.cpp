@@ -239,13 +239,15 @@ void Sys_SetCurrentThreadName( const char * name ) {
 Sys_Yield
 ========================
 */
+// nanoseconds Sys_Yield sleeps (n3ds_yieldNs, set by the main loop). 0: svcSleepThread( 0 ),
+// which only yields to threads of the same or a higher priority. 0140 made it 1 us so that
+// libctru's APT event thread (core 0, 0x31, below the main and job threads) is never kept
+// from running - the game hung after sleep mode - but from 0140 on le_hell froze the whole
+// console on a shot; which of the two 0140 changes does which is being tested.
+int n3dsYieldNs = 0;
+
 void Sys_Yield() {
-	// A timed sleep, not svcSleepThread( 0 ): that only yields to threads of the same or a
-	// higher priority. libctru's APT event thread runs on core 0 at 0x31, below the main and
-	// job threads (0x30): a job thread spinning here while the main thread waited in
-	// aptMainLoop for the end of sleep mode kept it from ever delivering the wake-up (the
-	// game hung after the console woke up). 1 us lets every thread on the core run.
-	svcSleepThread( 1000 );
+	svcSleepThread( n3dsYieldNs );
 }
 
 /*
