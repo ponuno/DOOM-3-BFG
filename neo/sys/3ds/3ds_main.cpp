@@ -437,6 +437,7 @@ void Sys_Error( const char *error, ... ) {
 	}
 
 	Sys_WaitForStart();
+	N3DS_BottomShutdown();
 	gfxExit();
 	exit( 1 );
 }
@@ -460,6 +461,7 @@ void Sys_Quit() {
 		fclose( logFile );
 		logFile = NULL;
 	}
+	N3DS_BottomShutdown();
 	gfxExit();
 	exit( 0 );
 }

@@ -38,6 +38,13 @@ idCVar joy_gammaLook( "joy_gammaLook", "1", CVAR_INTEGER | CVAR_ARCHIVE, "use a 
 idCVar joy_powerScale( "joy_powerScale", "2", CVAR_FLOAT | CVAR_ARCHIVE, "Raise joystick values to this power" );
 idCVar joy_pitchSpeed( "joy_pitchSpeed", "100",	CVAR_ARCHIVE | CVAR_FLOAT, "pitch speed when pressing up or down on the joystick", 60, 600 );
 idCVar joy_yawSpeed( "joy_yawSpeed", "240",	CVAR_ARCHIVE | CVAR_FLOAT, "pitch speed when pressing left or right on the joystick", 60, 600 );
+#if defined( ID_3DS )
+// the bottom screen's C-STICK SENSITIVITY slider: scales both look speeds, keeping their ratio
+idCVar n3ds_cstickScale( "n3ds_cstickScale", "1", CVAR_ARCHIVE | CVAR_FLOAT, "New 3DS: C-Stick look speed multiplier (joy_yawSpeed and joy_pitchSpeed), set with the bottom screen slider", 0.25f, 3.0f );
+static float N3DS_LookScale() { return n3ds_cstickScale.GetFloat(); }
+#else
+static float N3DS_LookScale() { return 1.0f; }
+#endif
 
 // these were a bad idea!
 idCVar joy_dampenLook( "joy_dampenLook", "1", CVAR_BOOL | CVAR_ARCHIVE, "Do not allow full acceleration on look" );
@@ -615,7 +622,7 @@ void idUsercmdGenLocal::HandleJoystickAxis( int keyNum, float unclampedValue, fl
 			}
 
 			float invertPitch = in_invertLook.GetBool() ? -1.0f : 1.0f;
-			viewangles[PITCH] -= MS2SEC( pollTime - lastPollTime ) * lookValue * joy_pitchSpeed.GetFloat() * invertPitch;
+			viewangles[PITCH] -= MS2SEC( pollTime - lastPollTime ) * lookValue * joy_pitchSpeed.GetFloat() * N3DS_LookScale() * invertPitch;
 			break;
 		}
 		case UB_LOOKDOWN: {
@@ -625,7 +632,7 @@ void idUsercmdGenLocal::HandleJoystickAxis( int keyNum, float unclampedValue, fl
 			}
 
 			float invertPitch = in_invertLook.GetBool() ? -1.0f : 1.0f;
-			viewangles[PITCH] += MS2SEC( pollTime - lastPollTime ) * lookValue * joy_pitchSpeed.GetFloat() * invertPitch;
+			viewangles[PITCH] += MS2SEC( pollTime - lastPollTime ) * lookValue * joy_pitchSpeed.GetFloat() * N3DS_LookScale() * invertPitch;
 			break;
 		}
 		case UB_LOOKLEFT: {
@@ -633,7 +640,7 @@ void idUsercmdGenLocal::HandleJoystickAxis( int keyNum, float unclampedValue, fl
 				lookValue = Min( lookValue, ( pollTime - lastPollTime ) * joy_deltaPerMSLook.GetFloat() + lastLookValueYaw );
 				lastLookValueYaw = lookValue;
 			}
-			viewangles[YAW] += MS2SEC( pollTime - lastPollTime ) * lookValue * joy_yawSpeed.GetFloat();
+			viewangles[YAW] += MS2SEC( pollTime - lastPollTime ) * lookValue * joy_yawSpeed.GetFloat() * N3DS_LookScale();
 			break;
 		}
 		case UB_LOOKRIGHT: {
@@ -641,7 +648,7 @@ void idUsercmdGenLocal::HandleJoystickAxis( int keyNum, float unclampedValue, fl
 				lookValue = Min( lookValue, ( pollTime - lastPollTime ) * joy_deltaPerMSLook.GetFloat() + lastLookValueYaw );
 				lastLookValueYaw = lookValue;
 			}
-			viewangles[YAW] -= MS2SEC( pollTime - lastPollTime ) * lookValue * joy_yawSpeed.GetFloat();
+			viewangles[YAW] -= MS2SEC( pollTime - lastPollTime ) * lookValue * joy_yawSpeed.GetFloat() * N3DS_LookScale();
 			break;
 		}
 	}
@@ -900,8 +907,8 @@ void idUsercmdGenLocal::JoystickMove2() {
 	const float range =				joy_range.GetFloat();
 	const transferFunction_t shape =(transferFunction_t)joy_gammaLook.GetInteger();
 	const bool mergedThreshold =	joy_mergedThreshold.GetBool();
-	const float pitchSpeed =		joy_pitchSpeed.GetFloat();
-	const float yawSpeed =			joy_yawSpeed.GetFloat();
+	const float pitchSpeed =		joy_pitchSpeed.GetFloat() * N3DS_LookScale();
+	const float yawSpeed =			joy_yawSpeed.GetFloat() * N3DS_LookScale();
 
 	idGame * game = common->Game();
 	const float aimAssist = game != NULL ? game->GetAimAssistSensitivity() : 1.0f;
