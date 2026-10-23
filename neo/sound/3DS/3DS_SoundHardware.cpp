@@ -19,6 +19,7 @@ the Free Software Foundation, either version 3 of the License, or
 #include "n3ds_audio.h"
 
 idCVar n3ds_soundVolume( "n3ds_soundVolume", "1", CVAR_SOUND | CVAR_FLOAT, "New 3DS: master volume of the DSP mix" );
+idCVar n3ds_soundFeederCore( "n3ds_soundFeederCore", "2", CVAR_SOUND | CVAR_INTEGER | CVAR_INIT, "New 3DS: core of the DSP feeder thread: 2 (the extra core, since 0137) or 1 (the time-shared system core, before)", 1, 2 );
 idCVar n3ds_soundStats( "n3ds_soundStats", "1", CVAR_SOUND | CVAR_BOOL, "New 3DS: log a sound line every 2 s with the PERF lines" );
 
 static bool soundLockReady = false;
@@ -99,7 +100,8 @@ void idSoundHardware_3DS::Init() {
 	lastUpdateMs = Sys_Milliseconds();
 	lastReportMs = lastUpdateMs;
 
-	audioOk = N3DSAudio_Init( N3DS_FeedCallback, this ) != 0;
+	audioOk = N3DSAudio_Init( N3DS_FeedCallback, this, n3ds_soundFeederCore.GetInteger() ) != 0;
+	idLib::Printf( "sound: DSP feeder thread on core %d\n", n3ds_soundFeederCore.GetInteger() );
 	soundLockReady = audioOk;
 	if ( audioOk ) {
 		idLib::Printf( "Sound: NDSP, %d DSP channels mixed in hardware, %d x %d-frame buffers each\n",

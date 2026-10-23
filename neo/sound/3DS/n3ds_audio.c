@@ -185,7 +185,7 @@ static void N3DS_FeedThread( void * arg ) {
 	}
 }
 
-int N3DSAudio_Init( n3dsFeedCallback_t feed, void * user ) {
+int N3DSAudio_Init( n3dsFeedCallback_t feed, void * user, int feederCore ) {
 	if ( initialized ) {
 		return 1;
 	}
@@ -227,7 +227,7 @@ int N3DSAudio_Init( n3dsFeedCallback_t feed, void * user ) {
 	// the voices in soundSystem->Render, waited 10-16 ms per frame for it (SPIKE lines,
 	// "lock waits") - frames over 33 ms whenever several sounds played. On core 2 it runs
 	// to the end of each refill (a few short copies) before anything else there.
-	feedThread = threadCreate( N3DS_FeedThread, NULL, 32 * 1024, 0x18, 2, false );
+	feedThread = threadCreate( N3DS_FeedThread, NULL, 32 * 1024, 0x18, feederCore, false );
 	if ( feedThread == NULL ) {
 		feedThread = threadCreate( N3DS_FeedThread, NULL, 32 * 1024, 0x18, 0, false );
 	}
