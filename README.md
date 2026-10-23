@@ -1,6 +1,6 @@
 # DOOM 3 BFG Edition for New Nintendo 3DS
 
-A fan-made port of the DOOM 3 BFG Edition GPL source code to the New Nintendo 3DS.
+A fan-made port of the DOOM 3 BFG Edition GPL source code to the New Nintendo 2DS/3DS.
 
 ## Installing
 
