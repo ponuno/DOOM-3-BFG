@@ -382,8 +382,18 @@ void idCommonLocal::LoadLoadingGui( const char *mapName, bool & hellMap ) {
 void Sys_LogMemory( const char * when );	// sys/3ds/3ds_main.cpp
 
 void N3DS_TourSample();		// framework/common_frame.cpp
-static int n3dsLastSaveBytes = 0;		// sizes of the last save written (lazy save buffers)
+static int n3dsLastSaveBytes = 0;		// biggest save written this session (lazy save buffers)
 static int n3dsLastStringsBytes = 0;
+
+// a malloc of this size would succeed now (game paused while saving: nothing races it)
+static bool N3DS_HeapHasBlock( int bytes ) {
+	void * volatile p = malloc( bytes + 256 );
+	if ( p == NULL ) {
+		return false;
+	}
+	free( p );
+	return true;
+}
 int n3dsMapLoads = 0;			// maps fully loaded so far
 int n3dsLastLoadMsec = 0;
 
@@ -884,8 +894,20 @@ bool idCommonLocal::SaveGame( const char * saveName ) {
 		// steps if needed, and are freed once the save is written (OnSaveCompleted).
 		saveFile.SetGranularity( 256 * 1024 );
 		stringsFile.SetGranularity( 64 * 1024 );
-		saveFile.PreAllocate( Max( n3dsLastSaveBytes + n3dsLastSaveBytes / 4, 1536 * 1024 ) );
-		stringsFile.PreAllocate( Max( n3dsLastStringsBytes + n3dsLastStringsBytes / 4, 256 * 1024 ) );
+		// after the first save the buffers are kept (OnSaveCompleted): freed, the block of
+		// the game state's size was cut up by the game and the second save on phobos3 found
+		// no 1.5 MB block. Here they only grow to the last save's size plus an eighth, and
+		// only if the heap has such a block (else they grow as they are written).
+		if ( n3dsLastSaveBytes > 0 ) {
+			const int saveWant = n3dsLastSaveBytes + n3dsLastSaveBytes / 8 + 64 * 1024;
+			const int stringsWant = n3dsLastStringsBytes + n3dsLastStringsBytes / 8 + 16 * 1024;
+			if ( N3DS_HeapHasBlock( saveWant ) ) {
+				saveFile.PreAllocate( saveWant );
+			}
+			if ( N3DS_HeapHasBlock( stringsWant ) ) {
+				stringsFile.PreAllocate( stringsWant );
+			}
+		}
 	}
 #endif
 
@@ -1080,12 +1102,11 @@ void idCommonLocal::OnSaveCompleted( idSaveLoadParms & parms ) {
 	pipelineFile = NULL;
 #if defined( ID_3DS )
 	if ( cvarSystem->GetCVarBool( "n3ds_lazySaveBuffer" ) ) {
-		// the save is written: its buffers go back to the game until the next one
-		n3dsLastSaveBytes = saveFile.Length();
-		n3dsLastStringsBytes = stringsFile.Length();
-		idLib::Printf( "save: written, %d KB of game state, %d KB of strings\n", n3dsLastSaveBytes / 1024, n3dsLastStringsBytes / 1024 );
-		saveFile.Clear( true );
-		stringsFile.Clear( true );
+		// the save is written. Its buffers stay for the next save (Clear( false ) there):
+		// one block of their size is hard to find again on the biggest maps.
+		n3dsLastSaveBytes = Max( n3dsLastSaveBytes, (int)saveFile.Length() );
+		n3dsLastStringsBytes = Max( n3dsLastStringsBytes, (int)stringsFile.Length() );
+		idLib::Printf( "save: written, %d KB of game state, %d KB of strings\n", (int)saveFile.Length() / 1024, (int)stringsFile.Length() / 1024 );
 		Sys_LogMemory( "save done" );
 	}
 #endif

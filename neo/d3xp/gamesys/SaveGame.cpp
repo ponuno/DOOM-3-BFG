@@ -81,13 +81,14 @@ idSaveGame::idSaveGame( idFile *savefile, idFile *stringTableFile, int saveVersi
 	// block of the whole list and the old one freed; the save's small allocations took the
 	// freed blocks, and on phobos3 the string table (~5300 entries of 36 bytes) found no
 	// 186 KB block with 8 MB free. Sized up front, at the start, while the heap still has
-	// big blocks, and grown in big steps if that is not enough.
+	// big blocks (phobos3: 2313 objects, 10350 strings), and grown in big steps if that is
+	// not enough.
 	objects.SetGranularity( 1024 );
 	objects.Resize( 4096 );
-	stringTable.SetGranularity( 1024 );
-	stringTable.Resize( 8192 );
-	stringHash.Clear( 4096, 8192 );
-	stringHash.SetGranularity( 1024 );
+	stringTable.SetGranularity( 2048 );
+	stringTable.Resize( 12288 );		// phobos3: 10350
+	stringHash.Clear( 4096, 12288 );
+	stringHash.SetGranularity( 2048 );
 #endif
 	objects.Append( NULL );
 
