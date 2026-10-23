@@ -1,4 +1,8 @@
-## Installing on a New Nintendo 3DS
+# DOOM 3 BFG Edition for New Nintendo 3DS
+
+A fan-made port of the DOOM 3 BFG Edition GPL source code to the New Nintendo 3DS.
+
+## Installing
 
 ### What you need
 
@@ -135,7 +139,19 @@ message with a memory snapshot.
   A fatal error is also shown on the bottom screen; press START to exit.
 - The largest maps are close to the console's memory limit and can still run out of memory.
 
+## License
 
+This port is based on the DOOM 3 BFG Edition GPL Source Code and is distributed under the same
+terms: the GNU GPL v3 with id Software's additional terms (see `COPYING.txt`). The game data is not
+included and stays under the original EULA.
+
+The original README of the source release, with the license notices of the third-party code, follows
+unchanged:
+
+<details>
+<summary>Original Doom 3 BFG Edition README</summary>
+
+```text
 Doom 3 BFG Edition GPL Source Code
 ==================================
 
@@ -392,4 +408,7 @@ From http://www.cgs.fi/~tt/discontinued.html :
 If you'd like to continue hacking on TiMidity, feel free. I'm
 hereby extending the TiMidity license agreement: you can now 
 select the most convenient license for your needs from (1) the
-GNU GPL, (2) the GNU LGPL, or (3) the Perl Artistic License.  
+GNU GPL, (2) the GNU LGPL, or (3) the Perl Artistic License.
+```
+
+</details>
