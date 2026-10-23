@@ -558,6 +558,19 @@ private:
 	uint64			start;
 };
 #define N3DS_SLOW_SCOPE( label, limitMs )	idN3DSSlowScope n3dsSlowScope( label, limitMs )
+
+// the last back end frame, for the PERF spike lines
+struct n3dsBackendFrame_t {
+	float	totalMs;		// the back end call, waits included
+	float	waitGpuMs;		// at its start, for the previous frame's GPU work
+	float	waitVBlankMs;	// before submitting
+	float	gpuMs;			// the previous frame on the GPU (first part handed over -> done)
+	int		draws, lightDraws, tris;
+	int		texUploads;
+	float	texUploadMs;
+	int		texEvictions, texReads, texWaits;
+};
+void RB_N3DS_LastFrame( n3dsBackendFrame_t & out );
 #else
 #define N3DS_SLOW_SCOPE( label, limitMs )
 #define N3DS_STAGE( slot, what )

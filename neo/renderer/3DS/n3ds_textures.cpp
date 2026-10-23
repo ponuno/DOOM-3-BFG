@@ -1345,6 +1345,14 @@ void * N3DS_TexForImage( idImage * image ) {
 N3DS_TexStatsLine
 ========================
 */
+void N3DS_TexCounters( n3dsTexCounters_t & c ) {
+	c.uploads = statUploads;
+	c.uploadUs = statUploadUs;
+	c.evictions = statEvictions;
+	c.reads = statReads;		// the loader thread's, read without its lock (diagnostics)
+	c.waits = statStreamWaits;
+}
+
 void N3DS_TexStatsLine( idStr & line ) {
 	texLoadLock.Lock();
 	const int reads = statReads, readBytes = statReadBytes, readFailures = statReadFailures;

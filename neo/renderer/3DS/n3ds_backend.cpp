@@ -1936,6 +1936,13 @@ static void N3DS_BenchFrameEnd( float gpuMs, float cpuMs, float frameMs, int dra
 	n3ds_gpuBench.SetBool( false );
 }
 
+// the last frame's numbers, for the spike lines in common_frame.cpp
+static n3dsBackendFrame_t	c3dLastFrame;
+
+void RB_N3DS_LastFrame( n3dsBackendFrame_t & out ) {
+	out = c3dLastFrame;
+}
+
 bool RB_N3DS_BenchRunning() {
 	return c3dBenchStep >= 0 || n3ds_gpuBench.GetBool();
 }
@@ -1946,7 +1953,9 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 	const uint64 start = Sys_Microseconds();
 	const float frameMs = c3dBenchLastStart != 0 ? ( start - c3dBenchLastStart ) * 0.001f : 0.0f;
-	const int benchDraws0 = c3dStatDraws, benchTris0 = c3dStatTris;
+	const int benchDraws0 = c3dStatDraws, benchTris0 = c3dStatTris, lightDraws0 = c3dStatLightDraws;
+	n3dsTexCounters_t tex0;
+	N3DS_TexCounters( tex0 );
 
 	// is there a 3D view this frame? (for tracing the first ones)
 	bool has3D = false;
@@ -2080,6 +2089,25 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		c3dFrame3D++;
 	}
 
+	{
+		float waitGpu, waitVBlank;
+		N3DSGPU_LastWaits( &waitGpu, &waitVBlank );
+		n3dsTexCounters_t tex1;
+		N3DS_TexCounters( tex1 );
+		n3dsBackendFrame_t & f = c3dLastFrame;
+		f.totalMs = ( Sys_Microseconds() - start ) * 0.001f;
+		f.waitGpuMs = waitGpu;
+		f.waitVBlankMs = waitVBlank;
+		f.gpuMs = N3DSGPU_DrawingTimeMs();
+		f.draws = c3dStatDraws - benchDraws0;
+		f.lightDraws = c3dStatLightDraws - lightDraws0;
+		f.tris = c3dStatTris - benchTris0;
+		f.texUploads = tex1.uploads - tex0.uploads;
+		f.texUploadMs = ( tex1.uploadUs - tex0.uploadUs ) * 0.001f;
+		f.texEvictions = tex1.evictions - tex0.evictions;
+		f.texReads = tex1.reads - tex0.reads;
+		f.texWaits = tex1.waits - tex0.waits;
+	}
 	if ( has3D ) {
 		float waitGpu, waitVBlank;
 		N3DSGPU_LastWaits( &waitGpu, &waitVBlank );

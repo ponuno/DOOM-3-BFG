@@ -81,6 +81,56 @@ static int		n3dsPerfTicks = 0;
 static uint64	n3dsPerfGameUs = 0;
 static uint64	n3dsPerfGameMaxUs = 0;
 static uint64	n3dsPerfDrawUs = 0;
+static uint64	n3dsWaitGameUs = 0;		// main thread waiting for the game / draw thread, this frame
+idCVar n3ds_spikeMs( "n3ds_spikeMs", "36", CVAR_SYSTEM | CVAR_FLOAT, "New 3DS: log a SPIKE line with the frame's breakdown for every frame longer than this (ms; 0 = off). At 30 fps a frame over 33.3 ms is shown for 50 ms", 0.0f, 1000.0f );
+
+/*
+========================
+N3DS_SpikeFrame
+
+Once per frame on the main thread. The PERF lines average over 2 s, which hides the single
+long frames that make moving feel uneven; a frame over n3ds_spikeMs gets its own line: what
+the game / draw thread did since the last frame (ticks, game, draw), how long the main thread
+waited for it, and the back end's frame (its own CPU time, the waits for the GPU and vblank,
+the GPU time, draws, textures uploaded / evicted / read).
+========================
+*/
+static void N3DS_SpikeFrame( bool mapSpawned ) {
+	static uint64 lastUs = 0;
+	static uint64 lastGameUs = 0, lastDrawUs = 0;
+	static int lastTicks = 0;
+	static int windowStartMs = 0, windowLines = 0;
+	const uint64 now = Sys_Microseconds();
+	const uint64 gameUs = n3dsPerfGameUs, drawUs = n3dsPerfDrawUs;
+	const int ticks = n3dsPerfTicks;
+	const float frameMs = lastUs != 0 ? ( now - lastUs ) * 0.001f : 0.0f;
+	// the PERF block resets the counters every 2 s: a smaller value means a new window
+	const float gameMs = ( gameUs >= lastGameUs ? gameUs - lastGameUs : gameUs ) * 0.001f;
+	const float drawMs = ( drawUs >= lastDrawUs ? drawUs - lastDrawUs : drawUs ) * 0.001f;
+	const int frameTicks = ticks >= lastTicks ? ticks - lastTicks : ticks;
+	lastUs = now;
+	lastGameUs = gameUs;
+	lastDrawUs = drawUs;
+	lastTicks = ticks;
+	const float limit = n3ds_spikeMs.GetFloat();
+	if ( !mapSpawned || limit <= 0.0f || frameMs <= limit ) {
+		return;
+	}
+	const int nowMs = Sys_Milliseconds();
+	if ( nowMs - windowStartMs >= 1000 ) {
+		windowStartMs = nowMs;
+		windowLines = 0;
+	}
+	if ( ++windowLines > 6 ) {
+		return;		// at most 6 lines a second
+	}
+	n3dsBackendFrame_t b;
+	RB_N3DS_LastFrame( b );
+	const float backCpu = b.totalMs - b.waitGpuMs - b.waitVBlankMs;
+	common->Printf( "SPIKE %.1f ms: game thread %d ticks %.1f ms + draw %.1f ms, main waited for it %.1f ms | back end %.1f ms (CPU %.1f, waited GPU %.1f, vblank %.1f), GPU %.1f ms, %d draws (%d light) %d tris | tex %d uploads %.1f ms, %d evicted, %d reads, %d waits\n",
+		frameMs, frameTicks, gameMs, drawMs, n3dsWaitGameUs * 0.001f, b.totalMs, backCpu, b.waitGpuMs, b.waitVBlankMs, b.gpuMs,
+		b.draws, b.lightDraws, b.tris, b.texUploads, b.texUploadMs, b.texEvictions, b.texReads, b.texWaits );
+}
 #endif
 
 /*
@@ -862,7 +912,13 @@ void idCommonLocal::Frame() {
 
 		// make sure the game / draw thread has completed
 		// This may block if the game is taking longer than the render back end
+#if defined( ID_3DS )
+		const uint64 n3dsWaitGameStart = Sys_Microseconds();
 		gameThread.WaitForThread();
+		n3dsWaitGameUs = Sys_Microseconds() - n3dsWaitGameStart;
+#else
+		gameThread.WaitForThread();
+#endif
 
 		// Send local usermds to the server.
 		// This happens after the game frame has run so that prediction data is up to date.
@@ -901,6 +957,7 @@ void idCommonLocal::Frame() {
 			Sys_N3DSFrameDone();
 		}
 		N3DS_TourFrame( mapSpawned );
+		N3DS_SpikeFrame( mapSpawned );
 		// New 3DS: one line every 2 seconds once a map is running
 		{
 			static int perfStart = 0;

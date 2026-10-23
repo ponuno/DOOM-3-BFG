@@ -16,6 +16,15 @@ void		N3DS_TexPrefetch( idImage ** images, int count );	// read ahead (backend, 
 bool		N3DS_TexIsAlphaOnly( idImage * image );	// A8 on the GPU (fonts, coverage): no colour
 bool		N3DS_TexIsNormalMap( idImage * image );	// HILO8 from the texture pack: usable by the bump unit
 void		N3DS_TexStatsLine( idStr & line );
+// the running counters behind the stats line (reset with it): taken before and after a frame
+struct n3dsTexCounters_t {
+	int		uploads;
+	uint64	uploadUs;
+	int		evictions;
+	int		reads;
+	int		waits;
+};
+void		N3DS_TexCounters( n3dsTexCounters_t & c );
 // diagnostics: "name: ETC1 128x128 6 lv @18000000, pack, VRAM" (or why there is no GPU texture)
 void		N3DS_TexDescribe( idImage * image, idStr & out );
 const char *N3DS_TexNameForAddress( unsigned int address );	// resident texture whose data is there
