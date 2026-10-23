@@ -129,6 +129,8 @@ struct threadCoreRecord_t {
 	int		fallback;	// threadCreate on that core failed
 	int		ran;		// core the thread found itself on, -1 until it started
 	volatile uint32	yields;	// Sys_Yield calls (Sys_N3DSYieldReport)
+	Handle	handle;		// for Sys_N3DSBackgroundThreads, 0 if not created
+	int		priority;	// as created
 };
 static const int			MAX_THREAD_RECORDS = 16;
 static threadCoreRecord_t	threadRecords[MAX_THREAD_RECORDS];
@@ -163,6 +165,24 @@ void Sys_N3DSThreadReport() {
 		const threadCoreRecord_t & r = threadRecords[i];
 		idLib::Printf( "threads: %-22s asked core %2d, runs on core %2d%s\n", r.name, r.asked, r.ran,
 			r.fallback != 0 ? " (creating it there failed, fell back to the default core)" : "" );
+	}
+}
+
+/*
+========================
+Sys_N3DSBackgroundThreads
+
+In the HOME menu / asleep the engine threads drop to the lowest priority (0x3F), back to
+their own on return: whatever they still do then cannot keep the HOME menu, which shares
+core 0 with them, from running.
+========================
+*/
+void Sys_N3DSBackgroundThreads( bool background ) {
+	for ( int i = 0; i < numThreadRecords; i++ ) {
+		const threadCoreRecord_t & r = threadRecords[i];
+		if ( r.handle != 0 ) {
+			svcSetThreadPriority( r.handle, background ? 0x3F : r.priority );
+		}
 	}
 }
 
@@ -206,6 +226,10 @@ uintptr_t Sys_CreateThread( xthread_t function, void *parms, xthreadPriority pri
 		}
 		// requested core not available (e.g. old 3DS or speedup not enabled): fall back to core 0
 		t = threadCreate( ThreadEntry, start, stackSize, MapPriority( priority ), -2, false );
+	}
+	if ( t != NULL && record != NULL ) {
+		record->handle = threadGetHandle( t );
+		record->priority = MapPriority( priority );
 	}
 	if ( t == NULL ) {
 		idLib::common->FatalError( "Sys_CreateThread: failed to create thread '%s'", start->name );

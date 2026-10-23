@@ -1151,11 +1151,24 @@ static void Sys_BuildCommandLine() {
 
 // sleep / HOME menu transitions in the log (these hooks run on the main thread)
 static aptHookCookie n3dsAptCookie;
+idCVar n3ds_bgThreads( "n3ds_bgThreads", "1", CVAR_SYSTEM | CVAR_BOOL, "New 3DS: in the HOME menu / asleep the engine threads run at the lowest priority" );
+
 static void N3DS_AptLogHook( APT_HookType hook, void * ) {
 	static const char * names[] = { "suspend (HOME menu)", "restore", "sleep", "wake-up", "exit" };
 	const int i = (int)hook;
 	Sys_Printf( "APT: %s\n", ( i >= 0 && i < 5 ) ? names[i] : "?" );
 	n3dsSuspended = ( hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP );
+	// the engine threads and the DSP feeder at the lowest priority while suspended, so a
+	// thread still busy then cannot starve the HOME menu (n3ds_bgThreads)
+	static bool lowered = false;
+	const bool lower = n3dsSuspended && n3ds_bgThreads.GetBool();
+	if ( lower != lowered ) {
+		void Sys_N3DSBackgroundThreads( bool background );
+		Sys_N3DSBackgroundThreads( lower );
+		N3DSAudio_SetBackground( lower );
+		lowered = lower;
+		Sys_Printf( "APT: engine threads %s\n", lower ? "lowered to priority 0x3F" : "back to their priorities" );
+	}
 	if ( hook == APTHOOK_ONSUSPEND ) {
 		N3DS_STAGE( N3DS_STAGE_MAIN, "HOME: citro3d waits for GPU" );
 	} else if ( hook == APTHOOK_ONSLEEP ) {
