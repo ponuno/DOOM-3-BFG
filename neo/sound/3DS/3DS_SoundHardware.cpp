@@ -100,7 +100,11 @@ void idSoundHardware_3DS::Init() {
 	lastUpdateMs = Sys_Milliseconds();
 	lastReportMs = lastUpdateMs;
 
+	// watchdog steps around ndsp's sleep / wake-up hook (3ds_main.cpp)
+	void Sys_N3DSHookDsp( bool afterInit );
+	Sys_N3DSHookDsp( false );
 	audioOk = N3DSAudio_Init( N3DS_FeedCallback, this, n3ds_soundFeederCore.GetInteger() ) != 0;
+	Sys_N3DSHookDsp( true );
 	idLib::Printf( "sound: DSP feeder thread on core %d\n", n3ds_soundFeederCore.GetInteger() );
 	soundLockReady = audioOk;
 	if ( audioOk ) {

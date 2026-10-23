@@ -189,7 +189,11 @@ elseif(NINTENDO_3DS)
 		external citro3d ctru m
 		# our objects use 32-bit enums, libctru/newlib variable-size ones; enums only
 		# cross that boundary by value, so the ABI attribute mismatch is harmless
-		-Wl,--no-enum-size-warning)
+		-Wl,--no-enum-size-warning
+		# watchdog steps through the HOME menu / sleep transitions (3ds_main.cpp)
+		-Wl,--wrap=GSPGPU_SaveVramSysArea -Wl,--wrap=GSPGPU_RestoreVramSysArea
+		-Wl,--wrap=GSPGPU_ReleaseRight -Wl,--wrap=GSPGPU_AcquireRight
+		-Wl,--wrap=GSPGPU_ImportDisplayCaptureInfo)
 
 	set_target_properties(doom3ds PROPERTIES OUTPUT_NAME doom3ds SUFFIX ".elf")
 

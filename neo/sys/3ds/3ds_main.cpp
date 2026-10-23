@@ -51,6 +51,8 @@ extern "C" {
 #include <3ds/console.h>
 #include <3ds/services/apt.h>
 #include <3ds/services/hid.h>
+#include <3ds/services/gspgpu.h>
+#include <3ds/services/dsp.h>
 #include <3ds/gpu/gx.h>
 #include <3ds/thread.h>
 }
@@ -1141,6 +1143,113 @@ static void N3DS_AptLogHook( APT_HookType hook, void * ) {
 	static const char * names[] = { "suspend (HOME menu)", "restore", "sleep", "wake-up", "exit" };
 	const int i = (int)hook;
 	Sys_Printf( "APT: %s\n", ( i >= 0 && i < 5 ) ? names[i] : "?" );
+	if ( hook == APTHOOK_ONSUSPEND ) {
+		N3DS_STAGE( N3DS_STAGE_MAIN, "HOME: citro3d waits for GPU" );
+	} else if ( hook == APTHOOK_ONSLEEP ) {
+		N3DS_STAGE( N3DS_STAGE_MAIN, "sleep: hooks" );
+	}
+}
+
+/*
+	Where the main thread is while libctru switches to the HOME menu or sleep mode and
+	back (aptJumpToHomeMenu / aptWaitForWakeUp / aptHandleSleep), for the watchdog:
+
+	suspend: our hook (first) -> citro3d's hook (waits for the GPU queue) -> the bottom
+	screen's -> the late hook (last) -> GSPGPU_SaveVramSysArea -> screen capture for the
+	HOME menu -> DSP sleep (ndsp's hook, then ours) -> GSPGPU_ReleaseRight -> in the HOME
+	menu, waiting for the wake-up -> GSPGPU_AcquireRight -> GSPGPU_RestoreVramSysArea ->
+	restore hooks -> DSP wake-up.
+
+	The GSPGPU calls are wrapped (-Wl,--wrap in neo/CMakeLists.txt); libctru only makes
+	them on these transitions (AcquireRight also once at gfxInit).
+*/
+static void N3DS_AptStep( const char * what ) {
+	N3DS_STAGE( N3DS_STAGE_MAIN, what );
+	// the DSP hooks also run on libctru's APT thread (sleep entered while suspended):
+	// only the main thread (threadGetCurrent() == NULL) writes the log
+	if ( Sys_N3DSDebug() && threadGetCurrent() == NULL ) {
+		Sys_Printf( "APT step: %s\n", what );
+	}
+}
+
+static aptHookCookie n3dsAptLateCookie;
+static void N3DS_AptLateHook( APT_HookType hook, void * ) {
+	if ( hook == APTHOOK_ONSUSPEND ) {
+		N3DS_AptStep( "HOME: hooks done" );
+	} else if ( hook == APTHOOK_ONRESTORE ) {
+		N3DS_AptStep( "HOME: restore hooks done" );
+	} else if ( hook == APTHOOK_ONSLEEP ) {
+		N3DS_AptStep( "sleep: hooks done, asleep" );
+	} else if ( hook == APTHOOK_ONWAKEUP ) {
+		N3DS_AptStep( "sleep: wake-up hooks done" );
+	}
+}
+
+// ndsp's DSP hook is registered by ndspInit; dspHook adds to the front of the list
+static dspHookCookie n3dsDspFirstCookie, n3dsDspLastCookie;
+static void N3DS_DspFirstHook( DSP_HookType hook ) {
+	if ( hook == DSPHOOK_ONSLEEP ) {
+		N3DS_AptStep( "DSP sleep: ndsp shutting down" );
+	} else if ( hook == DSPHOOK_ONWAKEUP ) {
+		N3DS_AptStep( "DSP wake-up: ndsp starting" );
+	} else {
+		N3DS_AptStep( "DSP cancel" );
+	}
+}
+static void N3DS_DspLastHook( DSP_HookType hook ) {
+	if ( hook == DSPHOOK_ONSLEEP ) {
+		N3DS_AptStep( "DSP sleep: done" );
+	} else if ( hook == DSPHOOK_ONWAKEUP ) {
+		N3DS_AptStep( "DSP wake-up: done" );
+	}
+}
+
+// around ndspInit (3DS_SoundHardware.cpp)
+void Sys_N3DSHookDsp( bool afterInit ) {
+	if ( afterInit ) {
+		dspHook( &n3dsDspFirstCookie, N3DS_DspFirstHook );
+	} else {
+		dspHook( &n3dsDspLastCookie, N3DS_DspLastHook );
+	}
+}
+
+extern "C" {
+Result __real_GSPGPU_SaveVramSysArea( void );
+Result __real_GSPGPU_RestoreVramSysArea( void );
+Result __real_GSPGPU_ReleaseRight( void );
+Result __real_GSPGPU_AcquireRight( u8 flags );
+Result __real_GSPGPU_ImportDisplayCaptureInfo( GSPGPU_CaptureInfo * info );
+
+Result __wrap_GSPGPU_SaveVramSysArea( void ) {
+	N3DS_AptStep( "HOME: GSP save VRAM" );
+	const Result r = __real_GSPGPU_SaveVramSysArea();
+	N3DS_AptStep( "HOME: screen capture" );
+	return r;
+}
+Result __wrap_GSPGPU_ImportDisplayCaptureInfo( GSPGPU_CaptureInfo * info ) {
+	N3DS_AptStep( "HOME: GSP capture info" );
+	const Result r = __real_GSPGPU_ImportDisplayCaptureInfo( info );
+	N3DS_AptStep( "HOME: capture to HOME menu" );
+	return r;
+}
+Result __wrap_GSPGPU_ReleaseRight( void ) {
+	N3DS_AptStep( "HOME: GSP release GPU" );
+	const Result r = __real_GSPGPU_ReleaseRight();
+	N3DS_AptStep( "HOME: in HOME menu (normal)" );
+	return r;
+}
+Result __wrap_GSPGPU_AcquireRight( u8 flags ) {
+	N3DS_AptStep( "HOME back: GSP acquire GPU" );
+	const Result r = __real_GSPGPU_AcquireRight( flags );
+	N3DS_AptStep( "HOME back: GPU acquired" );
+	return r;
+}
+Result __wrap_GSPGPU_RestoreVramSysArea( void ) {
+	N3DS_AptStep( "HOME back: GSP restore VRAM" );
+	const Result r = __real_GSPGPU_RestoreVramSysArea();
+	N3DS_AptStep( "HOME back: restore hooks" );
+	return r;
+}
 }
 
 /*
@@ -1156,6 +1265,9 @@ int N3DS_Main( int argc, char ** argv ) {
 	// below libctru's APT thread, so a spinning main thread cannot keep HOME / sleep from
 	// being handled (see MapPriority in 3ds_thread.cpp)
 	Sys_N3DSSetMainPriority();
+
+	// registered first, so libctru calls it after every other APT hook (citro3d's, ...)
+	aptHook( &n3dsAptLateCookie, N3DS_AptLateHook, NULL );
 
 	// New 3DS: 804 MHz + L2 cache
 	osSetSpeedupEnable( true );
