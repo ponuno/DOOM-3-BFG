@@ -1006,7 +1006,26 @@ static void N3DS_WatchdogScreen( int stalledMs, uint32 frames ) {
 		" Take a photo of this screen.\n",
 		stalledMs / 1000, frames, n3dsStages[N3DS_STAGE_MAIN], n3dsStages[N3DS_STAGE_GAME], n3dsStages[N3DS_STAGE_RENDER],
 		since != 0 ? "YES " : "no ", logMs / 1000.0f, feeds, dspFrames );
+	// a frozen thread may hold stdout's lock too (only while a fatal error prints): the
+	// screen is then left as it is
 	N3DS_BottomWatchdog( text );
+}
+
+// the watchdog writes to the log only when its lock is free: a frozen thread may hold it
+static void N3DS_WatchdogLog( const char * fmt, ... ) {
+	if ( !logLockInit || !LightLock_TryLock( &logLock ) ) {
+		return;
+	}
+	char text[512];
+	va_list argptr;
+	va_start( argptr, fmt );
+	idStr::vsnPrintf( text, sizeof( text ), fmt, argptr );
+	va_end( argptr );
+	if ( logFile != NULL ) {
+		fputs( text, logFile );
+		fflush( logFile );
+	}
+	LightLock_Unlock( &logLock );
 }
 
 static void N3DS_WatchdogMain( void * ) {
@@ -1018,7 +1037,7 @@ static void N3DS_WatchdogMain( void * ) {
 		const uint32 frames = n3dsFramesDone;
 		if ( frames != lastFrames ) {
 			if ( reported ) {
-				Sys_Printf( "WATCHDOG: frames resumed after %.1f s\n", stalledMs * 0.001f );
+				N3DS_WatchdogLog( "WATCHDOG: frames resumed after %.1f s\n", stalledMs * 0.001f );
 			}
 			lastFrames = frames;
 			stalledMs = 0;
@@ -1026,17 +1045,19 @@ static void N3DS_WatchdogMain( void * ) {
 			continue;
 		}
 		stalledMs += 500;
-		// frames only count once a map runs; loading has its own long pauses
-		if ( frames > 0 && !reported && stalledMs >= 5000 ) {
-			reported = true;
-			Sys_Printf( "WATCHDOG: no frame for %.1f s (frame %u): main '%s', game thread '%s', render '%s'\n",
-				stalledMs * 0.001f, frames, n3dsStages[N3DS_STAGE_MAIN], n3dsStages[N3DS_STAGE_GAME], n3dsStages[N3DS_STAGE_RENDER] );
-		} else if ( reported && ( stalledMs % 10000 ) == 0 ) {
-			Sys_Printf( "WATCHDOG: still stuck %.0f s: main '%s', game thread '%s', render '%s'\n",
-				stalledMs * 0.001f, n3dsStages[N3DS_STAGE_MAIN], n3dsStages[N3DS_STAGE_GAME], n3dsStages[N3DS_STAGE_RENDER] );
-		}
+		// frames only count once a map runs; loading has its own long pauses. The screen
+		// first: writing to the log can block (the SD card, or the log lock held by the
+		// frozen thread), which kept the 0142 watchdog from ever reaching the screen.
 		if ( frames > 0 && stalledMs >= 5000 && ( stalledMs % 2000 ) == 0 && !n3dsLoadingMap ) {
 			N3DS_WatchdogScreen( stalledMs, frames );
+		}
+		if ( frames > 0 && !reported && stalledMs >= 5000 ) {
+			reported = true;
+			N3DS_WatchdogLog( "WATCHDOG: no frame for %.1f s (frame %u): main '%s', game thread '%s', render '%s'\n",
+				stalledMs * 0.001f, frames, n3dsStages[N3DS_STAGE_MAIN], n3dsStages[N3DS_STAGE_GAME], n3dsStages[N3DS_STAGE_RENDER] );
+		} else if ( reported && ( stalledMs % 10000 ) == 0 ) {
+			N3DS_WatchdogLog( "WATCHDOG: still stuck %.0f s: main '%s', game thread '%s', render '%s'\n",
+				stalledMs * 0.001f, n3dsStages[N3DS_STAGE_MAIN], n3dsStages[N3DS_STAGE_GAME], n3dsStages[N3DS_STAGE_RENDER] );
 		}
 	}
 }
