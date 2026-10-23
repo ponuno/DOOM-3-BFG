@@ -156,6 +156,35 @@ public:
 };
 
 
+#if defined( ID_3DS )
+// New 3DS: no stencil shadows (n3ds_noShadows). Set in R_InitOpenGL; when true the
+// model loaders drop shadow/silhouette data and no light casts shadows.
+extern bool r_n3dsNoShadows;
+extern bool r_n3dsDiscardStaticGeo;		// null GL: static vertex/index uploads are dropped
+extern bool r_n3dsC3D;					// citro3d backend active (renderer/3DS/n3ds_backend.cpp)
+struct emptyCommand_t;
+bool RB_N3DS_Init();
+void RB_N3DS_Shutdown();
+void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds );
+void RB_N3DS_FlushForGPU( const void * p, int size );
+// textures (renderer/3DS/n3ds_textures.cpp): one small level per colour image is kept at load
+int RB_N3DS_TexKeepSize( textureUsage_t usage, const char * name );		// 0 = keep nothing
+bool N3DS_FontsAlphaOnly();
+struct viewDef_t;
+void R_N3DS_BuildPrefetch( viewDef_t * viewDef );						// frontend, main view											// n3ds_texFontA8
+void RB_N3DS_ImageLevel( idImage * image, int format, int colorFormat, int width, int height,
+						 const byte * data, int dataSize, int wrap, bool alphaOnly, int maxSize );
+void RB_N3DS_ImageLevelStreamed( idImage * image, int format, int colorFormat, int width, int height,
+								 int dataSize, const char * osPath, int osOffset, int wrap, bool alphaOnly, int maxSize );
+bool RB_N3DS_TexStreaming();		// kept levels are read from disk when drawn, not kept in RAM
+void RB_N3DS_ImagePurged( idImage * image );
+void RB_N3DS_TexLevelLoaded();		// raises the texture upload limit for the first frames
+// texture pack converted on the PC (tools/n3ds/n3dstex, renderer/3DS/n3ds_pack.h)
+#include "3DS/n3ds_pack.h"
+const n3dsPackEntry_t * RB_N3DS_PackFind( const char * generatedFileName );	// NULL: not in the pack
+void RB_N3DS_ImagePacked( idImage * image, const n3dsPackEntry_t * entry, int wrap );
+#endif
+
 class idRenderLightLocal : public idRenderLight {
 public:
 							idRenderLightLocal();
@@ -166,7 +195,13 @@ public:
 	virtual void			ForceUpdate();
 	virtual int				GetIndex();
 
-	bool					LightCastsShadows() const { return parms.forceShadows || ( !parms.noShadows && lightShader->LightCastsShadows() ); }
+	bool					LightCastsShadows() const {
+#if defined( ID_3DS )
+								if ( r_n3dsNoShadows ) {
+									return false;
+								}
+#endif
+								return parms.forceShadows || ( !parms.noShadows && lightShader->LightCastsShadows() ); }
 
 	renderLight_t			parms;					// specification
 
@@ -424,6 +459,11 @@ struct viewDef_t {
 	// crossing a closed door.  This is used to avoid drawing interactions
 	// when the light is behind a closed door.
 	bool *				connectedAreas;
+
+	// New 3DS: images of the view's area and the areas next to it, read from the texture
+	// pack ahead of being seen (R_N3DS_BuildPrefetch, frame memory)
+	idImage **			n3dsPrefetch;
+	int					n3dsNumPrefetch;
 };
 
 

@@ -243,7 +243,7 @@ static void R_AddSingleLight( viewLight_t * vLight ) {
 	vLight->entityInteractionState = (byte *)R_ClearedFrameAlloc( light->world->entityDefs.Num() * sizeof( vLight->entityInteractionState[0] ), FRAME_ALLOC_INTERACTION_STATE );
 
 	const bool lightCastsShadows = light->LightCastsShadows();
-	idInteraction * * const interactionTableRow = light->world->interactionTable + light->index * light->world->interactionTableWidth;
+	idInteraction * const * const interactionTableRow = light->world->InteractionRow( light->index );
 
 	for ( areaReference_t * lref = light->references; lref != NULL; lref = lref->ownerNext ) {
 		portalArea_t *area = lref->area;

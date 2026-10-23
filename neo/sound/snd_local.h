@@ -82,6 +82,12 @@ typedef enum {
 
 #define OPERATION_SET 1
 
+#if defined( ID_3DS )
+#include "3DS/n3ds_audio.h"
+#include "3DS/3DS_SoundSample.h"
+#include "3DS/3DS_SoundVoice.h"
+#include "3DS/3DS_SoundHardware.h"
+#else
 #include <dxsdkver.h>
 
 #include <xaudio2.h>
@@ -91,6 +97,7 @@ typedef enum {
 #include "XAudio2/XA2_SoundSample.h"
 #include "XAudio2/XA2_SoundVoice.h"
 #include "XAudio2/XA2_SoundHardware.h"
+#endif
 
 
 
@@ -436,8 +443,8 @@ public:
 			sample( NULL ),
 			bufferNumber( 0 )
 		{ }
-		idSoundVoice_XAudio2 *	voice;
-		idSoundSample_XAudio2 * sample;
+		idSoundVoice *	voice;
+		idSoundSample * sample;
 		int bufferNumber;
 	};
 

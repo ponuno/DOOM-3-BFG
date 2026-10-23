@@ -119,6 +119,7 @@ public:
 	int						logLevel;
 
 	void					LogOpenBlock( renderLogIndentLabel_t label, const char * fmt, va_list args );
+	void					LogOpenBlockF( renderLogIndentLabel_t label, const char * fmt, ... );
 	void					LogCloseBlock( renderLogIndentLabel_t label );
 };
 

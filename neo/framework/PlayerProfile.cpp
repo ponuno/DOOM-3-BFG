@@ -388,7 +388,43 @@ void idPlayerProfile::ExecConfig( bool save, bool forceDefault ) {
 		cmdSystem->AppendCommandText( "exec joy_righty.cfg" );
 	}
 
+#if defined( ID_3DS )
+	// New 3DS: the joy_*.cfg files are not part of the data, and a saved config may
+	// carry no pad bindings at all. Bind the pad here, after every config, so the
+	// controls always work (until there is a bindings menu for the 3DS buttons).
+	cmdSystem->AppendCommandText(
+		"\n"
+		"set in_useJoystick 1\n"
+		"bind JOY_STICK1_UP _forward\n"			// Circle Pad: move
+		"bind JOY_STICK1_DOWN _back\n"
+		"bind JOY_STICK1_LEFT _moveLeft\n"
+		"bind JOY_STICK1_RIGHT _moveRight\n"
+		"bind JOY_STICK2_UP _lookUp\n"				// C-Stick: look
+		"bind JOY_STICK2_DOWN _lookDown\n"
+		"bind JOY_STICK2_LEFT _left\n"
+		"bind JOY_STICK2_RIGHT _right\n"
+		"bind JOY_TRIGGER2 _attack\n"				// ZR: fire
+		"bind JOY_TRIGGER1 _impulse16\n"			// ZL: flashlight
+		"bind JOY1 _moveUp\n"						// A: jump (_moveUp is the jump action; there is no "_jump")
+		"bind JOY2 _moveDown\n"					// B: crouch
+		"bind JOY3 _impulse13\n"					// X: reload
+		"bind JOY4 _impulse14\n"					// Y: next weapon
+		"bind JOY5 _impulse15\n"					// L: previous weapon
+		"bind JOY6 _speed\n"						// R: run
+		"bind JOY10 _impulse19\n"					// SELECT: PDA
+		"bind JOY_DPAD_UP _impulse14\n"
+		"bind JOY_DPAD_DOWN _impulse15\n" );
+#endif
+
 	cmdSystem->ExecuteCommandBuffer();
+
+#if defined( ID_3DS )
+	// what the pad's look and move depend on (a settings menu or a saved profile can change them)
+	idLib::Printf( "controls: in_useJoystick %d joy_newCode %d joy_yawSpeed %.1f joy_pitchSpeed %.1f joy_deadZone %.2f joy_range %.2f in_invertLook %d leftyFlip %d customConfig %d\n",
+		cvarSystem->GetCVarInteger( "in_useJoystick" ), cvarSystem->GetCVarInteger( "joy_newCode" ), cvarSystem->GetCVarFloat( "joy_yawSpeed" ),
+		cvarSystem->GetCVarFloat( "joy_pitchSpeed" ), cvarSystem->GetCVarFloat( "joy_deadZone" ), cvarSystem->GetCVarFloat( "joy_range" ),
+		cvarSystem->GetCVarInteger( "in_invertLook" ), leftyFlip ? 1 : 0, customConfig ? 1 : 0 );
+#endif
 	
 	if ( !save ) {
 		cvarSystem->ClearModifiedFlags( CVAR_ARCHIVE );

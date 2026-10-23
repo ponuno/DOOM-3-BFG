@@ -37,8 +37,8 @@ If you have questions concerning this license or the applicable additional terms
 */
 
 #include "tr_local.h"
-#include "dxt/DXTCodec.h"
-#include "color/ColorSpace.h"
+#include "DXT/DXTCodec.h"
+#include "Color/ColorSpace.h"
 
 idCVar image_highQualityCompression( "image_highQualityCompression", "0", CVAR_BOOL, "Use high quality (slow) compression" );
 
@@ -349,6 +349,29 @@ Load the preprocessed image from the generated folder.
 ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime ) {
 	idStr binaryFileName;
 	MakeGeneratedFileName( binaryFileName );
+#if defined( ID_3DS )
+	packEntry = NULL;
+	if ( usePack ) {
+		// converted on the PC: the pack has the header fields and the GPU data, the
+		// .bimage is not opened
+		const n3dsPackEntry_t * e = RB_N3DS_PackFind( binaryFileName.c_str() );
+		if ( e != NULL ) {
+			memset( &fileData, 0, sizeof( fileData ) );
+			fileData.sourceFileTime = (ID_TIME_T)e->sourceFileTime;
+			fileData.headerMagic = BIMAGE_MAGIC;
+			fileData.textureType = TT_2D;
+			fileData.format = e->srcFormat;
+			fileData.colorFormat = e->srcColorFormat;
+			fileData.width = e->srcWidth;
+			fileData.height = e->srcHeight;
+			fileData.numLevels = e->srcNumLevels;
+			images.Clear();
+			packEntry = e;
+			const ID_TIME_T t = (ID_TIME_T)e->sourceFileTime;
+			return ( t == FILE_NOT_FOUND_TIMESTAMP ) ? 0 : t;
+		}
+	}
+#endif
 	idFileLocal bFile = fileSystem->OpenFileRead( binaryFileName );
 	if ( bFile == NULL ) {
 		return FILE_NOT_FOUND_TIMESTAMP;
@@ -358,6 +381,15 @@ ID_TIME_T idBinaryImage::LoadFromGeneratedFile( ID_TIME_T sourceFileTime ) {
 	}
 	return FILE_NOT_FOUND_TIMESTAMP;
 }
+
+bool idBinaryImage::skipPixelData = false;
+bool idBinaryImage::usePack = false;
+const void * idBinaryImage::packEntry = NULL;
+int idBinaryImage::keepLevelMaxSize = 0;
+bool idBinaryImage::streamKeptLevel = false;
+int idBinaryImage::keptLevelIndex = -1;
+idStr idBinaryImage::keptLevelPath;
+int idBinaryImage::keptLevelOffset = 0;
 
 /*
 ==========================
@@ -393,6 +425,10 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileT
 	}
 
 	images.SetNum( numImages );
+	bool keptLevel = false;
+	keptLevelIndex = -1;
+	keptLevelPath.Clear();
+	keptLevelOffset = 0;
 
 	for ( int i = 0; i < numImages; i++ ) {
 		idBinaryImageData &img = images[ i ];
@@ -412,6 +448,26 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile * bFile, ID_TIME_T sourceFileT
 		// sizes are still retained, so the stored data size may be larger than
 		// just the multiplication of dimensions
 		assert( img.dataSize >= img.width * img.height * BitsForFormat( (textureFormat_t)fileData.format ) / 8 );
+		if ( skipPixelData && keepLevelMaxSize > 0 && fileData.textureType == TT_2D && !keptLevel &&
+				img.width <= keepLevelMaxSize && img.height <= keepLevelMaxSize ) {
+			keptLevel = true;		// first (largest) small enough level: read it
+			keptLevelIndex = i;
+			if ( streamKeptLevel && bFile->GetDataLocation( keptLevelPath, keptLevelOffset ) ) {
+				// streamed: the texture cache reads it from there when it is drawn
+				img.data = NULL;
+				if ( i + 1 < numImages ) {
+					bFile->Seek( img.dataSize, FS_SEEK_CUR );
+				}
+				continue;
+			}
+			keptLevelPath.Clear();
+		} else if ( skipPixelData ) {
+			img.data = NULL;
+			if ( i + 1 < numImages ) {
+				bFile->Seek( img.dataSize, FS_SEEK_CUR );
+			}
+			continue;
+		}
 		img.Alloc( img.dataSize );
 		if ( img.data == NULL ) {
 			return false;

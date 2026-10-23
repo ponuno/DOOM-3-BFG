@@ -83,9 +83,26 @@ static void R_PerformanceCounters() {
 		common->Printf( "frameData: %i (%i)\n", frameData->frameMemoryAllocated.GetValue(), frameData->highWaterAllocated );
 	}
 
+#if defined( ID_3DS )
+	// summed per frame, averaged and reset by the PERF line (common_frame.cpp)
+	extern int n3dsRenderStats[8];
+	n3dsRenderStats[0]++;
+	n3dsRenderStats[1] += tr.pc.c_visibleViewEntities;
+	n3dsRenderStats[2] += tr.pc.c_viewLights;
+	n3dsRenderStats[3] += tr.pc.c_guiSurfs;
+	n3dsRenderStats[4] += backEnd.pc.c_drawElements;
+	n3dsRenderStats[5] += backEnd.pc.c_drawIndexes / 3;
+	n3dsRenderStats[6] += tr.pc.c_createInteractions;
+	n3dsRenderStats[7] += tr.pc.c_deformedVerts;
+#endif
+
 	memset( &tr.pc, 0, sizeof( tr.pc ) );
 	memset( &backEnd.pc, 0, sizeof( backEnd.pc ) );
 }
+
+#if defined( ID_3DS )
+int n3dsRenderStats[8];
+#endif
 
 /*
 ====================

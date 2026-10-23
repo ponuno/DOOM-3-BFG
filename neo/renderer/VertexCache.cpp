@@ -49,6 +49,14 @@ static void ClearGeoBufferSet( geoBufferSet_t &gbs ) {
 	gbs.allocations = 0;
 }
 
+#if defined( ID_3DS )
+extern int n3dsCacheOverflows;
+int n3dsStaticIndexMemory = 6 * 1024 * 1024;
+int n3dsStaticVertexMemory = 10 * 1024 * 1024;
+int n3dsStaticVertexOverflow = 0;
+int n3dsStaticIndexOverflow = 0;
+#endif
+
 /*
 ==============
 MapGeoBufferSet
@@ -113,8 +121,16 @@ void idVertexCache::Init( bool restart ) {
 	mostUsedIndex = 0;
 	mostUsedJoint = 0;
 
+#if defined( ID_3DS )
+	// joints are only uploaded for GPU skinning, which the citro3d backend cannot do
+	// (r_useGPUSkinning is forced off before this): no linear memory for them
+	extern idCVar r_useGPUSkinning;
+	const int jointBytes = r_useGPUSkinning.GetBool() ? VERTCACHE_JOINT_MEMORY_PER_FRAME : 0;
+#else
+	const int jointBytes = VERTCACHE_JOINT_MEMORY_PER_FRAME;
+#endif
 	for ( int i = 0; i < VERTCACHE_NUM_FRAMES; i++ ) {
-		AllocGeoBufferSet( frameData[i], VERTCACHE_VERTEX_MEMORY_PER_FRAME, VERTCACHE_INDEX_MEMORY_PER_FRAME, VERTCACHE_JOINT_MEMORY_PER_FRAME );
+		AllocGeoBufferSet( frameData[i], VERTCACHE_VERTEX_MEMORY_PER_FRAME, VERTCACHE_INDEX_MEMORY_PER_FRAME, jointBytes );
 	}
 	AllocGeoBufferSet( staticData, STATIC_VERTEX_MEMORY, STATIC_INDEX_MEMORY, 0 );
 
@@ -153,6 +169,10 @@ call on loading a new map
 */
 void idVertexCache::FreeStaticData() {
 	ClearGeoBufferSet( staticData );
+#if defined( ID_3DS )
+	n3dsStaticVertexOverflow = 0;
+	n3dsStaticIndexOverflow = 0;
+#endif
 	mostUsedVertex = 0;
 	mostUsedIndex = 0;
 	mostUsedJoint = 0;
@@ -178,12 +198,25 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t & vcs, const void
 		base = &vcs.mappedIndexBase;
 		endPos = vcs.indexMemUsed.Add( bytes );
 		if ( endPos > vcs.indexBuffer.GetAllocedSize() ) {
+#if defined( ID_3DS )
+			// per-frame overflow: drop this surface for the frame instead of ending the game
+			if ( &vcs != &staticData ) {
+				n3dsCacheOverflows++;
+				return (vertCacheHandle_t)0;
+			}
+#endif
 			idLib::Error( "Out of index cache" );
 		}
 	} else if ( type == CACHE_VERTEX ) {
 		base = &vcs.mappedVertexBase;
 		endPos = vcs.vertexMemUsed.Add( bytes );
 		if ( endPos > vcs.vertexBuffer.GetAllocedSize() ) {
+#if defined( ID_3DS )
+			if ( &vcs != &staticData ) {
+				n3dsCacheOverflows++;
+				return (vertCacheHandle_t)0;
+			}
+#endif
 			idLib::Error( "Out of vertex cache" );
 		}
 	} else if ( type == CACHE_JOINT ) {
@@ -201,9 +234,21 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t & vcs, const void
 	int offset = endPos - bytes;
 
 	// Actually perform the data transfer
+#if defined( ID_3DS )
+	// null GL bring-up: nothing ever reads the static buffers back, so skip the
+	// copy and never map them (the null driver then never allocates their storage)
+	if ( data != NULL && !( r_n3dsDiscardStaticGeo && &vcs == &staticData ) ) {
+#else
 	if ( data != NULL ) {
+#endif
 		MapGeoBufferSet( vcs );
 		CopyBuffer( *base + offset, (const byte *)data, bytes );
+#if defined( ID_3DS )
+		if ( &vcs == &staticData ) {
+			// static data is written once (level load); frame data is flushed per frame
+			RB_N3DS_FlushForGPU( *base + offset, bytes );
+		}
+#endif
 	}
 
 	vertCacheHandle_t handle =	( (uint64)(currentFrame & VERTCACHE_FRAME_MASK ) << VERTCACHE_FRAME_SHIFT ) |
@@ -284,7 +329,19 @@ bool idVertexCache::GetJointBuffer( vertCacheHandle_t handle, idJointBuffer * jb
 idVertexCache::BeginBackEnd
 ==============
 */
+#if defined( ID_3DS )
+int n3dsFramePeakIndex = 0;		// read and reset by the PERF line
+int n3dsFramePeakVertex = 0;
+int n3dsCacheOverflows = 0;
+int n3dsFrameIndexBytes = VERTCACHE_INDEX_MEMORY_PER_FRAME;
+int n3dsFrameVertexBytes = VERTCACHE_VERTEX_MEMORY_PER_FRAME;
+#endif
+
 void idVertexCache::BeginBackEnd() {
+#if defined( ID_3DS )
+	n3dsFramePeakIndex = Max( n3dsFramePeakIndex, frameData[listNum].indexMemUsed.GetValue() );
+	n3dsFramePeakVertex = Max( n3dsFramePeakVertex, frameData[listNum].vertexMemUsed.GetValue() );
+#endif
 	mostUsedVertex = Max( mostUsedVertex, frameData[listNum].vertexMemUsed.GetValue() );
 	mostUsedIndex = Max( mostUsedIndex, frameData[listNum].indexMemUsed.GetValue() );
 	mostUsedJoint = Max( mostUsedJoint, frameData[listNum].jointMemUsed.GetValue() );
@@ -299,6 +356,12 @@ void idVertexCache::BeginBackEnd() {
 			mostUsedIndex / 1024,
 			mostUsedJoint / 1024 );
 	}
+
+#if defined( ID_3DS )
+	// the GPU reads physical memory: push this frame's writes out of the CPU cache
+	RB_N3DS_FlushForGPU( frameData[listNum].mappedVertexBase, frameData[listNum].vertexMemUsed.GetValue() );
+	RB_N3DS_FlushForGPU( frameData[listNum].mappedIndexBase, frameData[listNum].indexMemUsed.GetValue() );
+#endif
 
 	// unmap the current frame so the GPU can read it
 	const int startUnmap = Sys_Milliseconds();

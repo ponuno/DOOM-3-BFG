@@ -226,6 +226,9 @@ void idGameLocal::Clear() {
 	editEntities = NULL;
 	entityHash.Clear( 1024, MAX_GENTITIES );
 	inCinematic = false;
+	skipCinematic = false;
+	cinematicSkipTime = 0;
+	skipPrevButtons = 0;
 	framenum = 0;
 	previousTime = 0;
 	time = 0;
@@ -892,6 +895,9 @@ void idGameLocal::LoadMap( const char * mapName, int randseed ) {
 			delete mapFile;
 		}
 		mapFile = new (TAG_GAME) idMapFile;
+#if defined( ID_3DS )
+		idMapFile::discardPrimitives = cvarSystem->GetCVarBool( "n3ds_mapEntitiesOnly" );
+#endif
 		if ( !mapFile->Parse( idStr( mapName ) + ".map" ) ) {
 			delete mapFile;
 			mapFile = NULL;
@@ -968,6 +974,8 @@ void idGameLocal::LoadMap( const char * mapName, int randseed ) {
 	spawnArgs.Clear();
 
 	inCinematic = false;
+	skipCinematic = false;
+	cinematicSkipTime = 0;
 
 	clip.Init();
 
@@ -1509,6 +1517,10 @@ void idGameLocal::MapShutdown() {
 	if ( inCinematic ) {
 		camera = NULL;
 		inCinematic = false;
+	}
+	if ( skipCinematic ) {
+		skipCinematic = false;
+		soundSystem->SetMute( false );
 	}
 
 	MapClear( true );
@@ -2234,7 +2246,46 @@ void idGameLocal::RunTimeGroup2( idUserCmdMgr & userCmdMgr ) {
 idGameLocal::RunEntityThink
 ================
 */
+#if defined( ID_3DS )
+// New 3DS: find what makes a game frame slow (doors opening, cutscenes)
+idCVar n3ds_slowFrameMs( "n3ds_slowFrameMs", "80", CVAR_GAME | CVAR_INTEGER, "log game frames slower than this, with the slowest entity thinks" );
+static const int	N3DS_SLOW_LIST = 4;
+static uint64		n3dsThinkUs[N3DS_SLOW_LIST];
+static const idEntity *	n3dsThinkEnt[N3DS_SLOW_LIST];
+static idStr		n3dsThinkName[N3DS_SLOW_LIST];
+
+static void N3DS_RecordThink( const idEntity & ent, uint64 us ) {
+	for ( int i = 0; i < N3DS_SLOW_LIST; i++ ) {
+		if ( us > n3dsThinkUs[i] ) {
+			for ( int j = N3DS_SLOW_LIST - 1; j > i; j-- ) {
+				n3dsThinkUs[j] = n3dsThinkUs[j - 1];
+				n3dsThinkEnt[j] = n3dsThinkEnt[j - 1];
+				n3dsThinkName[j] = n3dsThinkName[j - 1];
+			}
+			n3dsThinkUs[i] = us;
+			n3dsThinkEnt[i] = &ent;
+			n3dsThinkName[i] = va( "%s (%s)", ent.name.c_str(), ent.GetClassname() );
+			return;
+		}
+	}
+}
+#endif
+
 void idGameLocal::RunEntityThink( idEntity & ent, idUserCmdMgr & userCmdMgr ) {
+#if defined( ID_3DS )
+	N3DS_STAGE( N3DS_STAGE_GAME, ent.GetClassname() );		// static string, safe for the watchdog
+	const uint64 thinkStart = Sys_Microseconds();
+	if ( ent.entityNumber < MAX_PLAYERS ) {
+		RunAllUserCmdsForPlayer( userCmdMgr, ent.entityNumber );
+	} else {
+		ent.Think();
+	}
+	const uint64 thinkUs = Sys_Microseconds() - thinkStart;
+	if ( thinkUs > n3dsThinkUs[N3DS_SLOW_LIST - 1] ) {
+		N3DS_RecordThink( ent, thinkUs );
+	}
+	return;
+#endif
 	if ( ent.entityNumber < MAX_PLAYERS ) {
 		// Players may run more than one think per frame in MP,
 		// if there is a large buffer of usercmds from the network.
@@ -2253,7 +2304,81 @@ idCVar g_recordTrace( "g_recordTrace", "0", CVAR_BOOL, "" );
 idGameLocal::RunFrame
 ================
 */
+idCVar g_cinematicSkip( "g_cinematicSkip", "1", CVAR_GAME | CVAR_BOOL | CVAR_ARCHIVE, "jump or attack skips a cinematic (fast-forwards it with the sound muted)" );
+// g_cinematicMaxSkipTime: gamesys/SysCvar.cpp (from the original Doom 3, unused in BFG until now)
+idCVar g_cinematicSkipMsPerFrame( "g_cinematicSkipMsPerFrame", "200", CVAR_GAME | CVAR_INTEGER, "real milliseconds of game frames run per rendered frame while skipping a cinematic", 16, 2000 );
+
+/*
+=============
+idGameLocal::SkipCinematic
+
+From the original Doom 3. Returns true if the cinematic is being fast-forwarded.
+=============
+*/
+bool idGameLocal::SkipCinematic() {
+	if ( camera != NULL ) {
+		if ( camera->spawnArgs.GetBool( "disconnect" ) ) {
+			camera->spawnArgs.Set( "disconnect", "0" );
+			return false;
+		}
+		if ( camera->spawnArgs.GetBool( "instantSkip" ) ) {
+			camera->Stop();
+			return false;
+		}
+	}
+	soundSystem->SetMute( true );
+	if ( !skipCinematic ) {
+		Printf( "skipping cinematic (camera %s)\n", camera != NULL ? camera->GetName() : "none" );
+		skipCinematic = true;
+		cinematicSkipTime = time + SEC2MS( g_cinematicMaxSkipTime.GetFloat() );
+	}
+	return true;
+}
+
+/*
+================
+idGameLocal::RunFrame
+
+One game frame, or while a cinematic is being skipped, as many as fit in
+g_cinematicSkipMsPerFrame (spread over rendered frames so the app stays responsive).
+================
+*/
 void idGameLocal::RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
+	if ( !common->IsMultiplayer() && g_cinematicSkip.GetBool() ) {
+		// jump or attack, newly pressed, during a cinematic
+		const int skipButtons = BUTTON_JUMP | BUTTON_ATTACK;
+		const int buttons = cmdMgr.NewestUserCmdForPlayer( GetLocalClientNum() ).buttons & skipButtons;
+		if ( inCinematic && !skipCinematic && ( buttons & ~skipPrevButtons ) != 0 ) {
+			SkipCinematic();
+		}
+		skipPrevButtons = buttons;
+	}
+
+	RunFrameOnce( cmdMgr, ret );
+
+	if ( skipCinematic ) {
+		const int start = Sys_Milliseconds();
+		for ( ;; ) {
+			if ( !inCinematic || time >= cinematicSkipTime || ret.sessionCommand[0] != '\0' || gameRenderWorld == NULL ) {
+				// done (or a map change was asked for: it must reach the session)
+				skipCinematic = false;
+				soundSystem->SetMute( false );
+				break;
+			}
+			if ( Sys_Milliseconds() - start >= g_cinematicSkipMsPerFrame.GetInteger() ) {
+				break;
+			}
+			RunFrameOnce( cmdMgr, ret );
+		}
+	}
+}
+
+/*
+================
+idGameLocal::RunFrameOnce
+================
+*/
+void idGameLocal::RunFrameOnce( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 	idEntity *	ent;
 	int			num;
 	float		ms;
@@ -2352,6 +2477,13 @@ void idGameLocal::RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 
 		timer_think.Clear();
 		timer_think.Start();
+#if defined( ID_3DS )
+		const uint64 n3dsFrameStart = Sys_Microseconds();
+		for ( int i = 0; i < N3DS_SLOW_LIST; i++ ) {
+			n3dsThinkUs[i] = 0;
+			n3dsThinkEnt[i] = NULL;
+		}
+#endif
 
 		// let entities think
 		if ( g_timeentities.GetFloat() ) {
@@ -2424,6 +2556,10 @@ void idGameLocal::RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 		timer_think.Stop();
 		timer_events.Clear();
 		timer_events.Start();
+#if defined( ID_3DS )
+		const uint64 n3dsEventsStart = Sys_Microseconds();
+		N3DS_STAGE( N3DS_STAGE_GAME, "events / scripts" );
+#endif
 
 		// service any pending events
 		idEvent::ServiceEvents();
@@ -2434,6 +2570,21 @@ void idGameLocal::RunFrame( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 		SelectTimeGroup( false );
 
 		timer_events.Stop();
+#if defined( ID_3DS )
+		{
+			const uint64 end = Sys_Microseconds();
+			const float totalMs = ( end - n3dsFrameStart ) * 0.001f;
+			if ( totalMs >= n3ds_slowFrameMs.GetFloat() && cvarSystem->GetCVarBool( "n3ds_debug" ) ) {
+				idStr slow;
+				for ( int i = 0; i < N3DS_SLOW_LIST && n3dsThinkEnt[i] != NULL; i++ ) {
+					slow += va( "%s%s %.1f ms", i ? ", " : "", n3dsThinkName[i].c_str(), n3dsThinkUs[i] * 0.001f );
+				}
+				Printf( "SLOW GAME FRAME %d: %.1f ms (think %.1f, events/scripts %.1f, %d ents) slowest: %s\n",
+					time, totalMs, ( n3dsEventsStart - n3dsFrameStart ) * 0.001f, ( end - n3dsEventsStart ) * 0.001f,
+					num, slow.c_str() );
+			}
+		}
+#endif
 
 		// free the player pvs
 		FreePlayerPVS();
@@ -4167,6 +4318,7 @@ void idGameLocal::SetCamera( idCamera *cam ) {
 	camera = cam;
 	if ( camera ) {
 		inCinematic = true;
+		Printf( "cinematic: camera %s\n", camera->GetName() );
 
 		// set r_znear so that transitioning into/out of the player's head doesn't clip through the view
 		cvarSystem->SetCVarFloat( "r_znear", 1.0f );

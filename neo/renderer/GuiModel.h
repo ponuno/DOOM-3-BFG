@@ -71,8 +71,15 @@ private:
 	static const float STEREO_DEPTH_FAR;
 
 	// if we exceed these limits we stop rendering GUI surfaces
+#if defined( ID_3DS )
+	// indexes are 16-bit: 80000 vertexes could not all be addressed anyway, and a block of
+	// that size was 2.5 MB of linear memory per frame cache set
+	static const int MAX_INDEXES = ( 8192 * 6 );
+	static const int MAX_VERTS	 = ( 8192 * 4 );
+#else
 	static const int MAX_INDEXES = ( 20000 * 6 );
 	static const int MAX_VERTS	 = ( 20000 * 4 );
+#endif
 
 	vertCacheHandle_t			vertexBlock;
 	vertCacheHandle_t			indexBlock;

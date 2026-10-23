@@ -66,9 +66,12 @@ void idSIMD::InitProcessor( const char *module, bool forceGeneric ) {
 	} else {
 
 		if ( processor == NULL ) {
+#if !defined( ID_3DS )
 			if ( ( cpuid & CPUID_MMX ) && ( cpuid & CPUID_SSE ) ) {
 				processor = new (TAG_MATH) idSIMD_SSE;
-			} else {
+			} else
+#endif
+			{
 				processor = generic;
 			}
 			processor->cpuid = cpuid;
@@ -128,6 +131,19 @@ long baseClocks = 0;
 
 #define TIME_TYPE int
 
+#if defined( ID_3DS )
+
+// libctru headers are C; only <3ds.h> adds extern "C" itself
+extern "C" {
+#include <3ds/svc.h>
+}
+
+// ARM11 system tick (268 MHz)
+#define StartRecordTime( start )			start = (int)svcGetSystemTick();
+#define StopRecordTime( end )				end = (int)svcGetSystemTick();
+
+#else
+
 #pragma warning(disable : 4731)     // frame pointer register 'ebx' modified by inline assembly code
 
 long saved_ebx = 0;
@@ -150,6 +166,8 @@ long saved_ebx = 0;
 	__asm xor eax, eax						\
 	__asm cpuid
 
+
+#endif // ID_3DS
 
 #define GetBest( start, end, best )			\
 	if ( !best || end - start < best ) {	\
@@ -1215,7 +1233,9 @@ idSIMD::Test_f
 */
 void idSIMD::Test_f( const idCmdArgs &args ) {
 
+#if !defined( ID_3DS )
 	SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL );
+#endif
 
 	p_simd = processor;
 	p_generic = generic;
@@ -1231,7 +1251,9 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 				common->Printf( "CPU does not support MMX & SSE\n" );
 				return;
 			}
+#if !defined( ID_3DS )
 			p_simd = new (TAG_MATH) idSIMD_SSE;
+#endif
 		} else {
 			common->Printf( "invalid argument, use: MMX, 3DNow, SSE, SSE2, SSE3, AltiVec\n" );
 			return;
@@ -1268,5 +1290,7 @@ void idSIMD::Test_f( const idCmdArgs &args ) {
 	p_simd = NULL;
 	p_generic = NULL;
 
+#if !defined( ID_3DS )
 	SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_NORMAL );
+#endif
 }

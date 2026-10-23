@@ -154,7 +154,7 @@ public:
 		return *this;
 	}
 	// for std::sort, sort newer (larger date) towards start of list
-	bool	operator<( const idSaveGameDetails & other ) { return date > other.date; }
+	bool	operator<( const idSaveGameDetails & other ) const { return date > other.date; }
 
 	idStr	GetMapName() const { return descriptors.GetString( SAVEGAME_DETAIL_FIELD_MAP, "" ); }
 	idStr	GetLocation() const { return descriptors.GetString( SAVEGAME_DETAIL_FIELD_MAP_LOCATE, "" ); }

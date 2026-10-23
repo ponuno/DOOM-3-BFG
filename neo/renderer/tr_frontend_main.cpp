@@ -41,7 +41,14 @@ FRAME MEMORY ALLOCATION
 
 static const unsigned int NUM_FRAME_DATA = 2;
 static const unsigned int FRAME_ALLOC_ALIGNMENT = 128;
+#if defined( ID_3DS )
+// New 3DS: two of these live at once out of an 86 MB heap. Measured peak (PERF
+// "frame memory peak"): 208 KB in the busiest delta4 fights (362 draws, 20 lights).
+// R_FrameAlloc reports the high-water mark if it ever runs out.
+static const unsigned int MAX_FRAME_MEMORY = 768 * 1024;
+#else
 static const unsigned int MAX_FRAME_MEMORY = 64 * 1024 * 1024;	// larger so that we can noclip on PC for dev purposes
+#endif
 
 idFrameData		smpFrameData[NUM_FRAME_DATA];
 idFrameData *	frameData;
@@ -52,6 +59,24 @@ unsigned int	smpFrame;
 #if defined( TRACK_FRAME_ALLOCS )
 idSysInterlockedInteger frameAllocTypeCount[FRAME_ALLOC_MAX];
 int frameHighWaterTypeCount[FRAME_ALLOC_MAX];
+#endif
+
+#if defined( ID_3DS )
+/*
+====================
+R_FrameMemoryStats
+
+Memory diagnostics: largest per-frame allocation seen so far and the size of each
+of the NUM_FRAME_DATA blocks.
+====================
+*/
+void R_FrameMemoryStats( int & highWater, int & size ) {
+	highWater = 0;
+	for ( int i = 0; i < NUM_FRAME_DATA; i++ ) {
+		highWater = Max( highWater, smpFrameData[i].highWaterAllocated );
+	}
+	size = MAX_FRAME_MEMORY;
+}
 #endif
 
 /*
@@ -383,6 +408,11 @@ void R_RenderView( viewDef_t *parms ) {
 	// identify all the visible portal areas, and create view lights and view entities
 	// for all the the entityDefs and lightDefs that are in the visible portal areas
 	static_cast<idRenderWorldLocal *>(parms->renderWorld)->FindViewLightsAndEntities();
+
+	// New 3DS: textures of this area and the next ones are read before they come into view
+	if ( r_n3dsC3D ) {
+		R_N3DS_BuildPrefetch( tr.viewDef );
+	}
 
 	// wait for any shadow volume jobs from the previous frame to finish
 	tr.frontEndJobList->Wait();

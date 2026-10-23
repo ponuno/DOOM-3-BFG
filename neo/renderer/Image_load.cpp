@@ -30,6 +30,9 @@ If you have questions concerning this license or the applicable additional terms
 #include "../idlib/precompiled.h"
 
 #include "tr_local.h"
+#if defined( ID_3DS )
+#include "3DS/n3ds_gpu.h"
+#endif
 
 /*
 ================
@@ -192,6 +195,9 @@ void idImage::GenerateImage( const byte *pic, int width, int height, textureFilt
 		const byte * data = im.GetImageData( i );
 		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
 	}
+#if defined( ID_3DS )
+	N3DS_KeepLevel( im, RB_N3DS_TexKeepSize( usage, GetName() ) );		// _white, _noFalloff, _quadratic, ...
+#endif
 }
 
 /*
@@ -234,6 +240,59 @@ void idImage::GenerateCubeImage( const byte *pic[6], int size, textureFilter_t f
 		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
 	}
 }
+
+#if defined( ID_3DS )
+/*
+========================
+idImage::N3DS_KeepLevel
+
+citro3d: hand one level to the texture cache, the largest with data that is not
+over keepSize, else the smallest with data.
+========================
+*/
+int idImage::N3DS_Wrap() const {
+	if ( repeat == TR_REPEAT ) {
+		return N3DS_WRAP_REPEAT;
+	} else if ( repeat == TR_CLAMP_TO_ZERO || repeat == TR_CLAMP_TO_ZERO_ALPHA ) {
+		return N3DS_WRAP_ZERO;
+	}
+	return N3DS_WRAP_CLAMP;
+}
+
+void idImage::N3DS_KeepLevel( idBinaryImage & im, int keepSize, int streamIndex, const char * streamPath, int streamOffset ) {
+	if ( keepSize <= 0 || opts.textureType != TT_2D ) {
+		return;
+	}
+	const int wrap = N3DS_Wrap();
+	// the level was left on disk (idBinaryImage::streamKeptLevel): the cache reads it when drawn
+	if ( streamIndex >= 0 && streamIndex < im.NumImages() && streamPath != NULL && streamPath[0] != '\0' &&
+			im.GetImageData( streamIndex ) == NULL ) {
+		const bimageImage_t & img = im.GetImageHeader( streamIndex );
+		RB_N3DS_ImageLevelStreamed( this, opts.format, opts.colorFormat, img.width, img.height, img.dataSize,
+			streamPath, streamOffset, wrap, usage == TD_COVERAGE || ( usage == TD_FONT && N3DS_FontsAlphaOnly() ), keepSize );
+		return;
+	}
+	int pick = -1;
+	for ( int i = 0; i < im.NumImages(); i++ ) {
+		const bimageImage_t & img = im.GetImageHeader( i );
+		if ( im.GetImageData( i ) == NULL || img.destZ != 0 ) {
+			continue;
+		}
+		if ( pick < 0 || ( img.width <= keepSize && img.height <= keepSize ) ) {
+			pick = i;
+			if ( img.width <= keepSize && img.height <= keepSize ) {
+				break;
+			}
+		}
+	}
+	if ( pick < 0 ) {
+		return;
+	}
+	const bimageImage_t & img = im.GetImageHeader( pick );
+	RB_N3DS_ImageLevel( this, opts.format, opts.colorFormat, img.width, img.height,
+		im.GetImageData( pick ), img.dataSize, wrap, usage == TD_COVERAGE || ( usage == TD_FONT && N3DS_FontsAlphaOnly() ), keepSize );
+}
+#endif
 
 /*
 ===============
@@ -300,6 +359,14 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 	GetGeneratedName( generatedName, usage, cubeFiles );
 
 	idBinaryImage im( generatedName );
+#if defined( ID_3DS )
+	// citro3d: keep one small level of colour images for the texture cache
+	const int n3dsKeepSize = ( cubeFiles == CF_2D ) ? RB_N3DS_TexKeepSize( usage, GetName() ) : 0;
+	idBinaryImage::keepLevelMaxSize = n3dsKeepSize;
+	idBinaryImage::streamKeptLevel = ( n3dsKeepSize > 0 ) && RB_N3DS_TexStreaming();
+	// converted on the PC: taken from the texture pack, the .bimage is not read
+	idBinaryImage::usePack = ( cubeFiles == CF_2D ) && r_n3dsC3D;
+#endif
 	binaryFileTime = im.LoadFromGeneratedFile( sourceFileTime );
 
 	// BFHACK, do not want to tweak on buildgame so catch these images here
@@ -424,6 +491,18 @@ void idImage::ActuallyLoadImage( bool fromBackEnd ) {
 		const byte * data = im.GetImageData( i );
 		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
 	}
+
+#if defined( ID_3DS )
+	idBinaryImage::keepLevelMaxSize = 0;
+	idBinaryImage::streamKeptLevel = false;
+	idBinaryImage::usePack = false;
+	if ( idBinaryImage::packEntry != NULL ) {
+		RB_N3DS_ImagePacked( this, (const n3dsPackEntry_t *)idBinaryImage::packEntry, N3DS_Wrap() );
+		idBinaryImage::packEntry = NULL;
+	} else {
+		N3DS_KeepLevel( im, n3dsKeepSize, idBinaryImage::keptLevelIndex, idBinaryImage::keptLevelPath.c_str(), idBinaryImage::keptLevelOffset );
+	}
+#endif
 }
 
 /*

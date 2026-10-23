@@ -1847,7 +1847,13 @@ int idStr::vsnPrintf( char *dest, int size, const char *fmt, va_list argptr ) {
 	int ret;
 
 #undef _vsnprintf
+#if defined( ID_3DS )
+#undef vsnprintf
+	ret = vsnprintf( dest, size, fmt, argptr );
+#define vsnprintf	use_idStr_vsnPrintf
+#else
 	ret = _vsnprintf( dest, size-1, fmt, argptr );
+#endif
 #define _vsnprintf	use_idStr_vsnPrintf
 	dest[size-1] = '\0';
 	if ( ret < 0 || ret >= size ) {

@@ -1269,6 +1269,16 @@ idZipBuilder::GetFileTime
 ========================
 */
 bool idZipBuilder::GetFileTime( const idStr &filename, unsigned long *dostime ) const {
+#if defined( ID_3DS )
+	struct stat st;
+	if ( stat( filename.c_str(), &st ) == 0 ) {
+		struct tm * t = localtime( &st.st_mtime );
+		*dostime = ( (unsigned long)( t->tm_year - 80 ) << 25 ) | ( (unsigned long)( t->tm_mon + 1 ) << 21 ) | ( (unsigned long)t->tm_mday << 16 )
+			| ( (unsigned long)t->tm_hour << 11 ) | ( (unsigned long)t->tm_min << 5 ) | ( (unsigned long)t->tm_sec >> 1 );
+		return true;
+	}
+	return false;
+#else
 	{
 		FILETIME filetime;
 		WIN32_FIND_DATA fileData;
@@ -1282,6 +1292,7 @@ bool idZipBuilder::GetFileTime( const idStr &filename, unsigned long *dostime ) 
 		FindClose( findHandle );
 	}
 	return false;
+#endif
 }
 
 /*

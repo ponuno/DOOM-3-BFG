@@ -31,6 +31,11 @@ If you have questions concerning this license or the applicable additional terms
 
 #define PUNCTABLE
 
+// LEXFL_STREAMFILE: size of the window a big file is read through, and how much of it
+// must be ahead of script_p when a token starts (far more than any token is long)
+static const int LEXER_STREAM_WINDOW = 256 * 1024;
+static const int LEXER_STREAM_MARGIN = 64 * 1024;
+
 //longer punctuations first
 punctuation_t default_punctuations[] = {
 	//binary operators
@@ -287,6 +292,9 @@ int idLexer::ReadWhiteSpace() {
 		// skip white space
 		while(*idLexer::script_p <= ' ') {
 			if (!*idLexer::script_p) {
+				if ( StreamMore() ) {
+					continue;
+				}
 				return 0;
 			}
 			if (*idLexer::script_p == '\n') {
@@ -296,19 +304,23 @@ int idLexer::ReadWhiteSpace() {
 		}
 		// skip comments
 		if (*idLexer::script_p == '/') {
+			// a streamed window may end right after the slash
+			if ( idLexer::script_p + 1 >= idLexer::end_p ) {
+				StreamMore();
+			}
 			// comments //
 			if (*(idLexer::script_p+1) == '/') {
 				idLexer::script_p++;
 				do {
 					idLexer::script_p++;
-					if ( !*idLexer::script_p ) {
+					if ( !*idLexer::script_p && !StreamMore() ) {
 						return 0;
 					}
 				}
 				while( *idLexer::script_p != '\n' );
 				idLexer::line++;
 				idLexer::script_p++;
-				if ( !*idLexer::script_p ) {
+				if ( !*idLexer::script_p && !StreamMore() ) {
 					return 0;
 				}
 				continue;
@@ -318,7 +330,7 @@ int idLexer::ReadWhiteSpace() {
 				idLexer::script_p++;
 				while( 1 ) {
 					idLexer::script_p++;
-					if ( !*idLexer::script_p ) {
+					if ( !*idLexer::script_p && !StreamMore() ) {
 						return 0;
 					}
 					if ( *idLexer::script_p == '\n' ) {
@@ -328,17 +340,20 @@ int idLexer::ReadWhiteSpace() {
 						if ( *(idLexer::script_p-1) == '*' ) {
 							break;
 						}
+						if ( idLexer::script_p + 1 >= idLexer::end_p ) {
+							StreamMore();
+						}
 						if ( *(idLexer::script_p+1) == '*' ) {
 							idLexer::Warning( "nested comment" );
 						}
 					}
 				}
 				idLexer::script_p++;
-				if ( !*idLexer::script_p ) {
+				if ( !*idLexer::script_p && !StreamMore() ) {
 					return 0;
 				}
 				idLexer::script_p++;
-				if ( !*idLexer::script_p ) {
+				if ( !*idLexer::script_p && !StreamMore() ) {
 					return 0;
 				}
 				continue;
@@ -347,6 +362,86 @@ int idLexer::ReadWhiteSpace() {
 		break;
 	}
 	return 1;
+}
+
+/*
+================
+idLexer::StreamRefill
+
+LEXFL_STREAMFILE: moves what is left of the window from keepFrom on to its start and
+fills the rest from the file. Every pointer into the window (script_p, lastScript_p,
+the white space pointers) must be at or after keepFrom; they move along. A window that
+is (nearly) full from keepFrom on grows: white space or a comment longer than the
+window stays whole, so going back to lastScript_p always works.
+================
+*/
+bool idLexer::StreamRefill( const char *keepFrom ) {
+	if ( streamFile == NULL ) {
+		return false;
+	}
+	const int keep = (int)( end_p - keepFrom );
+	const int shift = (int)( keepFrom - buffer );
+	if ( streamCapacity - keep < LEXER_STREAM_MARGIN ) {
+		const int newCapacity = keep + LEXER_STREAM_WINDOW;
+		char * newWindow = (char *) Mem_Alloc( newCapacity + 1, TAG_IDLIB_LEXER );
+		memcpy( newWindow, keepFrom, keep );
+		const char * oldBuffer = buffer;
+		Mem_Free( streamWindow );
+		streamWindow = newWindow;
+		streamCapacity = newCapacity;
+		// rebase as if the kept part had been moved to the start of the old window
+		script_p = newWindow + ( script_p - oldBuffer - shift );
+		lastScript_p = newWindow + ( lastScript_p - oldBuffer - shift );
+		if ( whiteSpaceStart_p != NULL ) {
+			whiteSpaceStart_p = ( whiteSpaceStart_p - shift >= oldBuffer ) ? newWindow + ( whiteSpaceStart_p - oldBuffer - shift ) : newWindow;
+		}
+		if ( whiteSpaceEnd_p != NULL ) {
+			whiteSpaceEnd_p = ( whiteSpaceEnd_p - shift >= oldBuffer ) ? newWindow + ( whiteSpaceEnd_p - oldBuffer - shift ) : newWindow;
+		}
+		buffer = newWindow;
+	} else {
+		memmove( streamWindow, keepFrom, keep );
+		script_p -= shift;
+		lastScript_p -= shift;
+		if ( whiteSpaceStart_p != NULL ) {
+			whiteSpaceStart_p = ( whiteSpaceStart_p - shift >= buffer ) ? whiteSpaceStart_p - shift : buffer;
+		}
+		if ( whiteSpaceEnd_p != NULL ) {
+			whiteSpaceEnd_p = ( whiteSpaceEnd_p - shift >= buffer ) ? whiteSpaceEnd_p - shift : buffer;
+		}
+	}
+	streamBase += shift;
+	const int room = streamCapacity - keep;
+	int got = 0;
+	while ( got < room ) {
+		const int r = streamFile->Read( streamWindow + keep + got, room - got );
+		if ( r <= 0 ) {
+			break;
+		}
+		got += r;
+	}
+	streamWindow[keep + got] = '\0';
+	end_p = streamWindow + keep + got;
+	if ( streamFile->Tell() >= length ) {
+		idLib::fileSystem->CloseFile( streamFile );
+		streamFile = NULL;
+	}
+	return got > 0;
+}
+
+/*
+================
+idLexer::StreamMore
+
+White space or a comment ran to the end of the window: true if more of the file was
+read in. Keeps everything from lastScript_p (the start of this token's white space) on.
+================
+*/
+bool idLexer::StreamMore() {
+	if ( streamFile == NULL || script_p < end_p - 1 ) {
+		return false;
+	}
+	return StreamRefill( lastScript_p );
 }
 
 /*
@@ -920,6 +1015,10 @@ int idLexer::ReadToken( idToken *token ) {
 		*token = idLexer::token;
 		return 1;
 	}
+	// streamed file: every token starts with a whole margin of the file in the window
+	if ( streamFile != NULL && end_p - script_p < LEXER_STREAM_MARGIN ) {
+		StreamRefill( script_p );
+	}
 	// save script pointer
 	lastScript_p = script_p;
 	// save line counter
@@ -994,6 +1093,11 @@ int idLexer::ReadToken( idToken *token ) {
 	// check for punctuations
 	else if ( !idLexer::ReadPunctuation( token ) ) {
 		idLexer::Error( "unknown punctuation %c", c );
+		return 0;
+	}
+	// a streamed window must never end inside a token (the margin is far longer than any)
+	if ( streamFile != NULL && script_p >= end_p ) {
+		idLexer::Error( "token longer than %d bytes in streamed file %s", LEXER_STREAM_MARGIN, filename.c_str() );
 		return 0;
 	}
 	// succesfully read a token
@@ -1284,6 +1388,11 @@ idLexer::ReadRestOfLine
 ================
 */
 const char*	idLexer::ReadRestOfLine(idStr& out) {
+	if ( streamWindow != NULL ) {
+		// reads the window directly: would stop at its end
+		idLexer::Error( "%s is streamed (LEXFL_STREAMFILE): raw text reads are not supported", filename.c_str() );
+		return NULL;
+	}
 	while(1) {
 
 		if(*idLexer::script_p == '\n') {
@@ -1463,6 +1572,11 @@ Maintains exact characters between braces.
 =================
 */
 const char *idLexer::ParseBracedSectionExact( idStr &out, int tabs ) {
+	if ( streamWindow != NULL ) {
+		// reads the window directly: would stop at its end
+		idLexer::Error( "%s is streamed (LEXFL_STREAMFILE): raw text reads are not supported", filename.c_str() );
+		return NULL;
+	}
 	int		depth;
 	bool	doTabs;
 	bool	skipWhite;
@@ -1608,6 +1722,11 @@ Returns a string up to the \n, but doesn't eat any whitespace at the beginning o
 ========================
 */
 const char *idLexer::ParseCompleteLine( idStr &out ) {
+	if ( streamWindow != NULL ) {
+		// reads the window directly: would stop at its end
+		idLexer::Error( "%s is streamed (LEXFL_STREAMFILE): raw text reads are not supported", filename.c_str() );
+		return NULL;
+	}
 	idToken token;
 	const char	*start;
 
@@ -1651,7 +1770,7 @@ idLexer::GetLastWhiteSpaceStart
 ================
 */
 int idLexer::GetLastWhiteSpaceStart() const {
-	return whiteSpaceStart_p - buffer;
+	return streamBase + (int)( whiteSpaceStart_p - buffer );
 }
 
 /*
@@ -1660,7 +1779,7 @@ idLexer::GetLastWhiteSpaceEnd
 ================
 */
 int idLexer::GetLastWhiteSpaceEnd() const {
-	return whiteSpaceEnd_p - buffer;
+	return streamBase + (int)( whiteSpaceEnd_p - buffer );
 }
 
 /*
@@ -1669,6 +1788,9 @@ idLexer::Reset
 ================
 */
 void idLexer::Reset() {
+	if ( streamWindow != NULL ) {
+		idLib::common->Error( "idLexer::Reset: %s is streamed (LEXFL_STREAMFILE)", filename.c_str() );
+	}
 	// pointer in script buffer
 	idLexer::script_p = idLexer::buffer;
 	// pointer in script buffer before reading token
@@ -1692,7 +1814,7 @@ idLexer::EndOfFile
 ================
 */
 bool idLexer::EndOfFile() {
-	return idLexer::script_p >= idLexer::end_p;
+	return idLexer::script_p >= idLexer::end_p && idLexer::streamFile == NULL;
 }
 
 /*
@@ -1734,11 +1856,43 @@ int idLexer::LoadFile( const char *filename, bool OSPath ) {
 		return false;
 	}
 	length = fp->Length();
+	idLexer::fileTime = fp->Timestamp();
+	idLexer::filename = fp->GetFullPath();
+	idLexer::streamBase = 0;
+	idLexer::streamCapacity = 0;
+	if ( ( idLexer::flags & LEXFL_STREAMFILE ) && length > LEXER_STREAM_WINDOW ) {
+		// a big file (a 10 MB .map) is read through a fixed window: no block of
+		// the file's size is needed, ReadToken refills as it goes
+		buf = (char *) Mem_Alloc( LEXER_STREAM_WINDOW + 1, TAG_IDLIB_LEXER );
+		int got = 0;
+		while ( got < LEXER_STREAM_WINDOW ) {
+			const int r = fp->Read( buf + got, LEXER_STREAM_WINDOW - got );
+			if ( r <= 0 ) {
+				break;
+			}
+			got += r;
+		}
+		buf[got] = '\0';
+		idLexer::streamWindow = buf;
+		idLexer::streamCapacity = LEXER_STREAM_WINDOW;
+		idLexer::streamFile = fp;
+		idLexer::buffer = buf;
+		idLexer::length = length;
+		idLexer::script_p = buf;
+		idLexer::lastScript_p = buf;
+		idLexer::whiteSpaceStart_p = NULL;
+		idLexer::whiteSpaceEnd_p = NULL;
+		idLexer::end_p = buf + got;
+		idLexer::tokenavailable = 0;
+		idLexer::line = 1;
+		idLexer::lastline = 1;
+		idLexer::allocated = true;
+		idLexer::loaded = true;
+		return true;
+	}
 	buf = (char *) Mem_Alloc( length + 1, TAG_IDLIB_LEXER );
 	buf[length] = '\0';
 	fp->Read( buf, length );
-	idLexer::fileTime = fp->Timestamp();
-	idLexer::filename = fp->GetFullPath();
 	idLib::fileSystem->CloseFile( fp );
 
 	idLexer::buffer = buf;
@@ -1805,6 +1959,13 @@ void idLexer::FreeSource() {
 		idLexer::nextpunctuation = NULL;
 	}
 #endif //PUNCTABLE
+	if ( idLexer::streamFile != NULL ) {
+		idLib::fileSystem->CloseFile( idLexer::streamFile );
+		idLexer::streamFile = NULL;
+	}
+	idLexer::streamWindow = NULL;
+	idLexer::streamBase = 0;
+	idLexer::streamCapacity = 0;
 	if ( idLexer::allocated ) {
 		Mem_Free( (void *) idLexer::buffer );
 		idLexer::buffer = NULL;
@@ -1834,6 +1995,10 @@ idLexer::idLexer() {
 	idLexer::token = "";
 	idLexer::next = NULL;
 	idLexer::hadError = false;
+	idLexer::streamFile = NULL;
+	idLexer::streamWindow = NULL;
+	idLexer::streamBase = 0;
+	idLexer::streamCapacity = 0;
 }
 
 /*
@@ -1855,6 +2020,10 @@ idLexer::idLexer( int flags ) {
 	idLexer::token = "";
 	idLexer::next = NULL;
 	idLexer::hadError = false;
+	idLexer::streamFile = NULL;
+	idLexer::streamWindow = NULL;
+	idLexer::streamBase = 0;
+	idLexer::streamCapacity = 0;
 }
 
 /*
@@ -1870,6 +2039,10 @@ idLexer::idLexer( const char *filename, int flags, bool OSPath ) {
 	idLexer::token = "";
 	idLexer::next = NULL;
 	idLexer::hadError = false;
+	idLexer::streamFile = NULL;
+	idLexer::streamWindow = NULL;
+	idLexer::streamBase = 0;
+	idLexer::streamCapacity = 0;
 	idLexer::LoadFile( filename, OSPath );
 }
 
@@ -1886,6 +2059,10 @@ idLexer::idLexer( const char *ptr, int length, const char *name, int flags ) {
 	idLexer::token = "";
 	idLexer::next = NULL;
 	idLexer::hadError = false;
+	idLexer::streamFile = NULL;
+	idLexer::streamWindow = NULL;
+	idLexer::streamBase = 0;
+	idLexer::streamCapacity = 0;
 	idLexer::LoadMemory( ptr, length, name );
 }
 

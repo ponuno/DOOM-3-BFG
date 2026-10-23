@@ -26,7 +26,7 @@ If you have questions concerning this license or the applicable additional terms
 ===========================================================================
 */
 #pragma hdrstop
-#include "../../idLib/precompiled.h"
+#include "../../idlib/precompiled.h"
 #include "../Game_local.h"
 
 
@@ -382,9 +382,12 @@ void idMenuHandler_Shell::Initialize( const char * swfFile, idSoundWorld * sw ) 
 	}
 
 	// done for build game purposes so these get touched
+	// (3DS: not when playing - three SWF loads and frees per menu change for nothing)
+#if !defined( ID_3DS )
 	delete new idSWF( "doomIntro", NULL );
 	delete new idSWF( "roeIntro", NULL );
 	delete new idSWF( "leIntro", NULL );
+#endif
 
 	if ( inGame ) {
 		BIND_SHELL_SCREEN( SHELL_AREA_ROOT, idMenuScreen_Shell_Pause, this );

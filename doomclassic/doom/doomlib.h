@@ -91,6 +91,16 @@ struct ExpansionData {
 
 
 
+#if defined( ID_3DS )
+// Win32 names used by the classic DOOM glue code
+#include <netinet/in.h>
+#include <sys/socket.h>
+typedef unsigned long	DWORD;
+#ifndef MAX_PATH
+#define MAX_PATH		260
+#endif
+#endif
+
 namespace DoomLib
 {
 	typedef int ( *RecvFunc)( char* buff, DWORD *numRecv );

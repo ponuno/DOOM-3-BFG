@@ -1,0 +1,227 @@
+; New 3DS vertex shader for the hardware-lit path (n3ds_lighting 2).
+;   v0 = position (float3)
+;   v1 = normal (ubyte4, 0..255 -> -1..1)
+;   v2 = st (the two raw half floats of idDrawVert, read as signed shorts)
+;   v4 = tangent (ubyte4; w >= 128: bitangent = N x T, else -(N x T))
+;
+; The PICA fragment lighting needs, per vertex, the rotation from tangent space to eye
+; space as a quaternion (the bump unit rotates the normal map's normal with it; without
+; a normal map it rotates (0,0,1) to the vertex normal), and the vector from the vertex
+; to the eye. Light positions are given in the same eye space (n3ds_gpu.c).
+;
+; Tangent frame, as the BFG interaction shader: N, T, B = N x T x sign. A rotation cannot
+; mirror, so a mirrored frame (sign -1) uses T' = -T: then B' = N x T' is the true
+; bitangent and only the normal map's x is reversed on mirrored halves.
+; Geometry without tangents (T parallel to N or zero) gets a tangent from N alone.
+;
+; The quaternion from the T B N matrix: case discrimination on the largest of
+; w, x, y, z, as devkitPro's 3ds-examples graphics/gpu/normal_mapping (fincs).
+;
+;   outnq    = quaternion (x, y, z, w)
+;   outview  = -( modelView * position )
+;   texcoord0 = texcoord1 = texcoord2 = st (diffuse, normal map, specular map)
+;   colour   = surfColor
+
+; Uniforms
+.fvec mvp[4], mv[3], surfColor
+; diagnostics (n3ds_hwQuat): x = 1 output the rotation from Z to N alone (no tangent twist),
+; y = 1 turn q into the hemisphere of that rotation (consistent sign between vertices);
+; z = scale of the eye space the fragment lighting works in (view vector, light positions)
+.fvec quatMode
+; half float exponent table, set once by n3ds_gpu.c (see n3ds_vshader.v.pica)
+.fvec pow2[32]
+
+; Constants
+.constf consts(1.0, 0.0, 0.0078431373, -1.0)
+.constf halfK(32768.0, 0.0009765625, -1024.0, -2.0)
+.constf frameK(0.9, 0.0001, 2.0, 0.5)
+.alias  ones   consts.xxxx
+.alias  zeros  consts.yyyy
+.alias  bscale consts.zzzz
+.alias  bbias  consts.wwww
+
+; Outputs
+.out outpos  position
+.out outnq   normalquat
+.out outview view
+.out outclr  color
+.out outtc0  texcoord0
+.out outtc1  texcoord1
+.out outtc2  texcoord2
+
+; Inputs
+.alias inpos v0
+.alias innrm v1
+.alias inst  v2
+.alias intng v4
+
+.proc main
+	; r0 = (xyz, 1)
+	mov r0.xyz, inpos
+	mov r0.w,   ones
+
+	; outpos = mvp * r0
+	dp4 outpos.x, mvp[0], r0
+	dp4 outpos.y, mvp[1], r0
+	dp4 outpos.z, mvp[2], r0
+	dp4 outpos.w, mvp[3], r0
+
+	; eye-space position, view vector = -position
+	dp4 r1.x, mv[0], r0
+	dp4 r1.y, mv[1], r0
+	dp4 r1.z, mv[2], r0
+	mov r1.w, zeros
+	; the fragment lighting's eye space is scaled (quatMode.z, N3DS_HW_EYE_SCALE): its light
+	; positions are half floats
+	mul r1.xyz, quatMode.zzz, r1
+	mov outview, -r1
+
+	; ---- st: half float bits -> float, into r11.xy ----
+	mov r5, inst
+	slt r6, r5, zeros
+	mad r7, r6, halfK.xxxx, r5
+	mul r8, halfK.yyyy, r7
+	flr r8, r8
+	mad r9, r8, halfK.zzzz, r7
+	mova a0.xy, r8.xy
+	mul r6, halfK.wwww, r6
+	add r6, ones, r6
+	mov r10, pow2[a0.x]
+	mad r11.x, r9.x, r10.y, r10.x
+	mov r10, pow2[a0.y]
+	mad r11.y, r9.y, r10.y, r10.x
+	mul r11.xy, r11.xy, r6.xy
+	mov r11.zw, zeros
+	mov outtc0, r11
+	mov outtc1, r11
+	mov outtc2, r11
+
+	; ---- N (r14), T (r12): model -> eye (rotation part of mv) ----
+	mov r2, innrm
+	mul r2, bscale, r2
+	add r2, bbias, r2
+	mov r2.w, zeros
+	dp3 r14.x, mv[0], r2
+	dp3 r14.y, mv[1], r2
+	dp3 r14.z, mv[2], r2
+	dp3 r6.x, r14, r14
+	max r6.x, frameK.y, r6.x
+	rsq r6.x, r6.x
+	mul r14.xyz, r14.xyz, r6.xxx
+
+	mov r3, intng
+	mul r3, bscale, r3
+	add r3, bbias, r3
+	; sign: w >= 0 -> +1, else -1; a mirrored frame turns T around
+	sge r7.x, r3.w, zeros
+	mul r7.x, frameK.z, r7.x
+	add r7.x, bbias, r7.x
+	mov r3.w, zeros
+	dp3 r12.x, mv[0], r3
+	dp3 r12.y, mv[1], r3
+	dp3 r12.z, mv[2], r3
+	mul r12.xyz, r12.xyz, r7.xxx
+
+	; B = N x T
+	mul r13.xyz, r14.yzx, r12.zxy
+	mad r13.xyz, -r12.yzx, r14.zxy, r13
+
+	; no usable tangent (|B|^2 tiny): B = N x X, or N x Y when N is near X
+	;   N x X = ( 0, Nz, -Ny ), N x Y = ( -Nz, 0, Nx )
+	dp3 r6.x, r13, r13
+	slt r6.y, r6.x, frameK.y
+	max r6.z, r14.x, -r14.x
+	slt r6.z, r6.z, frameK.x
+	mov r8.x, zeros
+	mov r8.y, r14.z
+	mov r8.z, -r14.y
+	mov r9.x, -r14.z
+	mov r9.y, zeros
+	mov r9.z, r14.x
+	add r8.xyz, r8.xyz, -r9.xyz
+	mad r8.xyz, r6.zzz, r8.xyz, r9.xyz
+	add r8.xyz, r8.xyz, -r13.xyz
+	mad r13.xyz, r6.yyy, r8.xyz, r13.xyz
+
+	; normalize B, then T = B x N (orthonormal frame)
+	dp3 r6.x, r13, r13
+	max r6.x, frameK.y, r6.x
+	rsq r6.x, r6.x
+	mul r13.xyz, r13.xyz, r6.xxx
+	mul r12.xyz, r13.yzx, r14.zxy
+	mad r12.xyz, -r14.yzx, r13.zxy, r12
+
+	; r15 = the shortest rotation from Z to N: axis Z x N, w = 1 + Nz (not normalized)
+	mov r15.x, -r14.y
+	mov r15.y, r14.x
+	mov r15.z, zeros
+	add r15.w, ones, r14.z
+
+	; ---- quaternion of the matrix with columns T B N ----
+	; r12 = (Tx, Ty, Tz, Bz)
+	; r13 = (Tx, By, Nz, 1 )
+	; r14 = (Nx, Ny, Nz, Bx)
+	mov r12.w, r13.z
+	mov r14.w, r13.x
+	mov r13.x, r12.x
+	mov r13.z, r14.z
+	mov r13.w, ones
+
+	; case discrimination
+	mov r11.z, zeros
+	sge r10, zeros, r14.z
+	mov r11.xyw, r13.zxzy
+	add r10, r10, r10
+	mad r11.y, r10, r11, -r11
+	cmp r11.xy, le, ge, r11.zw
+
+	ifc cmp.x
+		ifc cmp.y
+			; X case
+			mov r13.yz, -r13
+			mov r14.y, -r14
+			dp4 r0.x, r13.w, r13
+			add r0.yzw, r12.yyzw, r14.wwxy
+		.else
+			; Y case
+			mov r13.xz, -r13
+			mov r12.z, -r12
+			dp4 r0.y, r13.w, r13
+			add r0.xzw, r12.yywz, r14.wwyx
+		.end
+	.else
+		ifc cmp.y
+			; Z case
+			mov r13.xy, -r13
+			mov r14.w, -r14
+			dp4 r0.z, r13.w, r13
+			add r0.xyw, r12.zwwy, r14.xyyw
+		.else
+			; W case
+			mov r12.z, -r12
+			mov r14.yw, -r14
+			dp4 r0.w, r13.w, r13
+			add r0.xyz, r12.wzyy, r14.yxww
+		.end
+	.end
+
+	; diagnostics: hemisphere / shortest rotation (quatMode, normally 0 0)
+	dp4 r1.x, r0, r15
+	slt r1.y, r1.x, zeros
+	mul r1.y, quatMode.y, r1.y
+	mul r1.y, halfK.w, r1.y
+	add r1.z, ones, r1.y
+	mul r0, r1.zzzz, r0
+	add r2, r15, -r0
+	mul r2, quatMode.xxxx, r2
+	add r0, r0, r2
+
+	; renormalize and output
+	dp4 r1.x, r0, r0
+	rsq r1.x, r1.x
+	mul outnq, r0, r1.x
+
+	mov outclr, surfColor
+
+	end
+.end

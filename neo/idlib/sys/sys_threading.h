@@ -38,6 +38,20 @@ If you have questions concerning this license or the applicable additional terms
 ================================================================================================
 */
 
+#if defined( ID_3DS )
+	// New 3DS: opaque mirrors of libctru types so this header stays free of <3ds.h>.
+	// Layouts are verified with static_asserts in sys/3ds/3ds_thread.cpp.
+	#include <sys/lock.h>
+	#include <stdint.h>
+	typedef _LOCK_RECURSIVE_T		mutexHandle_t;		// == RecursiveLock
+	struct signalHandle_t {								// == LightEvent
+		int32_t		state;
+		_LOCK_T		lock;
+	};
+	typedef int32_t					interlockedInt_t;
+
+	#define SYS_MEMORYBARRIER		__sync_synchronize()
+#else
 	typedef CRITICAL_SECTION		mutexHandle_t;
 	typedef HANDLE					signalHandle_t;
 	typedef LONG					interlockedInt_t;
@@ -47,6 +61,7 @@ If you have questions concerning this license or the applicable additional terms
 	// MemoryBarrier() inserts and CPU instruction that keeps the CPU from reordering reads and writes.
 	#pragma intrinsic(_ReadWriteBarrier)
 	#define SYS_MEMORYBARRIER		_ReadWriteBarrier(); MemoryBarrier()
+#endif
 
 
 
@@ -62,6 +77,22 @@ If you have questions concerning this license or the applicable additional terms
 */
 
 
+#if defined( ID_3DS )
+	// Slot-based TLS on top of the compiler's __thread support (libctru provides it).
+	int		Sys_TLSAllocSlot();
+	void	Sys_TLSFreeSlot( int slot );
+	ptrdiff_t &	Sys_TLSSlot( int slot );
+
+	class idSysThreadLocalStorage {
+	public:
+		idSysThreadLocalStorage() { slot = Sys_TLSAllocSlot(); }
+		idSysThreadLocalStorage( const ptrdiff_t &val ) { slot = Sys_TLSAllocSlot(); Sys_TLSSlot( slot ) = val; }
+		~idSysThreadLocalStorage() { Sys_TLSFreeSlot( slot ); }
+		operator ptrdiff_t() { return Sys_TLSSlot( slot ); }
+		const ptrdiff_t & operator = ( const ptrdiff_t &val ) { Sys_TLSSlot( slot ) = val; return val; }
+		int		slot;
+	};
+#else
 	class idSysThreadLocalStorage {
 	public:
 		idSysThreadLocalStorage() { 
@@ -83,6 +114,8 @@ If you have questions concerning this license or the applicable additional terms
 		}	
 		DWORD	tlsIndex;
 	};
+
+#endif
 
 #define ID_TLS idSysThreadLocalStorage
 

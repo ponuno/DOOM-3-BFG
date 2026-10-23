@@ -386,7 +386,7 @@ bool idSWF::HandleEvent( const sysEvent_t * event ) {
 			const float pixelAspect = renderSystem->GetPixelAspect();
 			const float sysWidth = renderSystem->GetWidth() * ( pixelAspect > 1.0f ? pixelAspect : 1.0f );
 			const float sysHeight = renderSystem->GetHeight() / ( pixelAspect < 1.0f ? pixelAspect : 1.0f );
-			float scale = swfScale * sysHeight / (float)frameHeight;
+			float scale = StageScale( sysHeight );
 			float invScale = 1.0f / scale;
 			float tx = 0.5f * ( sysWidth - ( frameWidth * scale ) );
 			float ty = 0.5f * ( sysHeight - ( frameHeight * scale ) );

@@ -416,6 +416,21 @@ idFileSystemLocal::OpenOSFile
 idFileHandle idFileSystemLocal::OpenOSFile( const char *fileName, fsMode_t mode ) {
 	idFileHandle fp;
 
+#if defined( ID_3DS )
+	const char * fmode = "rb";
+	if ( mode == FS_WRITE ) {
+		fmode = "wb";
+	} else if ( mode == FS_APPEND ) {
+		fmode = "ab";
+	}
+	fp = fopen( fileName, fmode );
+	if ( fp != NULL ) {
+		// newlib's default stdio buffer is tiny and very slow on the SD card
+		setvbuf( fp, NULL, _IOFBF, 64 * 1024 );
+	}
+	return fp;
+#else
+
 
 	DWORD dwAccess = 0;
 	DWORD dwShare = 0;
@@ -444,6 +459,7 @@ idFileHandle idFileSystemLocal::OpenOSFile( const char *fileName, fsMode_t mode 
 		return NULL;
 				}
 	return fp;
+#endif
 }
 
 /*
@@ -452,7 +468,11 @@ idFileSystemLocal::CloseOSFile
 ================
 */
 void idFileSystemLocal::CloseOSFile( idFileHandle o ) {
+#if defined( ID_3DS )
+	fclose( o );
+#else
 	::CloseHandle( o );
+#endif
 }
 
 /*
@@ -461,7 +481,15 @@ idFileSystemLocal::DirectFileLength
 ================
 */
 int idFileSystemLocal::DirectFileLength( idFileHandle o ) {
+#if defined( ID_3DS )
+	long pos = ftell( o );
+	fseek( o, 0, SEEK_END );
+	long len = ftell( o );
+	fseek( o, pos, SEEK_SET );
+	return (int)len;
+#else
 	return GetFileSize( o, NULL );
+#endif
 }
 
 /*
@@ -484,7 +512,12 @@ void idFileSystemLocal::CreateOSPath( const char *OSPath ) {
 	}
 
 	idStrStatic< MAX_OSPATH > path( OSPath );
+#if defined( ID_3DS )
+	// the loop below splits on PATHSEPARATOR_CHAR, which is '/' here
+	path.BackSlashesToSlashes();
+#else
 	path.SlashesToBackSlashes();
+#endif
 	for( ofs = &path[ 1 ]; *ofs ; ofs++ ) {
 		if ( *ofs == PATHSEPARATOR_CHAR ) {	
 			// create the directory
@@ -1550,11 +1583,19 @@ void idFileSystemLocal::RemoveFile( const char *relativePath ) {
 
 	if ( fs_basepath.GetString()[0] ) {
 		OSPath = BuildOSPath( fs_basepath.GetString(), gameFolder, relativePath );
+#if defined( ID_3DS )
+		remove( OSPath.c_str() );
+#else
 		::DeleteFile( OSPath );
+#endif
 	}
 
 	OSPath = BuildOSPath( fs_savepath.GetString(), gameFolder, relativePath );
+#if defined( ID_3DS )
+	remove( OSPath.c_str() );
+#else
 	::DeleteFile( OSPath );
+#endif
 }
 
 /*
@@ -1757,10 +1798,18 @@ bool idFileSystemLocal::RenameFile( const char * relativePath, const char * newN
 	// this gives atomic-delete-on-rename, like POSIX rename()
 	// There is a MoveFileTransacted() on vista and above, not sure if that means there
 	// is a race condition inside MoveFileEx...
+#if defined( ID_3DS )
+	// FAT rename() does not replace an existing target
+	remove( newOSPath.c_str() );
+	const bool success = ( rename( oldOSPath.c_str(), newOSPath.c_str() ) == 0 );
+	const int err = errno;
+	if ( !success ) {
+#else
 	const bool success = ( MoveFileEx( oldOSPath.c_str(), newOSPath.c_str(), MOVEFILE_REPLACE_EXISTING ) != 0 );
 
 	if ( !success ) {
 		const int err = GetLastError();
+#endif
 		idLib::Warning( "RenameFile( %s, %s ) error %i", newOSPath.c_str(), oldOSPath.c_str(), err );
 	}
 	return success;
@@ -2338,7 +2387,7 @@ void idFileSystemLocal::CreateCRCsForResourceFileList( const idFileList & list )
 		crcFilename.SetFileExtension( ".crc" );
 		std::auto_ptr<idFile> crcOutputFile( fileSystem->OpenFileWrite( crcFilename, "fs_basepath" ) );
 		if ( crcOutputFile.get() == NULL ) {
-			idLib::Printf( "Error writing CRC file %s.\n", crcFilename );
+			idLib::Printf( "Error writing CRC file %s.\n", crcFilename.c_str() );
 			continue;
 		}
 		
@@ -2735,6 +2784,27 @@ idFile * idFileSystemLocal::GetResourceFile( const char *fileName, bool memFile 
 			idLib::Printf( "RES: loading file %s\n", rc.filename.c_str() );
 		}
 		idFile_InnerResource *file = new idFile_InnerResource( rc.filename, resourceFiles[ rc.containerIndex ]->resourceFile, rc.offset, rc.length );
+#if defined( ID_3DS )
+		// Reading big files (e.g. an 8.6 MB .bproc) whole into the heap does not fit on
+		// 3DS: anything that does not fit the level-load buffer and is over 1 MB is
+		// streamed from the .resources container instead. All callers read through
+		// the idFile interface, so a streaming file works for them too.
+		// Callers that did not ask for a memory file (images, most binary data) are
+		// streamed too unless tiny: reading them whole into temporary heap blocks
+		// fragments the heap, and the image loader may skip most of the data.
+		static const int N3DS_MAX_BUFFERED_RESOURCE = 1024 * 1024;
+		static const int N3DS_MAX_BUFFERED_STREAM = 16 * 1024;
+		if ( rc.length > N3DS_MAX_BUFFERED_RESOURCE && rc.length >= resourceBufferAvailable ) {
+			idLib::Printf( "RES: streaming %s (%d KB)\n", rc.filename.c_str(), rc.length / 1024 );
+			return file;
+		}
+		if ( !memFile && rc.length > N3DS_MAX_BUFFERED_STREAM ) {
+			return file;
+		}
+		if ( rc.length >= 256 * 1024 ) {
+			idLib::Printf( "RES: buffering %s (%d KB)\n", rc.filename.c_str(), rc.length / 1024 );
+		}
+#endif
 		if ( file != NULL && ( memFile || rc.length <= resourceBufferAvailable ) || rc.length < 8 * 1024 * 1024 ) {
 			byte *buf = NULL;
 			if ( rc.length < resourceBufferAvailable ) {

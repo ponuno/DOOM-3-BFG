@@ -75,6 +75,102 @@ idCVar timescale( "timescale", "1", CVAR_SYSTEM | CVAR_FLOAT, "Number of game fr
 extern idCVar in_useJoystick;
 extern idCVar in_joystickRumble;
 
+#if defined( ID_3DS )
+// game thread -> main thread perf counters (approximate, no locking needed)
+static int		n3dsPerfTicks = 0;
+static uint64	n3dsPerfGameUs = 0;
+static uint64	n3dsPerfGameMaxUs = 0;
+static uint64	n3dsPerfDrawUs = 0;
+static uint64	n3dsWaitGameUs = 0;		// main thread waiting for the game / draw thread, this frame
+
+// main thread time per part of idCommonLocal::Frame, this frame (N3DS_MARK adds the time since
+// the previous mark to a part)
+enum {
+	N3DS_MAIN_OUTSIDE,		// between two Frame() calls (the platform's loop)
+	N3DS_MAIN_EVENTS,		// events, input
+	N3DS_MAIN_SWAP,			// SwapCommandBuffers
+	N3DS_MAIN_PACE,			// waiting for the next game tick
+	N3DS_MAIN_SESSION,		// session, GUI events, usercmds, starting the game thread
+	N3DS_MAIN_BACKEND,		// RenderCommandBuffers
+	N3DS_MAIN_WAITGAME,		// waiting for the game / draw thread
+	N3DS_MAIN_SEND,			// usercmds, snapshots
+	N3DS_MAIN_SOUND,		// soundSystem->Render
+	N3DS_MAIN_REST,			// game return, lobby, frame done
+	N3DS_MAIN_PARTS
+};
+static uint64	n3dsMainUs[N3DS_MAIN_PARTS];
+static uint64	n3dsMainMark = 0;
+static void N3DS_MARK( int part ) {
+	const uint64 now = Sys_Microseconds();
+	if ( n3dsMainMark != 0 ) {
+		n3dsMainUs[part] += now - n3dsMainMark;
+	}
+	n3dsMainMark = now;
+}
+idCVar n3ds_spikeMs( "n3ds_spikeMs", "36", CVAR_SYSTEM | CVAR_FLOAT, "New 3DS: log a SPIKE line with the frame's breakdown for every frame longer than this (ms; 0 = off). At 30 fps a frame over 33.3 ms is shown for 50 ms", 0.0f, 1000.0f );
+
+/*
+========================
+N3DS_SpikeFrame
+
+Once per frame on the main thread. The PERF lines average over 2 s, which hides the single
+long frames that make moving feel uneven; a frame over n3ds_spikeMs gets its own line: what
+the game / draw thread did since the last frame (ticks, game, draw), how long the main thread
+waited for it, and the back end's frame (its own CPU time, the waits for the GPU and vblank,
+the GPU time, draws, textures uploaded / evicted / read).
+========================
+*/
+static void N3DS_SpikeFrame( bool mapSpawned ) {
+	static uint64 lastUs = 0;
+	static uint64 lastGameUs = 0, lastDrawUs = 0;
+	static int lastTicks = 0;
+	static int windowStartMs = 0, windowLines = 0;
+	const uint64 now = Sys_Microseconds();
+	const uint64 gameUs = n3dsPerfGameUs, drawUs = n3dsPerfDrawUs;
+	const int ticks = n3dsPerfTicks;
+	const float frameMs = lastUs != 0 ? ( now - lastUs ) * 0.001f : 0.0f;
+	// the PERF block resets the counters every 2 s: a smaller value means a new window
+	const float gameMs = ( gameUs >= lastGameUs ? gameUs - lastGameUs : gameUs ) * 0.001f;
+	const float drawMs = ( drawUs >= lastDrawUs ? drawUs - lastDrawUs : drawUs ) * 0.001f;
+	const int frameTicks = ticks >= lastTicks ? ticks - lastTicks : ticks;
+	lastUs = now;
+	lastGameUs = gameUs;
+	lastDrawUs = drawUs;
+	lastTicks = ticks;
+	extern float N3DS_SoundLockWaitMs();		// main thread, since the last call
+	const float soundLockMs = N3DS_SoundLockWaitMs();
+	const float limit = n3ds_spikeMs.GetFloat();
+	if ( !mapSpawned || limit <= 0.0f || frameMs <= limit || !Sys_N3DSDebug() ) {
+		return;
+	}
+	const int nowMs = Sys_Milliseconds();
+	if ( nowMs - windowStartMs >= 1000 ) {
+		windowStartMs = nowMs;
+		windowLines = 0;
+	}
+	if ( ++windowLines > 6 ) {
+		return;		// at most 6 lines a second
+	}
+	n3dsBackendFrame_t b;
+	RB_N3DS_LastFrame( b );
+	const float backCpu = b.totalMs - b.waitGpuMs - b.waitVBlankMs;
+	common->Printf( "SPIKE %.1f ms: game thread %d ticks %.1f ms + draw %.1f ms, main waited for it %.1f ms | back end %.1f ms (CPU %.1f, waited GPU %.1f, vblank %.1f), GPU %.1f ms, %d draws (%d light) %d tris | tex %d uploads %.1f ms, %d evicted, %d reads, %d waits\n",
+		frameMs, frameTicks, gameMs, drawMs, n3dsWaitGameUs * 0.001f, b.totalMs, backCpu, b.waitGpuMs, b.waitVBlankMs, b.gpuMs,
+		b.draws, b.lightDraws, b.tris, b.texUploads, b.texUploadMs, b.texEvictions, b.texReads, b.texWaits );
+	const float * m = NULL;
+	float mainMs[N3DS_MAIN_PARTS];
+	for ( int i = 0; i < N3DS_MAIN_PARTS; i++ ) {
+		mainMs[i] = n3dsMainUs[i] * 0.001f;
+	}
+	m = mainMs;
+	common->Printf( "SPIKE   main thread: outside Frame %.1f, events %.1f, swap %.1f, waiting for the tick %.1f, session/usercmds %.1f, back end %.1f, waiting for the game thread %.1f, send %.1f, sound %.1f (lock waits %.1f), rest %.1f ms\n",
+		m[N3DS_MAIN_OUTSIDE], m[N3DS_MAIN_EVENTS], m[N3DS_MAIN_SWAP], m[N3DS_MAIN_PACE], m[N3DS_MAIN_SESSION], m[N3DS_MAIN_BACKEND],
+		m[N3DS_MAIN_WAITGAME], m[N3DS_MAIN_SEND], m[N3DS_MAIN_SOUND], soundLockMs, m[N3DS_MAIN_REST] );
+	// the lines just written are not counted in the next frame
+	lastUs = Sys_Microseconds();
+}
+#endif
+
 /*
 ===============
 idGameThread::Run
@@ -111,6 +207,7 @@ int idGameThread::Run() {
 		// run the game logic
 		for ( int i = 0; i < numGameFrames; i++ ) {
 			SCOPED_PROFILE_EVENT( "GameTic" );
+			N3DS_STAGE( N3DS_STAGE_GAME, "game tic" );
 			if ( userCmdMgr ) {
 				game->RunFrame( *userCmdMgr, ret );
 			}
@@ -128,6 +225,18 @@ int idGameThread::Run() {
 	}
 
 	commonLocal.frameTiming.finishGameTime = Sys_Microseconds();
+	N3DS_STAGE( N3DS_STAGE_GAME, "game draw" );
+
+#if defined( ID_3DS )
+	{
+		const uint64 gameUs = commonLocal.frameTiming.finishGameTime - commonLocal.frameTiming.startGameTime;
+		n3dsPerfTicks += numGameFrames;
+		n3dsPerfGameUs += gameUs;
+		if ( gameUs > n3dsPerfGameMaxUs ) {
+			n3dsPerfGameMaxUs = gameUs;
+		}
+	}
+#endif
 
 	SetThreadGameTime( ( commonLocal.frameTiming.finishGameTime - commonLocal.frameTiming.startGameTime ) / 1000 );
 
@@ -138,6 +247,10 @@ int idGameThread::Run() {
 	}
 
 	commonLocal.frameTiming.finishDrawTime = Sys_Microseconds();
+	N3DS_STAGE( N3DS_STAGE_GAME, "idle" );
+#if defined( ID_3DS )
+	n3dsPerfDrawUs += commonLocal.frameTiming.finishDrawTime - commonLocal.frameTiming.finishGameTime;
+#endif
 
 	SetThreadRenderTime( ( commonLocal.frameTiming.finishDrawTime - commonLocal.frameTiming.finishGameTime ) / 1000 );
 
@@ -359,6 +472,185 @@ void idCommonLocal::ProcessGameReturn( const gameReturn_t & ret ) {
 
 extern idCVar com_forceGenericSIMD;
 
+#if defined( ID_3DS )
+/*
+================================================================================================
+
+	New 3DS map tour: n3ds_mapTour [map ...]
+
+	Loads the maps one after another (default: the biggest .resources archives), lets
+	each run for a while, and logs one TOUR line per map: malloc peak and heap
+	footprint, least free linear memory, static vertex/index cache use, load time.
+	The summary at the end gives the worst map for each. Running out of memory ends
+	the tour like any other error; the log shows where.
+
+================================================================================================
+*/
+void Sys_N3DSMemSample( int & mallocUsedKB, int & mallocArenaKB, int & heapKB, int & linearFreeKB );
+extern int n3dsMapLoads;
+extern int n3dsLastLoadMsec;
+
+idCVar n3ds_tourFrames( "n3ds_tourFrames", "600", CVAR_INTEGER, "3DS map tour: frames each map runs before the next one is loaded" );
+
+enum { TOUR_IDLE, TOUR_NEXT, TOUR_LOADING, TOUR_RUNNING };
+
+struct n3dsTourMap_t {
+	idStr	name;
+	bool	loaded;
+	int		loadMsec;
+	int		mallocPeakKB;
+	int		arenaPeakKB;
+	int		linearMinKB;
+	int		staticVertexKB;
+	int		staticIndexKB;
+};
+
+static idList< n3dsTourMap_t >	tourMaps;
+static int						tourIndex = 0;
+static int						tourState = TOUR_IDLE;
+static int						tourFrames = 0;
+static int						tourLoadsAtStart = 0;
+static int						tourHeapKB = 0;
+
+static const char * n3dsTourDefault[] = {
+	// biggest maps/*.resources first (base game, Resurrection of Evil, The Lost Mission)
+	"game/phobos3", "game/phobos1", "game/le_exis2", "game/phobos2", "game/erebus3", "game/erebus4",
+	"game/le_enpro1", "game/deltax", "game/le_underground2", "game/mc_underground", "game/erebus5",
+	"game/le_enpro2", "game/enpro", "game/comm1", "game/erebus1", "game/mars_city1", "game/erebus2",
+	"game/le_exis1", "game/alphalabs2", "game/erebus6", "game/delta2b", "game/mars_city2", "game/alphalabs1",
+};
+
+/*
+========================
+N3DS_TourSample
+
+Called at the load checkpoints and every frame while a tour runs.
+========================
+*/
+void N3DS_TourSample() {
+	if ( tourState != TOUR_LOADING && tourState != TOUR_RUNNING ) {
+		return;
+	}
+	if ( tourIndex < 0 || tourIndex >= tourMaps.Num() ) {
+		return;
+	}
+	n3dsTourMap_t & m = tourMaps[tourIndex];
+	int used, arena, heap, linear;
+	Sys_N3DSMemSample( used, arena, heap, linear );
+	tourHeapKB = heap;
+	m.mallocPeakKB = Max( m.mallocPeakKB, used );
+	m.arenaPeakKB = Max( m.arenaPeakKB, arena );
+	m.linearMinKB = ( m.linearMinKB < 0 ) ? linear : Min( m.linearMinKB, linear );
+	m.staticVertexKB = Max( m.staticVertexKB, vertexCache.staticData.vertexMemUsed.GetValue() / 1024 );
+	m.staticIndexKB = Max( m.staticIndexKB, vertexCache.staticData.indexMemUsed.GetValue() / 1024 );
+}
+
+static void N3DS_TourPrintMap( const n3dsTourMap_t & m ) {
+	if ( !m.loaded ) {
+		common->Printf( "TOUR %-22s did not load\n", m.name.c_str() );
+		return;
+	}
+	common->Printf( "TOUR %-22s load %3d s | malloc peak %6d KB, heap footprint %6d / %d KB (%d KB left) | linear min free %5d KB | static vertex %5d / %d KB, index %5d / %d KB\n",
+		m.name.c_str(), m.loadMsec / 1000, m.mallocPeakKB, m.arenaPeakKB, tourHeapKB, tourHeapKB - m.arenaPeakKB, m.linearMinKB,
+		m.staticVertexKB, STATIC_VERTEX_MEMORY / 1024, m.staticIndexKB, STATIC_INDEX_MEMORY / 1024 );
+}
+
+static void N3DS_TourSummary() {
+	common->Printf( "TOUR ---- summary (%d maps) ----\n", tourMaps.Num() );
+	int worstArena = -1, worstLinear = -1, worstVertex = -1, worstIndex = -1;
+	for ( int i = 0; i < tourMaps.Num(); i++ ) {
+		const n3dsTourMap_t & m = tourMaps[i];
+		N3DS_TourPrintMap( m );
+		if ( !m.loaded ) {
+			continue;
+		}
+		if ( worstArena < 0 || m.arenaPeakKB > tourMaps[worstArena].arenaPeakKB ) { worstArena = i; }
+		if ( worstLinear < 0 || m.linearMinKB < tourMaps[worstLinear].linearMinKB ) { worstLinear = i; }
+		if ( worstVertex < 0 || m.staticVertexKB > tourMaps[worstVertex].staticVertexKB ) { worstVertex = i; }
+		if ( worstIndex < 0 || m.staticIndexKB > tourMaps[worstIndex].staticIndexKB ) { worstIndex = i; }
+	}
+	if ( worstArena >= 0 ) {
+		common->Printf( "TOUR worst heap: %s (%d KB of %d), worst linear: %s (%d KB free), worst static vertex: %s (%d KB), worst static index: %s (%d KB)\n",
+			tourMaps[worstArena].name.c_str(), tourMaps[worstArena].arenaPeakKB, tourHeapKB,
+			tourMaps[worstLinear].name.c_str(), tourMaps[worstLinear].linearMinKB,
+			tourMaps[worstVertex].name.c_str(), tourMaps[worstVertex].staticVertexKB,
+			tourMaps[worstIndex].name.c_str(), tourMaps[worstIndex].staticIndexKB );
+	}
+}
+
+CONSOLE_COMMAND_SHIP( n3ds_mapTour, "3DS: load the given maps (default: the heaviest ones) one after another and log their memory use", NULL ) {
+	tourMaps.Clear();
+	if ( args.Argc() > 1 ) {
+		for ( int i = 1; i < args.Argc(); i++ ) {
+			n3dsTourMap_t & m = tourMaps.Alloc();
+			m.name = args.Argv( i );
+		}
+	} else {
+		for ( int i = 0; i < (int)( sizeof( n3dsTourDefault ) / sizeof( n3dsTourDefault[0] ) ); i++ ) {
+			n3dsTourMap_t & m = tourMaps.Alloc();
+			m.name = n3dsTourDefault[i];
+		}
+	}
+	for ( int i = 0; i < tourMaps.Num(); i++ ) {
+		n3dsTourMap_t & m = tourMaps[i];
+		m.loaded = false;
+		m.loadMsec = m.mallocPeakKB = m.arenaPeakKB = m.staticVertexKB = m.staticIndexKB = 0;
+		m.linearMinKB = -1;
+	}
+	tourIndex = 0;
+	tourState = TOUR_NEXT;
+	common->Printf( "TOUR: %d maps, %d frames each\n", tourMaps.Num(), n3ds_tourFrames.GetInteger() );
+}
+
+/*
+========================
+N3DS_TourFrame
+
+Once per frame from idCommonLocal::Frame.
+========================
+*/
+static void N3DS_TourFrame( bool mapSpawned ) {
+	switch ( tourState ) {
+		case TOUR_NEXT:
+			if ( tourIndex >= tourMaps.Num() ) {
+				N3DS_TourSummary();
+				tourState = TOUR_IDLE;
+				return;
+			}
+			common->Printf( "TOUR: loading %s (%d of %d)\n", tourMaps[tourIndex].name.c_str(), tourIndex + 1, tourMaps.Num() );
+			tourLoadsAtStart = n3dsMapLoads;
+			tourFrames = 0;
+			tourState = TOUR_LOADING;
+			cmdSystem->BufferCommandText( CMD_EXEC_APPEND, va( "map %s\n", tourMaps[tourIndex].name.c_str() ) );
+			return;
+		case TOUR_LOADING:
+			N3DS_TourSample();
+			if ( n3dsMapLoads != tourLoadsAtStart && mapSpawned ) {
+				tourMaps[tourIndex].loaded = true;
+				tourMaps[tourIndex].loadMsec = n3dsLastLoadMsec;
+				tourFrames = 0;
+				tourState = TOUR_RUNNING;
+			} else if ( ++tourFrames > 1800 ) {
+				// the map never came up (wrong name, or an error dropped back to the menu)
+				N3DS_TourPrintMap( tourMaps[tourIndex] );
+				tourIndex++;
+				tourState = TOUR_NEXT;
+			}
+			return;
+		case TOUR_RUNNING:
+			N3DS_TourSample();
+			if ( ++tourFrames >= n3ds_tourFrames.GetInteger() ) {
+				N3DS_TourPrintMap( tourMaps[tourIndex] );
+				tourIndex++;
+				tourState = TOUR_NEXT;
+			}
+			return;
+		default:
+			return;
+	}
+}
+#endif
+
 /*
 =================
 idCommonLocal::Frame
@@ -382,6 +674,10 @@ void idCommonLocal::Frame() {
 		PerformGameSwitch();
 
 		// pump all the events
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_OUTSIDE );
+#endif
+		N3DS_STAGE( N3DS_STAGE_MAIN, "events" );
 		Sys_GenerateEvents();
 
 		// write config file if anything changed
@@ -430,7 +726,11 @@ void idCommonLocal::Frame() {
 		// this should exit right after vsync, with the GPU idle and ready to draw
 		// This may block if the GPU isn't finished renderng the previous frame.
 		frameTiming.startSyncTime = Sys_Microseconds();
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_EVENTS );
+#endif
 		const emptyCommand_t * renderCommands = NULL;
+		N3DS_STAGE( N3DS_STAGE_MAIN, "swap command buffers" );
 		if ( com_smp.GetBool() ) {
 			renderCommands = renderSystem->SwapCommandBuffers( &time_frontend, &time_backend, &time_shadows, &time_gpu );
 		} else {
@@ -439,6 +739,9 @@ void idCommonLocal::Frame() {
 			renderSystem->SwapCommandBuffers_FinishRendering( &time_frontend, &time_backend, &time_shadows, &time_gpu );
 		}
 		frameTiming.finishSyncTime = Sys_Microseconds();
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_SWAP );
+#endif
 
 		//--------------------------------------------
 		// Determine how many game tics we are going to run,
@@ -546,6 +849,9 @@ void idCommonLocal::Frame() {
 		//--------------------------------------------
 
 		// Update session and syncronize to the new session state after sleeping
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_PACE );
+#endif
 		session->UpdateSignInManager();
 		session->Pump();
 		session->ProcessSnapAckQueue();
@@ -584,6 +890,17 @@ void idCommonLocal::Frame() {
 
 		// build a new usercmd
 		int deviceNum = session->GetSignInManager().GetMasterInputDevice();
+#if defined( ID_3DS )
+		{
+			// the pad feeds the usercmd (C-Stick look, analog move) only through the master
+			// input device; -1 leaves only its key events (bindings)
+			static int lastDeviceNum = -2;
+			if ( deviceNum != lastDeviceNum ) {
+				Printf( "controls: master input device %d (was %d)\n", deviceNum, lastDeviceNum );
+				lastDeviceNum = deviceNum;
+			}
+		}
+#endif
 		usercmdGen->BuildCurrentUsercmd( deviceNum );
 		if ( deviceNum == -1 ) {
 			for ( int i = 0; i < MAX_INPUT_DEVICES; i++ ) {
@@ -620,6 +937,7 @@ void idCommonLocal::Frame() {
 		}
 		
 		// start the game / draw command generation thread going in the background
+		N3DS_STAGE( N3DS_STAGE_MAIN, "run game and draw" );
 		gameReturn_t ret = gameThread.RunGameAndDraw( numGameFrames, userCmdMgr, IsClient(), gameFrame - numGameFrames );
 
 		if ( !com_smp.GetBool() ) {
@@ -633,7 +951,15 @@ void idCommonLocal::Frame() {
 		// ASAP to minimize the pipeline bubble.
 		//----------------------------------------
 		frameTiming.startRenderTime = Sys_Microseconds();
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_SESSION );
+#endif
+		N3DS_STAGE( N3DS_STAGE_MAIN, "render command buffers" );
 		renderSystem->RenderCommandBuffers( renderCommands );
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_BACKEND );
+#endif
+		N3DS_STAGE( N3DS_STAGE_MAIN, "after render" );
 		if ( com_sleepRender.GetInteger() > 0 ) {
 			// debug tool to test frame adaption
 			Sys_Sleep( com_sleepRender.GetInteger() );
@@ -642,7 +968,14 @@ void idCommonLocal::Frame() {
 
 		// make sure the game / draw thread has completed
 		// This may block if the game is taking longer than the render back end
+#if defined( ID_3DS )
+		const uint64 n3dsWaitGameStart = Sys_Microseconds();
 		gameThread.WaitForThread();
+		n3dsWaitGameUs = Sys_Microseconds() - n3dsWaitGameStart;
+		N3DS_MARK( N3DS_MAIN_WAITGAME );
+#else
+		gameThread.WaitForThread();
+#endif
 
 		// Send local usermds to the server.
 		// This happens after the game frame has run so that prediction data is up to date.
@@ -660,7 +993,13 @@ void idCommonLocal::Frame() {
 			soundWorld->UnPause();
 			soundSystem->SetPlayingSoundWorld( soundWorld );
 		}
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_SEND );
+#endif
 		soundSystem->Render();
+#if defined( ID_3DS )
+		N3DS_MARK( N3DS_MAIN_SOUND );
+#endif
 
 		// process the game return for map changes, etc
 		ProcessGameReturn( ret );
@@ -675,6 +1014,79 @@ void idCommonLocal::Frame() {
 			}
 			lobby.DrawDebugNetworkHUD_ServerSnapshotMetrics( net_drawDebugHud.GetInteger() == 3 );
 		}
+
+#if defined( ID_3DS )
+		if ( mapSpawned ) {
+			Sys_N3DSFrameDone();
+		}
+		N3DS_TourFrame( mapSpawned );
+		N3DS_MARK( N3DS_MAIN_REST );
+		N3DS_SpikeFrame( mapSpawned );
+		memset( n3dsMainUs, 0, sizeof( n3dsMainUs ) );
+		n3dsMainMark = Sys_Microseconds();		// SPIKE lines written are not counted
+		// New 3DS: one line every 2 seconds once a map is running
+		{
+			static int perfStart = 0;
+			static int perfFrames = 0;
+			static uint64 perfFrontendUs = 0;
+			static uint64 perfBackendUs = 0;
+			const int now = Sys_Milliseconds();
+			if ( !mapSpawned ) {
+				perfStart = now;
+				perfFrames = 0;
+				perfFrontendUs = perfBackendUs = 0;
+				n3dsPerfTicks = 0;
+				n3dsPerfGameUs = n3dsPerfGameMaxUs = n3dsPerfDrawUs = 0;
+			} else {
+				perfFrames++;
+				perfFrontendUs += time_frontend;
+				perfBackendUs += time_backend;
+				const int elapsed = now - perfStart;
+				if ( elapsed >= 2000 && perfFrames > 0 && !Sys_N3DSDebug() ) {
+					// counted, not printed (n3ds_debug 0)
+					perfStart = now;
+					perfFrames = 0;
+					perfFrontendUs = perfBackendUs = 0;
+					n3dsPerfTicks = 0;
+					n3dsPerfGameUs = n3dsPerfGameMaxUs = n3dsPerfDrawUs = 0;
+					extern int n3dsRenderStats[8];
+					memset( n3dsRenderStats, 0, sizeof( n3dsRenderStats ) );
+				} else if ( elapsed >= 2000 && perfFrames > 0 ) {
+					static bool threadsReported = false;
+					if ( !threadsReported ) {
+						// once: which core each engine thread got (all threads have started by now)
+						extern void Sys_N3DSThreadReport();
+						Sys_N3DSThreadReport();
+						threadsReported = true;
+					}
+					const float ticks = (float)Max( n3dsPerfTicks, 1 );
+					Printf( "PERF %.1fs: %d frames %.1f fps | %d ticks, game %.1f ms/tick, worst frame %.1f ms | draw %.1f frontend %.1f backend %.1f ms/frame\n",
+						elapsed * 0.001f, perfFrames, perfFrames * 1000.0f / elapsed,
+						n3dsPerfTicks, n3dsPerfGameUs * 0.001f / ticks, n3dsPerfGameMaxUs * 0.001f,
+						n3dsPerfDrawUs * 0.001f / perfFrames, perfFrontendUs * 0.001f / perfFrames, perfBackendUs * 0.001f / perfFrames );
+					extern int n3dsRenderStats[8];
+					extern int n3dsFramePeakIndex, n3dsFramePeakVertex, n3dsCacheOverflows, n3dsFrameIndexBytes, n3dsFrameVertexBytes;
+					const float rf = (float)Max( n3dsRenderStats[0], 1 );
+					extern void R_FrameMemoryStats( int & highWater, int & size );
+					int frameMemHigh, frameMemSize;
+					R_FrameMemoryStats( frameMemHigh, frameMemSize );
+					Printf( "PERF   scene/frame: ents %.0f lights %.0f guiSurfs %.0f draws %.0f tris %.0f newInteractions %.1f deformVerts %.0f | frame cache peak idx %d / %d KB, vtx %d / %d KB, overflows %d | frame memory peak %d / %d KB\n",
+						n3dsRenderStats[1] / rf, n3dsRenderStats[2] / rf, n3dsRenderStats[3] / rf, n3dsRenderStats[4] / rf,
+						n3dsRenderStats[5] / rf, n3dsRenderStats[6] / rf, n3dsRenderStats[7] / rf,
+						n3dsFramePeakIndex / 1024, n3dsFrameIndexBytes / 1024,
+						n3dsFramePeakVertex / 1024, n3dsFrameVertexBytes / 1024, n3dsCacheOverflows,
+						frameMemHigh / 1024, frameMemSize / 1024 );
+					memset( n3dsRenderStats, 0, sizeof( n3dsRenderStats ) );
+					n3dsFramePeakIndex = n3dsFramePeakVertex = n3dsCacheOverflows = 0;
+					perfStart = now;
+					perfFrames = 0;
+					perfFrontendUs = perfBackendUs = 0;
+					n3dsPerfTicks = 0;
+					n3dsPerfGameUs = n3dsPerfGameMaxUs = n3dsPerfDrawUs = 0;
+				}
+			}
+		}
+#endif
 
 		// report timing information
 		if ( com_speeds.GetBool() ) {

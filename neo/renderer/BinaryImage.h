@@ -49,6 +49,25 @@ public:
 	void				LoadCubeFromMemory( int width, const byte * pics[6], int numLevels, textureFormat_t & textureFormat, bool gammaMips );
 
 	ID_TIME_T			LoadFromGeneratedFile( ID_TIME_T sourceFileTime );
+
+						// New 3DS bring-up: read the headers only and leave every level's
+						// data NULL (the null GL driver ignores pixels)
+	static bool			skipPixelData;
+						// ... except for the largest level whose width and height are both at
+						// most this (0 = none); 2D images only
+	static int			keepLevelMaxSize;
+						// ... and if streamKeptLevel is set and the file can say where that level
+						// lives on disk, its data is skipped too: keptLevelIndex is the level,
+						// keptLevelPath / keptLevelOffset where to read it later (else -1 / empty)
+	static bool			streamKeptLevel;
+	static int			keptLevelIndex;
+	static idStr		keptLevelPath;
+	static int			keptLevelOffset;
+						// New 3DS texture pack (_n3ds_textures.pak): with usePack set, an image
+						// the pack holds is not read at all; its header comes from the pack and
+						// packEntry (an n3dsPackEntry_t) says where its GPU data is
+	static bool			usePack;
+	static const void *	packEntry;
 	ID_TIME_T			WriteGeneratedFile( ID_TIME_T sourceFileTime );
 
 	const bimageFile_t &	GetFileHeader() { return fileData; }

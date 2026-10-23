@@ -99,6 +99,10 @@ public:
 	virtual void		ExportToTGA( bool skipExisting = true );
 
 	virtual float		GetFrameRate() const;
+#if defined( ID_3DS )
+	// New 3DS: the GPU texture of the frame at that time (renderer/3DS/n3ds_cinematic.cpp), NULL if none
+	virtual void *		N3DS_GpuTexture( int milliseconds ) { return NULL; }
+#endif
 };
 
 /*

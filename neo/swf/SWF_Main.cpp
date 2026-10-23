@@ -27,7 +27,7 @@ If you have questions concerning this license or the applicable additional terms
 */
 #pragma hdrstop
 #include "../idlib/precompiled.h"
-#include "../renderer/image.h"
+#include "../renderer/Image.h"
 
 #pragma warning(disable: 4355) // 'this' : used in base member initializer list
 
@@ -49,6 +49,7 @@ idSWF::idSWF( const char * filename_, idSoundWorld * soundWorld_ ) {
 	atlasMaterial = NULL;
 
 	swfScale = 1.0f;
+	isHud = false;
 	scaleToVirtual.Set( 1.0f, 1.0f );
 
 	random.SetSeed( Sys_Milliseconds() );
@@ -113,6 +114,7 @@ idSWF::idSWF( const char * filename_, idSoundWorld * soundWorld_ ) {
 	filename.SetFileExtension( ".swf" );
 
 	timestamp = fileSystem->GetTimestamp( filename );
+	isHud = ( filename.Icmp( "swf/hud.swf" ) == 0 );
 
 	mainsprite = new (TAG_SWF) idSWFSprite( this );
 	mainspriteInstance = NULL;
@@ -134,6 +136,9 @@ idSWF::idSWF( const char * filename_, idSoundWorld * soundWorld_ ) {
 	idStr atlasFileName = binaryFileName;
 	atlasFileName.SetFileExtension( ".tga" );
 	atlasMaterial = declManager->FindMaterial( atlasFileName );
+#if defined( ID_3DS )
+	idLib::Printf( "SWF %s: stage %gx%g%s\n", filename.c_str(), frameWidth, frameHeight, isHud ? " (HUD)" : "" );
+#endif
 
 	globals = idSWFScriptObject::Alloc();
 	globals->Set( "_global", globals );

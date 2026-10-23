@@ -257,3 +257,24 @@ unsigned long MD4_BlockChecksum( const void *data, int length ) {
 
 	return val;
 }
+
+/*
+===============
+idMD4Checksum
+===============
+*/
+compile_time_assert( sizeof( MD4_CTX ) == sizeof( unsigned long ) * 6 + 64 );
+
+idMD4Checksum::idMD4Checksum() {
+	MD4_Init( (MD4_CTX *)state );
+}
+
+void idMD4Checksum::Update( const void * data, int length ) {
+	MD4_Update( (MD4_CTX *)state, (const unsigned char *)data, length );
+}
+
+unsigned long idMD4Checksum::Final() {
+	unsigned long digest[4];
+	MD4_Final( (MD4_CTX *)state, (unsigned char *)digest );
+	return digest[0] ^ digest[1] ^ digest[2] ^ digest[3];
+}

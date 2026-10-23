@@ -378,6 +378,42 @@ void idCommonLocal::LoadLoadingGui( const char *mapName, bool & hellMap ) {
 	}
 }
 
+#if defined( ID_3DS )
+void Sys_LogMemory( const char * when );	// sys/3ds/3ds_main.cpp
+
+void N3DS_TourSample();		// framework/common_frame.cpp
+static int n3dsLastSaveBytes = 0;		// biggest save written this session (lazy save buffers)
+static int n3dsLastStringsBytes = 0;
+
+// a malloc of this size would succeed now (game paused while saving: nothing races it)
+static bool N3DS_HeapHasBlock( int bytes ) {
+	void * volatile p = malloc( bytes + 256 );
+	if ( p == NULL ) {
+		return false;
+	}
+	free( p );
+	return true;
+}
+int n3dsMapLoads = 0;			// maps fully loaded so far
+int n3dsLastLoadMsec = 0;
+
+static void N3DS_LogLoad( const char * when ) {
+	Sys_LogMemory( when );
+	N3DS_TourSample();
+	idLib::Printf( "static vertex cache: %d / %d KB, index %d / %d KB\n",
+		vertexCache.staticData.vertexMemUsed.GetValue() / 1024, STATIC_VERTEX_MEMORY / 1024,
+		vertexCache.staticData.indexMemUsed.GetValue() / 1024, STATIC_INDEX_MEMORY / 1024 );
+	// the map did not fit: it was loaded to the end only to measure what it needs
+	if ( ( n3dsStaticVertexOverflow > 0 || n3dsStaticIndexOverflow > 0 ) && idStr::Cmp( when, "map load done" ) == 0 ) {
+		const int needV = ( vertexCache.staticData.vertexMemUsed.GetValue() + n3dsStaticVertexOverflow + 1023 ) / 1024;
+		const int needI = ( vertexCache.staticData.indexMemUsed.GetValue() + n3dsStaticIndexOverflow + 1023 ) / 1024;
+		idLib::Error( "static vertex/index cache too small for this map: needs %d KB of vertexes (have %d KB), %d KB of indexes (have %d KB); "
+			"n3ds_staticVertexKB / n3ds_staticIndexKB set the sizes",
+			needV, STATIC_VERTEX_MEMORY / 1024, needI, STATIC_INDEX_MEMORY / 1024 );
+	}
+}
+#endif
+
 /*
 ===============
 idCommonLocal::ExecuteMapChange
@@ -470,6 +506,13 @@ void idCommonLocal::ExecuteMapChange() {
 	soundSystem->BeginLevelLoad();
 	declManager->BeginLevelLoad();
 	uiManager->BeginLevelLoad();
+#if defined( ID_3DS )
+	// New 3DS: the main menu (shell.swf, ~5 MB in memory) used to stay alive through the
+	// whole map load and was only replaced by the much smaller in-game pause menu after
+	// InitFromNewMap. Switch now, inside this level load, so the pause menu's assets are
+	// referenced by it and the main menu's are purged at its end.
+	game->Shell_CreateMenu( true );
+#endif
 	ms = Sys_Milliseconds() - sm;
 	common->Printf( "%6d msec to free assets\n", ms );
 
@@ -516,6 +559,9 @@ void idCommonLocal::ExecuteMapChange() {
 	Sys_GrabMouseCursor( false );
 
 	// let the renderSystem load all the geometry
+#if defined( ID_3DS )
+	N3DS_LogLoad( "preload done" );
+#endif
 	if ( !renderWorld->InitFromMap( fullMapName ) ) {
 		common->Error( "couldn't load %s", fullMapName.c_str() );
 	}
@@ -538,10 +584,18 @@ void idCommonLocal::ExecuteMapChange() {
 			game->SetPersistentPlayerInfo( 0, mapSpawnData.persistentPlayerInfo );
 		}
 		game->SetServerInfo( matchParameters.serverInfo );
+#if defined( ID_3DS )
+		N3DS_LogLoad( "render world loaded" );
+#endif
 		game->InitFromNewMap( fullMapName, renderWorld, soundWorld, matchParameters.gameMode, Sys_Milliseconds() );
+#if defined( ID_3DS )
+		N3DS_LogLoad( "game map loaded" );
+#endif
 	}
 
+#if !defined( ID_3DS )		// 3DS: done at the start of the load
 	game->Shell_CreateMenu( true );
+#endif
 
 	// Reset some values important to multiplayer
 	ResetNetworkingState();
@@ -651,6 +705,11 @@ void idCommonLocal::ExecuteMapChange() {
 
 	int	msec = Sys_Milliseconds() - start;
 	common->Printf( "%6d msec to load %s\n", msec, currentMapName.c_str() );
+#if defined( ID_3DS )
+	N3DS_LogLoad( "map load done" );
+	n3dsLastLoadMsec = msec;
+	n3dsMapLoads++;
+#endif
 	//Sys_DumpMemory( false );	
 
 	// Issue a render at the very end of the load process to update soundTime before the first frame
@@ -797,6 +856,15 @@ bool idCommonLocal::SaveGame( const char * saveName ) {
 		return false;
 	}
 
+#if defined( ID_3DS )
+	{
+		// the save buffers need megabytes of heap on the biggest maps: the texture RAM
+		// cache gives its memory back first (it refills from the pack as needed)
+		extern void N3DS_TexReleaseRAM( const char * why );
+		N3DS_TexReleaseRAM( "saving" );
+		Sys_LogMemory( "save start" );
+	}
+#endif
 	soundWorld->Pause();
 	soundSystem->SetPlayingSoundWorld( menuSoundWorld );
 	soundSystem->Render();
@@ -818,6 +886,30 @@ bool idCommonLocal::SaveGame( const char * saveName ) {
 	saveFile.Clear( false );
 	stringsFile.MakeWritable();
 	stringsFile.Clear( false );
+#if defined( ID_3DS )
+	if ( cvarSystem->GetCVarBool( "n3ds_lazySaveBuffer" ) ) {
+		// Clear() put the granularity back to 16 KB: each step of the buffers' growth is a
+		// new block of the whole size. They are sized now, while the heap has big blocks
+		// (the last save's sizes plus a quarter, at least 1.5 MB / 256 KB), grow in big
+		// steps if needed, and are freed once the save is written (OnSaveCompleted).
+		saveFile.SetGranularity( 256 * 1024 );
+		stringsFile.SetGranularity( 64 * 1024 );
+		// after the first save the buffers are kept (OnSaveCompleted): freed, the block of
+		// the game state's size was cut up by the game and the second save on phobos3 found
+		// no 1.5 MB block. Here they only grow to the last save's size plus an eighth, and
+		// only if the heap has such a block (else they grow as they are written).
+		if ( n3dsLastSaveBytes > 0 ) {
+			const int saveWant = n3dsLastSaveBytes + n3dsLastSaveBytes / 8 + 64 * 1024;
+			const int stringsWant = n3dsLastStringsBytes + n3dsLastStringsBytes / 8 + 16 * 1024;
+			if ( N3DS_HeapHasBlock( saveWant ) ) {
+				saveFile.PreAllocate( saveWant );
+			}
+			if ( N3DS_HeapHasBlock( stringsWant ) ) {
+				stringsFile.PreAllocate( stringsWant );
+			}
+		}
+	}
+#endif
 
 	// Setup the save pipeline
 	pipelineFile = new (TAG_SAVEGAMES) idFile_SaveGamePipelined();
@@ -1008,6 +1100,16 @@ void idCommonLocal::OnSaveCompleted( idSaveLoadParms & parms ) {
 	assert( pipelineFile != NULL );
 	delete pipelineFile;
 	pipelineFile = NULL;
+#if defined( ID_3DS )
+	if ( cvarSystem->GetCVarBool( "n3ds_lazySaveBuffer" ) ) {
+		// the save is written. Its buffers stay for the next save (Clear( false ) there):
+		// one block of their size is hard to find again on the biggest maps.
+		n3dsLastSaveBytes = Max( n3dsLastSaveBytes, (int)saveFile.Length() );
+		n3dsLastStringsBytes = Max( n3dsLastStringsBytes, (int)stringsFile.Length() );
+		idLib::Printf( "save: written, %d KB of game state, %d KB of strings\n", (int)saveFile.Length() / 1024, (int)stringsFile.Length() / 1024 );
+		Sys_LogMemory( "save done" );
+	}
+#endif
 
 	if ( parms.GetError() == SAVEGAME_E_NONE ) {
 		game->Shell_UpdateSavedGames();

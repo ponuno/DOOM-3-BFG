@@ -45,7 +45,12 @@ If you have questions concerning this license or the applicable additional terms
 #undef ID_WIN32
 #undef ID_LITTLE_ENDIAN
 
-#if defined(_WIN32)
+#if defined(__3DS__)
+	// New Nintendo 3DS: ARM11 MPCore (armv6k), VFPv2, little endian, 32-bit
+	#define ID_3DS
+	#define ID_CONSOLE
+	#define ID_LITTLE_ENDIAN
+#elif defined(_WIN32)
 	// _WIN32 always defined
 	// _WIN64 also defined for x64 target
 /*
@@ -78,7 +83,55 @@ If you have questions concerning this license or the applicable additional terms
 #error Unknown Platform
 #endif
 
+#if !defined( ID_3DS )
 #define ID_OPENGL
+#endif
+
+/*
+================================================================================================
+
+	New Nintendo 3DS (devkitARM / GCC, or clang for compile checks)
+
+================================================================================================
+*/
+
+#ifdef ID_3DS
+
+#define	CPUSTRING						"arm11"
+
+#define	BUILD_STRING					"n3ds-" CPUSTRING
+#define BUILD_OS_ID						2
+
+#define ALIGN16( x )					__attribute__((aligned(16))) x
+#define ALIGNTYPE16						__attribute__((aligned(16)))
+#define ALIGNTYPE128					__attribute__((aligned(128)))
+#define FORMAT_PRINTF( x )				__attribute__((format(printf, x, x + 1)))
+
+#define PATHSEPARATOR_STR				"/"
+#define PATHSEPARATOR_CHAR				'/'
+#define NEWLINE							"\n"
+
+#define ID_INLINE						inline
+#define ID_FORCE_INLINE					inline __attribute__((always_inline))
+#define ID_INLINE_EXTERN				inline
+#define ID_FORCE_INLINE_EXTERN			inline __attribute__((always_inline))
+
+#define NO_RETURN						__attribute__((noreturn))
+#define VERIFY_FORMAT_STRING
+
+// MSVC CRT names
+#define _aligned_malloc( size, a )		memalign( a, size )
+#define _aligned_free( ptr )			free( ptr )
+
+#define CALLBACK
+#define __cdecl
+#define __stdcall
+#define OutputDebugString( x )			Sys_DebugPrintf( "%s", ( x ) )
+#define _atoi64( x )					strtoll( x, NULL, 10 )
+#define __debugbreak()					__builtin_trap()
+#define __assume( x )					do { if ( !( x ) ) __builtin_unreachable(); } while ( 0 )
+
+#endif
 
 /*
 ================================================================================================

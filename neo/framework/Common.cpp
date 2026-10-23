@@ -80,12 +80,25 @@ idCVar net_inviteOnly( "net_inviteOnly", "1", CVAR_BOOL | CVAR_ARCHIVE, "whether
 
 extern idCVar g_demoMode;
 
+#if defined( ID_3DS )
+// New 3DS: game logic at 30 Hz, like the console versions of the time. A frame is only
+// drawn after a game tick, so this also caps the frame rate at 30; at 60 Hz the CPU ran
+// two or three 4-6 ms ticks per drawn frame.
+idCVar com_engineHz( "com_engineHz", "30", CVAR_FLOAT | CVAR_ARCHIVE, "Frames per second the engine runs at", 10.0f, 1024.0f );
+float com_engineHz_latched = 30.0f; // Latched version of cvar, updated between map loads
+int64 com_engineHz_numerator = 100LL * 1000LL;
+int64 com_engineHz_denominator = 100LL * 30LL;
+idCVar n3ds_configVersion( "n3ds_configVersion", "0", CVAR_INTEGER | CVAR_ARCHIVE | CVAR_NOCHEAT, "New 3DS: config file migrations applied (new defaults written over old saved values once)" );
+#else
 idCVar com_engineHz( "com_engineHz", "60", CVAR_FLOAT | CVAR_ARCHIVE, "Frames per second the engine runs at", 10.0f, 1024.0f );
 float com_engineHz_latched = 60.0f; // Latched version of cvar, updated between map loads
 int64 com_engineHz_numerator = 100LL * 1000LL;
 int64 com_engineHz_denominator = 100LL * 60LL;
+#endif
 
+#if !defined( ID_3DS )
 HWND com_hwndMsg = NULL;
+#endif
 
 #ifdef __DOOM_DLL__
 idGame *		game = NULL;
@@ -1007,11 +1020,24 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 
 		// Pre-allocate our 20 MB save buffer here on time, instead of on-demand for each save....
 
-		saveFile.SetNameAndType( SAVEGAME_CHECKPOINT_FILENAME, SAVEGAMEFILE_BINARY );
-		saveFile.PreAllocate( MIN_SAVEGAME_SIZE_BYTES );
+#if defined( ID_3DS )
+		// New 3DS: 4.4 MB held for the whole session is too much. Without the
+		// preallocation the buffers grow on the first save (in big steps), and
+		// level loads read small resources into temporary buffers instead.
+		if ( cvarSystem->GetCVarBool( "n3ds_lazySaveBuffer" ) ) {
+			saveFile.SetNameAndType( SAVEGAME_CHECKPOINT_FILENAME, SAVEGAMEFILE_BINARY );
+			saveFile.SetGranularity( 256 * 1024 );
+			stringsFile.SetNameAndType( SAVEGAME_STRINGS_FILENAME, SAVEGAMEFILE_BINARY );
+			stringsFile.SetGranularity( 64 * 1024 );
+		} else
+#endif
+		{
+			saveFile.SetNameAndType( SAVEGAME_CHECKPOINT_FILENAME, SAVEGAMEFILE_BINARY );
+			saveFile.PreAllocate( MIN_SAVEGAME_SIZE_BYTES );
 
-		stringsFile.SetNameAndType( SAVEGAME_STRINGS_FILENAME, SAVEGAMEFILE_BINARY );
-		stringsFile.PreAllocate( MAX_SAVEGAME_STRING_TABLE_SIZE );
+			stringsFile.SetNameAndType( SAVEGAME_STRINGS_FILENAME, SAVEGAMEFILE_BINARY );
+			stringsFile.PreAllocate( MAX_SAVEGAME_STRING_TABLE_SIZE );
+		}
 
 		fileSystem->BeginLevelLoad( "_startup", saveFile.GetDataPtr(), saveFile.GetAllocated() );
 
@@ -1038,6 +1064,17 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 
 		// run cfg execution
 		cmdSystem->ExecuteCommandBuffer();
+
+#if defined( ID_3DS )
+		// New 3DS: the config file stores every archived cvar, defaults included, so a
+		// changed default only reaches existing configs through a one-time migration.
+		// Version 1: com_engineHz 30 (was 60).
+		if ( n3ds_configVersion.GetInteger() < 1 ) {
+			Printf( "config: version %d -> 1: com_engineHz %s -> 30\n", n3ds_configVersion.GetInteger(), com_engineHz.GetString() );
+			com_engineHz.SetInteger( 30 );
+			n3ds_configVersion.SetInteger( 1 );
+		}
+#endif
 
 		// re-override anything from the config files with command line args
 		StartupVariable( NULL );
@@ -1260,12 +1297,19 @@ void idCommonLocal::Shutdown() {
 	delete renderWorld;
 	renderWorld = NULL;
 
-	printf( "delete soundWorld;\n" );
-	delete soundWorld;
+	// FreeSoundWorld, not delete: the sound system keeps a list of its worlds and walks it
+	// when samples are freed at its own shutdown (StopVoicesWithSample); a deleted world
+	// left in the list was read back from freed memory (data abort on quitting on 3DS)
+	printf( "free soundWorld;\n" );
+	if ( soundWorld != NULL ) {
+		soundSystem->FreeSoundWorld( soundWorld );
+	}
 	soundWorld = NULL;
 
-	printf( "delete menuSoundWorld;\n" );
-	delete menuSoundWorld;
+	printf( "free menuSoundWorld;\n" );
+	if ( menuSoundWorld != NULL ) {
+		soundSystem->FreeSoundWorld( menuSoundWorld );
+	}
 	menuSoundWorld = NULL;
 
 	// shut down the session

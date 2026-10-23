@@ -36,6 +36,19 @@ idCVar swf_titleSafe( "swf_titleSafe", "0.005", CVAR_FLOAT, "space between UI el
 
 idCVar swf_forceAlpha( "swf_forceAlpha", "0", CVAR_FLOAT, "force an alpha value on all elements, useful to show invisible animating elements", 0.0f, 1.0f );
 
+#if defined( ID_3DS )
+// The SWFs are laid out for 720 lines and fit to the screen height, which makes them a third of
+// their size on the 240-line top screen. Edge-anchored sprites (_left, _bottomRight, ...) stay
+// pinned to the screen edges at any scale, so the whole stage can be enlarged.
+idCVar n3ds_hudScale( "n3ds_hudScale", "1.8", CVAR_FLOAT, "3DS: size of the in-game HUD relative to fitting the SWF stage to the screen height", 0.5f, 3.0f );
+// Small text (hints, descriptions, loading tips) ends up 6-8 pixels tall on the 240-line screen
+// even with n3ds_uiScale. Text fields below this height are drawn at it: the glyph scale drives
+// the line layout (wrapping, line spacing, alignment) and the text measurements the menu
+// scripts read, so the field reflows within its box instead of only the glyphs growing.
+idCVar n3ds_uiMinTextPx( "n3ds_uiMinTextPx", "11", CVAR_FLOAT | CVAR_ARCHIVE, "3DS: smallest height in screen pixels SWF text (menus, loading screen, HUD) is drawn at; 0 = as laid out", 0.0f, 30.0f );
+idCVar n3ds_uiScale( "n3ds_uiScale", "1.35", CVAR_FLOAT, "3DS: size of menus, PDA, loading screen and dialogs relative to fitting the SWF stage to the screen height", 0.5f, 3.0f );
+#endif
+
 extern idCVar swf_textStrokeSize;
 extern idCVar swf_textStrokeSizeGlyphSpacer;
 extern idCVar in_useJoystick;
@@ -66,6 +79,22 @@ void idSWF::DrawStretchPic( const idVec4 & topLeft, const idVec4 & topRight, con
 		idVec4( bottomRight.x * scaleToVirtual.x, bottomRight.y * scaleToVirtual.y, bottomRight.z, bottomRight.w ),
 		idVec4( bottomLeft.x * scaleToVirtual.x, bottomLeft.y * scaleToVirtual.y, bottomLeft.z, bottomLeft.w ),
 		material );
+}
+
+/*
+========================
+idSWF::StageScale
+
+Screen pixels per SWF stage unit; the stage is centred, so a scale above the height fit crops
+everything that is not anchored to a screen edge.
+========================
+*/
+float idSWF::StageScale( float sysHeight ) const {
+	float scale = swfScale * sysHeight / (float)frameHeight;
+#if defined( ID_3DS )
+	scale *= isHud ? n3ds_hudScale.GetFloat() : n3ds_uiScale.GetFloat();
+#endif
+	return scale;
 }
 
 /*
@@ -115,7 +144,7 @@ void idSWF::Render( idRenderSystem * gui, int time, bool isSplitscreen ) {
 	const float pixelAspect = renderSystem->GetPixelAspect();
 	const float sysWidth = renderSystem->GetWidth() * ( pixelAspect > 1.0f ? pixelAspect : 1.0f );
 	const float sysHeight = renderSystem->GetHeight() / ( pixelAspect < 1.0f ? pixelAspect : 1.0f );
-	float scale = swfScale * sysHeight / (float)frameHeight;
+	float scale = StageScale( sysHeight );
 
 	swfRenderState_t renderState;
 	renderState.stereoDepth = (stereoDepthType_t)mainspriteInstance->GetStereoDepth();
@@ -785,6 +814,11 @@ void idSWF::RenderEditText( idRenderSystem * gui, idSWFTextInstance * textInstan
 	idSWFFont * swfFont = fontEntry->font;
 
 	float postTransformHeight = SWFTWIP( shape->fontHeight ) * yScale;
+#if defined( ID_3DS )
+	if ( postTransformHeight > 0.0f && postTransformHeight < n3ds_uiMinTextPx.GetFloat() ) {
+		postTransformHeight = n3ds_uiMinTextPx.GetFloat();
+	}
+#endif
 
 	const idFont * fontInfo = swfFont->fontID;
 

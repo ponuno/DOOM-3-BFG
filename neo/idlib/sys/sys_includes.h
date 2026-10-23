@@ -39,6 +39,22 @@ If you have questions concerning this license or the applicable additional terms
 */
 
 
+#if defined( ID_3DS )
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <malloc.h>
+#include <alloca.h>
+#include <unistd.h>
+#include <strings.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#define _alloca							alloca
+
+
+#else // Windows
+
 #define _ATL_CSTRING_EXPLICIT_CONSTRUCTORS	// prevent auto literal to string conversion
 
 #ifndef _D3SDK
@@ -70,6 +86,8 @@ If you have questions concerning this license or the applicable additional terms
 #include <malloc.h>							// no malloc.h on mac or unix
 #include <windows.h>						// for qgl.h
 #undef FindText								// fix namespace pollution
+
+#endif // ID_3DS
 
 /*
 ================================================================================================

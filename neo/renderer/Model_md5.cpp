@@ -719,13 +719,25 @@ bool idRenderModelMD5::LoadBinaryModel( idFile * file, const ID_TIME_T sourceTim
 			file->ReadBigArray( deform.verts, deform.numOutputVerts );
 		}
 
+#if defined( ID_3DS )
+		// New 3DS without shadows: keep the indexes, skip the silhouette data
+		const bool skipShadowData = r_n3dsNoShadows;
+#else
+		const bool skipShadowData = false;
+#endif
+
 		if ( deform.numIndexes > 0 ) {
 			R_AllocStaticTriSurfIndexes( &tri, deform.numIndexes );
-			R_AllocStaticTriSurfSilIndexes( &tri, deform.numIndexes );
 			deform.indexes = tri.indexes;
-			deform.silIndexes = tri.silIndexes;
 			file->ReadBigArray( deform.indexes, deform.numIndexes );
-			file->ReadBigArray( deform.silIndexes, deform.numIndexes );
+			if ( skipShadowData ) {
+				deform.silIndexes = NULL;
+				file->Seek( deform.numIndexes * sizeof( triIndex_t ), FS_SEEK_CUR );
+			} else {
+				R_AllocStaticTriSurfSilIndexes( &tri, deform.numIndexes );
+				deform.silIndexes = tri.silIndexes;
+				file->ReadBigArray( deform.silIndexes, deform.numIndexes );
+			}
 		}
 		
 		if ( deform.numMirroredVerts > 0 ) {
@@ -734,12 +746,22 @@ bool idRenderModelMD5::LoadBinaryModel( idFile * file, const ID_TIME_T sourceTim
 			file->ReadBigArray( deform.mirroredVerts, deform.numMirroredVerts );
 		}
 
+		if ( deform.numDupVerts > 0 && skipShadowData ) {
+			file->Seek( deform.numDupVerts * 2 * sizeof( int ), FS_SEEK_CUR );
+			deform.numDupVerts = 0;
+			deform.dupVerts = NULL;
+		}
 		if ( deform.numDupVerts > 0 ) {
 			R_AllocStaticTriSurfDupVerts( &tri, deform.numDupVerts );
 			deform.dupVerts = tri.dupVerts;
 			file->ReadBigArray( deform.dupVerts, deform.numDupVerts * 2 );
 		}
 
+		if ( deform.numSilEdges > 0 && skipShadowData ) {
+			file->Seek( deform.numSilEdges * 4 * sizeof( triIndex_t ), FS_SEEK_CUR );	// p1 p2 v1 v2
+			deform.numSilEdges = 0;
+			deform.silEdges = NULL;
+		}
 		if ( deform.numSilEdges > 0 ) {
 			R_AllocStaticTriSurfSilEdges( &tri, deform.numSilEdges );
 			deform.silEdges = tri.silEdges;
@@ -752,14 +774,18 @@ bool idRenderModelMD5::LoadBinaryModel( idFile * file, const ID_TIME_T sourceTim
 			}
 		}
 
-		idShadowVertSkinned * shadowVerts = (idShadowVertSkinned *) Mem_Alloc( ALIGN( deform.numOutputVerts * 2 * sizeof( idShadowVertSkinned ), 16 ), TAG_MODEL );
-		idShadowVertSkinned::CreateShadowCache( shadowVerts, deform.verts, deform.numOutputVerts );
-
 		deform.staticAmbientCache = vertexCache.AllocStaticVertex( deform.verts, ALIGN( deform.numOutputVerts * sizeof( idDrawVert ), VERTEX_CACHE_ALIGN ) );
 		deform.staticIndexCache = vertexCache.AllocStaticIndex( deform.indexes, ALIGN( deform.numIndexes * sizeof( triIndex_t ), INDEX_CACHE_ALIGN ) );
-		deform.staticShadowCache = vertexCache.AllocStaticVertex( shadowVerts, ALIGN( deform.numOutputVerts * 2 * sizeof( idShadowVertSkinned ), VERTEX_CACHE_ALIGN ) );
 
-		Mem_Free( shadowVerts );
+		if ( skipShadowData ) {
+			// the skinned shadow vertex copy is 2x the vertex count in the static cache
+			deform.staticShadowCache = 0;
+		} else {
+			idShadowVertSkinned * shadowVerts = (idShadowVertSkinned *) Mem_Alloc( ALIGN( deform.numOutputVerts * 2 * sizeof( idShadowVertSkinned ), 16 ), TAG_MODEL );
+			idShadowVertSkinned::CreateShadowCache( shadowVerts, deform.verts, deform.numOutputVerts );
+			deform.staticShadowCache = vertexCache.AllocStaticVertex( shadowVerts, ALIGN( deform.numOutputVerts * 2 * sizeof( idShadowVertSkinned ), VERTEX_CACHE_ALIGN ) );
+			Mem_Free( shadowVerts );
+		}
 
 		file->ReadBig( meshes[i].surfaceNum );
 	}

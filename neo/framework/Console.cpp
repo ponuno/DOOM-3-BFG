@@ -1085,6 +1085,62 @@ void idConsoleLocal::DrawSolidConsole( float frac ) {
 }
 
 
+#if defined( ID_3DS )
+idCVar n3ds_showFPS( "n3ds_showFPS", "1", CVAR_BOOL | CVAR_SYSTEM | CVAR_ARCHIVE | CVAR_NOCHEAT, "New 3DS: frame counter in the top right corner of the top screen" );
+
+/*
+==============
+N3DS_DrawFPSCounter
+
+Frames drawn per second, refreshed twice a second, as seven segment digits made of
+filled rectangles (only the white material, no font texture to stream in).
+==============
+*/
+static void N3DS_DrawFPSCounter() {
+	static int windowStart = 0;
+	static int windowFrames = 0;
+	static int shown = -1;
+	const int now = Sys_Milliseconds();
+	if ( windowStart == 0 || now - windowStart > 5000 ) {
+		windowStart = now;
+		windowFrames = 0;
+	}
+	windowFrames++;
+	if ( now - windowStart >= 500 ) {
+		shown = ( windowFrames * 1000 + ( now - windowStart ) / 2 ) / ( now - windowStart );
+		windowStart = now;
+		windowFrames = 0;
+	}
+	if ( shown < 0 ) {
+		return;
+	}
+	const int value = Min( shown, 999 );
+	char digits[4];
+	const int count = idStr::snPrintf( digits, sizeof( digits ), "%d", value );
+
+	// segments a (top), b, c (right), d (bottom), e, f (left), g (middle)
+	static const byte segMask[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
+	const float w = 14.0f, h = 26.0f, t = 4.0f, gap = 6.0f, pad = 5.0f;
+	const float boxW = count * w + ( count - 1 ) * gap + 2 * pad;
+	const float boxX = SCREEN_WIDTH - 8.0f - boxW, boxY = 8.0f;
+	renderSystem->DrawFilled( idVec4( 0.0f, 0.0f, 0.0f, 0.6f ), boxX, boxY, boxW, h + 2 * pad );
+	const idVec4 colour = value >= 30 ? idVec4( 0.3f, 1.0f, 0.3f, 1.0f ) : ( value >= 20 ? idVec4( 1.0f, 0.9f, 0.2f, 1.0f ) : idVec4( 1.0f, 0.3f, 0.3f, 1.0f ) );
+	const float half = ( h - t ) * 0.5f;
+	for ( int i = 0; i < count; i++ ) {
+		const int m = segMask[digits[i] - '0'];
+		const float x = boxX + pad + i * ( w + gap ), y = boxY + pad;
+		if ( m & 0x01 ) { renderSystem->DrawFilled( colour, x, y, w, t ); }
+		if ( m & 0x02 ) { renderSystem->DrawFilled( colour, x + w - t, y, t, half + t ); }
+		if ( m & 0x04 ) { renderSystem->DrawFilled( colour, x + w - t, y + half, t, half + t ); }
+		if ( m & 0x08 ) { renderSystem->DrawFilled( colour, x, y + h - t, w, t ); }
+		if ( m & 0x10 ) { renderSystem->DrawFilled( colour, x, y + half, t, half + t ); }
+		if ( m & 0x20 ) { renderSystem->DrawFilled( colour, x, y, t, half + t ); }
+		if ( m & 0x40 ) { renderSystem->DrawFilled( colour, x, y + half, w, t ); }
+	}
+	renderSystem->SetColor( colorWhite );
+}
+#endif
+
 /*
 ==============
 Draw
@@ -1128,6 +1184,11 @@ void idConsoleLocal::Draw( bool forceFullScreen ) {
 	}
 	DrawOverlayText( lefty, righty, centery );
 	DrawDebugGraphs();
+#if defined( ID_3DS )
+	if ( n3ds_showFPS.GetBool() ) {
+		N3DS_DrawFPSCounter();
+	}
+#endif
 }
 
 /*

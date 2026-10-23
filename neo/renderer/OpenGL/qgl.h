@@ -33,7 +33,13 @@ If you have questions concerning this license or the applicable additional terms
 #define __QGL_H__
 
 
+#if defined( ID_3DS )
+// New 3DS: Mesa's gl.h for declarations; the functions are provided by the
+// null GL driver in renderer/OpenGL/gl_null (nothing reaches a GPU).
+#include "gl_null/GL/gl.h"
+#else
 #include <gl/gl.h>
+#endif
 
 
 #ifndef APIENTRY
@@ -167,7 +173,7 @@ extern PFNGLGETDEBUGMESSAGELOGARBPROC		qglGetDebugMessageLogARB;
 //===========================================================================
 
 // non-windows systems will just redefine qgl* to gl*
-#if defined( __APPLE__ ) || defined( ID_GL_HARDLINK )
+#if defined( __APPLE__ ) || defined( ID_GL_HARDLINK ) || defined( ID_3DS )
 
 #include "qgl_linked.h"
 

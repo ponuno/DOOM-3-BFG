@@ -53,9 +53,26 @@ Trace through the spatial subdivision
 idCollisionModelManagerLocal::TraceTrmThroughNode
 ================
 */
+#if defined( ID_3DS )
+// New 3DS: collision query statistics (read by the game's slow-frame logs)
+int n3dsCMStats[4];		// 0 BSP nodes visited, 1 polygon refs walked, 2 brush refs walked, 3 leaf/node tests
+extern idCVar n3ds_debugPhysics;
+#endif
+
 void idCollisionModelManagerLocal::TraceTrmThroughNode( cm_traceWork_t *tw, cm_node_t *node ) {
 	cm_polygonRef_t *pref;
 	cm_brushRef_t *bref;
+#if defined( ID_3DS )
+	n3dsCMStats[3]++;
+	if ( n3ds_debugPhysics.GetBool() ) {
+	for ( pref = node->polygons; pref; pref = pref->next ) {
+		n3dsCMStats[1]++;
+	}
+	for ( bref = node->brushes; bref; bref = bref->next ) {
+		n3dsCMStats[2]++;
+	}
+	}
+#endif
 
 	// position test
 	if ( tw->positionTest ) {
@@ -116,6 +133,9 @@ void idCollisionModelManagerLocal::TraceThroughAxialBSPTree_r( cm_traceWork_t *t
 	if ( !node ) {
 		return;
 	}
+#if defined( ID_3DS )
+	n3dsCMStats[0]++;
+#endif
 
 	if ( tw->quickExit ) {
 		return;		// stop immediately
@@ -219,6 +239,27 @@ void idCollisionModelManagerLocal::TraceThroughModel( cm_traceWork_t *tw ) {
 	int i, numSteps;
 	idVec3 start, end;
 	idRotation rot;
+#if defined( ID_3DS )
+	// report traces that walk most of the tree (they should touch a handful of nodes)
+	const int n3dsNodes0 = n3dsCMStats[0];
+	const int n3dsRefs0 = n3dsCMStats[1];
+	struct n3dsReport_t {
+		cm_traceWork_t * tw;
+		int nodes0, refs0;
+		~n3dsReport_t() {
+			static int reported = 0;
+			const int nodes = n3dsCMStats[0] - nodes0;
+			if ( nodes > 1500 && reported < 30 && n3ds_debugPhysics.GetBool() ) {
+				reported++;
+				common->Printf( "CM wide trace on '%s' (%d nodes): %s, %d nodes visited, %d polygon refs | start (%s) end (%s) extents (%s) size (%s)-(%s) angle %.2f radius %.2f\n",
+					tw->model->name.c_str(), tw->model->numNodes, tw->rotation ? "rotation" : ( tw->positionTest ? "position" : "translation" ),
+					nodes, n3dsCMStats[1] - refs0,
+					tw->start.ToString( 1 ), tw->end.ToString( 1 ), tw->extents.ToString( 2 ),
+					tw->size[0].ToString( 1 ), tw->size[1].ToString( 1 ), tw->angle, tw->radius );
+			}
+		}
+	} n3dsReport = { tw, n3dsNodes0, n3dsRefs0 };
+#endif
 
 	if ( !tw->rotation ) {
 		// trace through spatial subdivision and then through leafs

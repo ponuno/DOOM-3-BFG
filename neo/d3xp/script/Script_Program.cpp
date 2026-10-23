@@ -2002,37 +2002,45 @@ int idProgram::CalculateChecksum() const {
 		unsigned short	file;
 	} statementBlock_t;
 
-	statementBlock_t	*statementList = new (TAG_SCRIPT) statementBlock_t[ statements.Num() ];
+	// The statements are checksummed in pieces through a small buffer: copying all of them at
+	// once took ~20 bytes per statement in one block (1.8 MB on phobos3), which a fragmented
+	// heap could not provide while saving. The bytes fed are the same (padding zeroed, in
+	// order), so the checksum - stored in save games - is unchanged.
+	static const int CHUNK = 512;
+	statementBlock_t statementList[CHUNK];
+	idMD4Checksum md4;
+	for ( int first = 0; first < statements.Num(); first += CHUNK ) {
+		const int count = Min( CHUNK, statements.Num() - first );
+		memset( statementList, 0, sizeof( statementBlock_t ) * count );
 
-	memset( statementList, 0, ( sizeof(statementBlock_t) * statements.Num() ) );
+		// Copy info into new list, using the variable numbers instead of a pointer to the variable
+		for ( int k = 0; k < count; k++ ) {
+			i = first + k;
+			statementList[k].op = statements[i].op;
 
-	// Copy info into new list, using the variable numbers instead of a pointer to the variable
-	for( i = 0; i < statements.Num(); i++ ) {
-		statementList[i].op = statements[i].op;
+			if ( statements[i].a ) {
+				statementList[k].a = statements[i].a->num;
+			} else {
+				statementList[k].a = -1;
+			}
+			if ( statements[i].b ) {
+				statementList[k].b = statements[i].b->num;
+			} else {
+				statementList[k].b = -1;
+			}
+			if ( statements[i].c ) {
+				statementList[k].c = statements[i].c->num;
+			} else {
+				statementList[k].c = -1;
+			}
 
-		if ( statements[i].a ) {
-			statementList[i].a = statements[i].a->num;
-		} else {
-			statementList[i].a = -1;
+			statementList[k].linenumber = statements[i].linenumber;
+			statementList[k].file = statements[i].file;
 		}
-		if ( statements[i].b ) {
-			statementList[i].b = statements[i].b->num;
-		} else {
-			statementList[i].b = -1;
-		}
-		if ( statements[i].c ) {
-			statementList[i].c = statements[i].c->num;
-		} else {
-			statementList[i].c = -1;
-		}
-
-		statementList[i].linenumber = statements[i].linenumber;
-		statementList[i].file = statements[i].file;
+		md4.Update( statementList, sizeof( statementBlock_t ) * count );
 	}
 
-	result = MD4_BlockChecksum( statementList, ( sizeof(statementBlock_t) * statements.Num() ) );
-
-	delete [] statementList;
+	result = md4.Final();
 
 	return result;
 }

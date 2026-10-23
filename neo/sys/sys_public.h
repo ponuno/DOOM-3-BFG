@@ -531,7 +531,59 @@ void			Sys_ShowConsole( int visLevel, bool quitOnClose );
 
 // This really isn't the right place to have this, but since this is the 'top level' include
 // and has a function signature with 'FILE' in it, it kinda needs to be here =/
+#if defined( ID_3DS )
+// New 3DS hang watchdog: each thread records what it is doing; if no frame
+// completes for a few seconds the watchdog thread logs every slot.
+enum { N3DS_STAGE_MAIN, N3DS_STAGE_GAME, N3DS_STAGE_RENDER, N3DS_STAGE_COUNT };
+void			Sys_N3DSStage( int slot, const char * what );
+void			Sys_N3DSFrameDone();
+bool			Sys_N3DSDebug();				// n3ds_debug: diagnostics in the log, GPU TEST button
+void			Sys_N3DSFatalCheck();			// stops this thread if another one shows a fatal error
+int				Sys_N3DSMallocAvailableKB();	// free in malloc + heap not taken yet
+// true in the 178 MB New 3DS memory mode (the CIA): big linear heap, second heap
+bool			Sys_N3DSExtendedMemory();
+// gyro aim (3ds_input.cpp): degrees turned since the last call; false while it is off
+bool			Sys_N3DSGyroAngles( float & yaw, float & pitch );
+// 0 off, 1 calibrating, 2 on; the current rates in degrees per second
+int				Sys_N3DSGyroState( float & yawDps, float & pitchDps );
+// the log's lock (3ds_main.cpp): the bottom screen panel draws under it
+void			Sys_N3DSConsoleLock();
+void			Sys_N3DSConsoleUnlock();
+#define N3DS_STAGE( slot, what )	Sys_N3DSStage( slot, what )
+// logs "SLOW <label>: x ms" when the enclosing scope takes longer than limitMs
+class idN3DSSlowScope {
+public:
+					idN3DSSlowScope( const char * label_, int limitMs );
+					~idN3DSSlowScope();
+private:
+	const char *	label;
+	int				limitUs;
+	uint64			start;
+};
+#define N3DS_SLOW_SCOPE( label, limitMs )	idN3DSSlowScope n3dsSlowScope( label, limitMs )
+
+// the last back end frame, for the PERF spike lines
+struct n3dsBackendFrame_t {
+	float	totalMs;		// the back end call, waits included
+	float	waitGpuMs;		// at its start, for the previous frame's GPU work
+	float	waitVBlankMs;	// before submitting
+	float	gpuMs;			// the previous frame on the GPU (first part handed over -> done)
+	int		draws, lightDraws, tris;
+	int		texUploads;
+	float	texUploadMs;
+	int		texEvictions, texReads, texWaits;
+};
+void RB_N3DS_LastFrame( n3dsBackendFrame_t & out );
+#else
+#define N3DS_SLOW_SCOPE( label, limitMs )
+#define N3DS_STAGE( slot, what )
+#endif
+
+#if defined( ID_3DS )
+typedef FILE * idFileHandle;
+#else
 typedef HANDLE idFileHandle;
+#endif
 
 
 ID_TIME_T		Sys_FileTimeStamp( idFileHandle fp );

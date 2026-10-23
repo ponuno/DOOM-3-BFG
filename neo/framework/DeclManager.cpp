@@ -129,6 +129,8 @@ protected:
 								// Set textSource possible with compression.
 	void						SetTextLocal( const char *text, const int length );
 
+	bool						HasText() const;		// textSource, or (3DS) text left in the source file
+
 private:
 	idDecl *					self;
 
@@ -136,6 +138,9 @@ private:
 	char *						textSource;				// decl text definition
 	int							textLength;				// length of textSource
 	int							compressedLength;		// compressed length
+#if defined( ID_3DS )
+	bool						textOnDisk;				// no textSource: the text is read back from sourceFile when parsed
+#endif
 	idDeclFile *				sourceFile;				// source file in which the decl was defined
 	int							sourceTextOffset;		// offset in source file to decl text
 	int							sourceTextLength;		// length of decl text in source file
@@ -225,6 +230,9 @@ public:
 	const idDeclFile *			GetImplicitDeclFile() const { return &implicitDecls; }
 
 	void						ConvertPDAsToStrings( const idCmdArgs &args );
+#if defined( ID_3DS )
+	void						N3DS_LogMemory();
+#endif
 
 private:
 	idSysMutex					mutex;
@@ -254,6 +262,189 @@ idCVar idDeclManagerLocal::decl_show( "decl_show", "0", CVAR_SYSTEM, "set to 1 t
 
 idDeclManagerLocal	declManagerLocal;
 idDeclManager *		declManager = &declManagerLocal;
+
+#if defined( ID_3DS )
+/*
+================================================================================================
+
+	New 3DS: decl text read back from the decl files
+
+	A decl from a file keeps only where its text is (sourceFile, sourceTextOffset,
+	textLength). Parsing reads it back. Decls are parsed in bursts at level load, many
+	from the same files, and most decl files are small, so whole files up to
+	DECL_TEXT_CACHE_FILE are kept in a small LRU cache that is emptied at the end of
+	every level load; bigger files are read span by span.
+
+================================================================================================
+*/
+static const int DECL_TEXT_CACHE_ENTRIES = 8;
+static const int DECL_TEXT_CACHE_BYTES = 512 * 1024;
+static const int DECL_TEXT_CACHE_FILE = 256 * 1024;
+
+struct declTextCache_t {
+	const idDeclFile *	file;
+	byte *				data;
+	int					length;
+	int					lastUse;
+};
+static declTextCache_t	declTextCache[DECL_TEXT_CACHE_ENTRIES];
+static int				declTextCacheBytes = 0;
+static int				declTextCacheClock = 0;
+static int				declTextReads = 0;			// decl texts read back
+static int				declTextFileReads = 0;		// whole decl files read for it
+
+static void N3DS_FreeDeclTextEntry( declTextCache_t & e ) {
+	if ( e.data != NULL ) {
+		fileSystem->FreeFile( e.data );
+		declTextCacheBytes -= e.length;
+	}
+	e.file = NULL;
+	e.data = NULL;
+	e.length = 0;
+	e.lastUse = 0;
+}
+
+static void N3DS_FreeDeclTextCache() {
+	for ( int i = 0; i < DECL_TEXT_CACHE_ENTRIES; i++ ) {
+		N3DS_FreeDeclTextEntry( declTextCache[i] );
+	}
+}
+
+static bool N3DS_ReadDeclText( const idDeclFile * file, int offset, int length, char * text ) {
+	if ( file == NULL || offset < 0 || length < 0 ) {
+		return false;
+	}
+	declTextReads++;
+	text[length] = '\0';
+
+	// cached whole file
+	for ( int i = 0; i < DECL_TEXT_CACHE_ENTRIES; i++ ) {
+		declTextCache_t & e = declTextCache[i];
+		if ( e.file == file ) {
+			if ( offset + length > e.length ) {
+				return false;
+			}
+			e.lastUse = ++declTextCacheClock;
+			memcpy( text, e.data + offset, length );
+			return true;
+		}
+	}
+
+	// small file: read it whole and keep it for the next decls of the same file
+	if ( file->fileSize > 0 && file->fileSize <= DECL_TEXT_CACHE_FILE ) {
+		void * data = NULL;
+		const int fileLength = fileSystem->ReadFile( file->fileName, &data );
+		if ( fileLength < 0 || data == NULL ) {
+			return false;
+		}
+		declTextFileReads++;
+		if ( offset + length > fileLength ) {
+			fileSystem->FreeFile( data );
+			return false;
+		}
+		memcpy( text, (byte *)data + offset, length );
+
+		// make room: least recently used first
+		for ( ;; ) {
+			int lru = -1, empty = -1;
+			for ( int i = 0; i < DECL_TEXT_CACHE_ENTRIES; i++ ) {
+				if ( declTextCache[i].file == NULL ) {
+					empty = i;
+				} else if ( lru < 0 || declTextCache[i].lastUse < declTextCache[lru].lastUse ) {
+					lru = i;
+				}
+			}
+			if ( empty >= 0 && declTextCacheBytes + fileLength <= DECL_TEXT_CACHE_BYTES ) {
+				declTextCache_t & e = declTextCache[empty];
+				e.file = file;
+				e.data = (byte *)data;
+				e.length = fileLength;
+				e.lastUse = ++declTextCacheClock;
+				declTextCacheBytes += fileLength;
+				return true;
+			}
+			if ( lru < 0 ) {
+				fileSystem->FreeFile( data );		// cannot be cached
+				return true;
+			}
+			N3DS_FreeDeclTextEntry( declTextCache[lru] );
+		}
+	}
+
+	// big file: just this decl's span
+	idFileLocal f( fileSystem->OpenFileRead( file->fileName ) );
+	if ( f == NULL || f->Seek( offset, FS_SEEK_SET ) != 0 ) {
+		return false;
+	}
+	return f->Read( text, length ) == length;
+}
+#endif
+
+#if defined( ID_3DS )
+/*
+===================
+idDeclManagerLocal::N3DS_LogMemory
+
+Memory diagnostics: decl source text kept per type (Huffman compressed), and how
+many decls of each type have been parsed.
+===================
+*/
+void idDeclManagerLocal::N3DS_LogMemory() {
+	struct typeStat_t { int type, count, parsed, textBytes, rawBytes, diskBytes; };
+	typeStat_t stats[DECL_MAX_TYPES];
+	int numStats = 0, totalText = 0, totalRaw = 0, totalDisk = 0, totalCount = 0, totalParsed = 0;
+	for ( int i = 0; i < declTypes.Num() && i < DECL_MAX_TYPES; i++ ) {
+		if ( declTypes[i] == NULL || linearLists[i].Num() == 0 ) {
+			continue;
+		}
+		typeStat_t & st = stats[numStats++];
+		st.type = i;
+		st.count = linearLists[i].Num();
+		st.parsed = st.textBytes = st.rawBytes = st.diskBytes = 0;
+		for ( int j = 0; j < linearLists[i].Num(); j++ ) {
+			const idDeclLocal * decl = linearLists[i][j];
+			if ( decl->declState == DS_PARSED ) {
+				st.parsed++;
+			}
+			if ( decl->textSource != NULL ) {
+				st.textBytes += decl->compressedLength;
+				st.rawBytes += decl->textLength;
+			} else if ( decl->textOnDisk ) {
+				st.diskBytes += decl->textLength;
+			}
+		}
+		totalText += st.textBytes;
+		totalRaw += st.rawBytes;
+		totalDisk += st.diskBytes;
+		totalCount += st.count;
+		totalParsed += st.parsed;
+	}
+	if ( numStats == 0 ) {
+		return;
+	}
+	// small n: insertion sort by kept text, descending
+	for ( int i = 1; i < numStats; i++ ) {
+		typeStat_t t = stats[i];
+		int j = i - 1;
+		while ( j >= 0 && stats[j].textBytes < t.textBytes ) {
+			stats[j + 1] = stats[j];
+			j--;
+		}
+		stats[j + 1] = t;
+	}
+	idLib::Printf( "  decls: %d (%d parsed), source text kept %d KB (%d KB uncompressed), %d KB left in %d decl files, read-back cache %d KB, %d reads (%d whole files)\n",
+		totalCount, totalParsed, totalText / 1024, totalRaw / 1024, totalDisk / 1024, loadedFiles.Num(),
+		declTextCacheBytes / 1024, declTextReads, declTextFileReads );
+	for ( int i = 0; i < numStats && i < 8; i++ ) {
+		idLib::Printf( "    %-14s %5d decls %5d parsed, text %5d KB\n", declTypes[stats[i].type]->typeName.c_str(),
+			stats[i].count, stats[i].parsed, stats[i].textBytes / 1024 );
+	}
+}
+
+void N3DS_LogDeclMemory() {
+	declManagerLocal.N3DS_LogMemory();
+}
+#endif
 
 /*
 ====================================================================================
@@ -754,7 +945,17 @@ int idDeclFile::LoadAndParse() {
 			newDecl->textSource = NULL;
 		}
 
+#if defined( ID_3DS )
+		// New 3DS: only ~10% of the decls are ever parsed on a map, and their source text
+		// (4.7 MB even Huffman-compressed) is the same bytes as in this file, so it is
+		// left there and read back when the decl is parsed (N3DS_ReadDeclText).
+		newDecl->checksum = MD5_BlockChecksum( buffer + startMarker, size );
+		newDecl->textLength = size;
+		newDecl->compressedLength = 0;
+		newDecl->textOnDisk = true;
+#else
 		newDecl->SetTextLocal( buffer + startMarker, size );
+#endif
 		newDecl->sourceFile = this;
 		newDecl->sourceTextOffset = startMarker;
 		newDecl->sourceTextLength = size;
@@ -775,6 +976,9 @@ int idDeclFile::LoadAndParse() {
 	for ( idDeclLocal *decl = decls ; decl ; decl = decl->nextInFile ) {
 		if ( decl->redefinedInReload == false ) {
 			decl->MakeDefault();
+#if defined( ID_3DS )
+			decl->textOnDisk = false;		// its text is gone from the file
+#endif
 			decl->sourceTextOffset = decl->sourceFile->fileSize;
 			decl->sourceTextLength = 0;
 			decl->sourceLine = decl->sourceFile->numLines;
@@ -888,6 +1092,10 @@ void idDeclManagerLocal::Shutdown() {
 	int			i, j;
 	idDeclLocal *decl;
 
+#if defined( ID_3DS )
+	N3DS_FreeDeclTextCache();		// holds idDeclFile pointers
+#endif
+
 	// free decls
 	for ( i = 0; i < DECL_MAX_TYPES; i++ ) {
 		for ( j = 0; j < linearLists[i].Num(); j++ ) {
@@ -955,6 +1163,9 @@ idDeclManagerLocal::EndLevelLoad
 */
 void idDeclManagerLocal::EndLevelLoad() {
 	insideLevelLoad = false;
+#if defined( ID_3DS )
+	N3DS_FreeDeclTextCache();
+#endif
 
 	// we don't need to do anything here, but the image manager, model manager,
 	// and sound sample manager will need to free media that was not referenced
@@ -1327,7 +1538,7 @@ void idDeclManagerLocal::PrintType( const idCmdArgs &args, declType_t type ) {
 	common->Printf( "%s %s:\n", declTypes[ type ]->typeName.c_str(), decl->name.c_str() );
 	common->Printf( "source: %s:%i\n", decl->sourceFile->fileName.c_str(), decl->sourceLine );
 	common->Printf( "----------\n" );
-	if ( decl->textSource != NULL ) {
+	if ( decl->HasText() ) {
 		char *declText = (char *)_alloca( decl->textLength + 1 );
 		decl->GetText( declText );
 		common->Printf( "%s\n", declText );
@@ -1965,6 +2176,9 @@ idDeclLocal::idDeclLocal() {
 	textSource = NULL;
 	textLength = 0;
 	compressedLength = 0;
+#if defined( ID_3DS )
+	textOnDisk = false;
+#endif
 	sourceFile = NULL;
 	sourceTextOffset = 0;
 	sourceTextLength = 0;
@@ -2087,6 +2301,17 @@ idDeclLocal::GetText
 =================
 */
 void idDeclLocal::GetText( char *text ) const {
+#if defined( ID_3DS )
+	if ( textOnDisk ) {
+		if ( !N3DS_ReadDeclText( sourceFile, sourceTextOffset, textLength, text ) ) {
+			common->Warning( "couldn't read the text of %s '%s' back from %s", declManagerLocal.GetDeclNameFromType( type ),
+				name.c_str(), ( sourceFile != NULL ) ? sourceFile->fileName.c_str() : "?" );
+			memset( text, ' ', textLength );	// parses as empty: the decl defaults
+			text[textLength] = '\0';
+		}
+		return;
+	}
+#endif
 #ifdef USE_COMPRESSED_DECLS
 	HuffmanDecompressText( text, textLength, (byte *)textSource, compressedLength );
 #else
@@ -2101,6 +2326,20 @@ idDeclLocal::GetTextLength
 */
 int idDeclLocal::GetTextLength() const {
 	return textLength;
+}
+
+/*
+=================
+idDeclLocal::HasText
+=================
+*/
+bool idDeclLocal::HasText() const {
+#if defined( ID_3DS )
+	if ( textOnDisk ) {
+		return true;
+	}
+#endif
+	return textSource != NULL;
 }
 
 /*
@@ -2120,6 +2359,9 @@ idDeclLocal::SetTextLocal
 void idDeclLocal::SetTextLocal( const char *text, const int length ) {
 
 	Mem_Free( textSource );
+#if defined( ID_3DS )
+	textOnDisk = false;
+#endif
 
 	checksum = MD5_BlockChecksum( text, length );
 
@@ -2373,7 +2615,7 @@ void idDeclLocal::ParseLocal() {
 	declManagerLocal.MediaPrint( "parsing %s %s\n", declManagerLocal.declTypes[type]->typeName.c_str(), name.c_str() );
 
 	// if no text source try to generate default text
-	if ( textSource == NULL ) {
+	if ( !HasText() ) {
 		generatedDefaultText = self->SetDefaultText();
 	}
 
@@ -2381,7 +2623,7 @@ void idDeclLocal::ParseLocal() {
 	declManagerLocal.indent++;
 
 	// no text immediately causes a MakeDefault()
-	if ( textSource == NULL ) {
+	if ( !HasText() ) {
 		MakeDefault();
 		declManagerLocal.indent--;
 		return;

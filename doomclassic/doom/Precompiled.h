@@ -40,12 +40,31 @@ If you have questions concerning this license or the applicable additional terms
 
 #define ID_INLINE inline
 
+#if defined( ID_3DS )
+// Windows/values.h names the classic DOOM code relies on
+#include <limits.h>
+#ifndef MAXINT
+#define MAXINT		INT_MAX
+#endif
+#ifndef MININT
+#define MININT		INT_MIN
+#endif
+typedef int				BOOL;
+typedef unsigned char	boolean;
+#ifndef TRUE
+#define TRUE		1
+#endif
+#ifndef FALSE
+#define FALSE		0
+#endif
+#endif
+
 typedef unsigned char byte;
 typedef unsigned int dword;
 
 
-#include <Math.h>
-#include <Assert.h>
+#include <math.h>
+#include <assert.h>
 
 #define ACTUALTEXTUREWIDTH	1024		// should always be equal to or larger
 #define ACTUALTEXTUREHEIGHT	1024

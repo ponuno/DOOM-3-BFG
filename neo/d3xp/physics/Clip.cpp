@@ -1440,6 +1440,11 @@ bool idClip::Motion( trace_t &results, const idVec3 &start, const idVec3 &end, c
 idClip::Contacts
 ============
 */
+#if defined( ID_3DS )
+uint64 n3dsClipStats[4];	// 0 world contact us, 1 entity contact us, 2 entity models tested, 3 contact queries
+extern idCVar n3ds_debugPhysics;
+#endif
+
 int idClip::Contacts( contactInfo_t *contacts, const int maxContacts, const idVec3 &start, const idVec6 &dir, const float depth,
 					 const idClipModel *mdl, const idMat3 &trmAxis, int contentMask, const idEntity *passEntity ) {
 	int i, j, num, n, numContacts;
@@ -1448,6 +1453,11 @@ int idClip::Contacts( contactInfo_t *contacts, const int maxContacts, const idVe
 	const idTraceModel *trm;
 
 	trm = TraceModelForClipModel( mdl );
+#if defined( ID_3DS )
+	n3dsClipStats[3]++;
+	const bool n3dsTime = n3ds_debugPhysics.GetBool();
+	const uint64 n3dsW0 = n3dsTime ? Sys_Microseconds() : 0;
+#endif
 
 	if ( !passEntity || passEntity->entityNumber != ENTITYNUM_WORLD ) {
 		// test world
@@ -1456,6 +1466,16 @@ int idClip::Contacts( contactInfo_t *contacts, const int maxContacts, const idVe
 	} else {
 		numContacts = 0;
 	}
+#if defined( ID_3DS )
+	const uint64 n3dsW1 = n3dsTime ? Sys_Microseconds() : 0;
+	n3dsClipStats[0] += n3dsW1 - n3dsW0;
+	struct n3dsEntTimer_t {
+		bool on;
+		uint64 start;
+		n3dsEntTimer_t( bool o ) : on( o ), start( o ? Sys_Microseconds() : 0 ) {}
+		~n3dsEntTimer_t() { if ( on ) { n3dsClipStats[1] += Sys_Microseconds() - start; } }
+	} n3dsEntTimer( n3dsTime );
+#endif
 
 	for ( i = 0; i < numContacts; i++ ) {
 		contacts[i].entityNum = ENTITYNUM_WORLD;
@@ -1488,6 +1508,9 @@ int idClip::Contacts( contactInfo_t *contacts, const int maxContacts, const idVe
 		}
 
 		idClip::numContacts++;
+#if defined( ID_3DS )
+		n3dsClipStats[2]++;
+#endif
 		n = collisionModelManager->Contacts( contacts + numContacts, maxContacts - numContacts,
 								start, dir, depth, trm, trmAxis, contentMask,
 									touch->Handle(), touch->origin, touch->axis );

@@ -32,10 +32,17 @@ If you have questions concerning this license or the applicable additional terms
 #include "tr_local.h"
 
 // Vista OpenGL wrapper check
+#if !defined( ID_3DS )
 #include "../sys/win32/win_local.h"
+#endif
 
 // DeviceContext bypasses RenderSystem to work directly with this
 idGuiModel * tr_guiModel;
+
+#if defined( ID_3DS )
+bool r_n3dsNoShadows = false;
+bool r_n3dsDiscardStaticGeo = false;
+#endif
 
 // functions that are not called every frame
 glconfig_t	glConfig;
@@ -831,6 +838,34 @@ void R_InitOpenGL() {
 
 	r_initialized = true;
 
+#if defined( ID_3DS )
+	r_n3dsNoShadows = cvarSystem->GetCVarBool( "n3ds_noShadows" );
+	// the citro3d backend draws from the static buffers, so they need real storage
+	r_n3dsDiscardStaticGeo = cvarSystem->GetCVarBool( "n3ds_discardStaticGeo" ) && !r_n3dsC3D;
+	{
+		const int vkb = cvarSystem->GetCVarInteger( "n3ds_staticVertexKB" );
+		const int ikb = cvarSystem->GetCVarInteger( "n3ds_staticIndexKB" );
+		// citro3d: paid for by no joint buffers and a 1 MB frame index cache (VertexCache.h).
+		// Extended memory (CIA, 178 MB): the linear heap is ~70 MB and what the GPU does
+		// not take becomes the second heap later, so the big maps (phobos3: 21.7 MB .bproc)
+		// get room; 32 MB is the most a vertCacheHandle_t offset can address.
+		const bool ext = Sys_N3DSExtendedMemory();
+		n3dsStaticVertexMemory = ( vkb > 0 ? vkb : ( r_n3dsC3D ? ( ext ? 20480 : 8704 ) : 10240 ) ) * 1024;
+		n3dsStaticIndexMemory = ( ikb > 0 ? ikb : ( r_n3dsC3D ? ( ext ? 6144 : 3584 ) : 6144 ) ) * 1024;
+		common->Printf( "renderer: %s, static vertex cache %d KB, index %d KB%s\n",
+			r_n3dsC3D ? "citro3d" : "null GL", n3dsStaticVertexMemory / 1024, n3dsStaticIndexMemory / 1024,
+			r_n3dsDiscardStaticGeo ? " (budget only)" : "" );
+	}
+	if ( r_n3dsC3D ) {
+		// the citro3d backend cannot skin on the GPU (too few shader uniforms for the
+		// joints): the frontend skins on the CPU instead, as with r_useGPUSkinning 0
+		r_useGPUSkinning.SetBool( false );
+	}
+	common->Printf( "skinning: %s\n", r_useGPUSkinning.GetBool() ? "GPU" : "CPU" );
+	idBinaryImage::skipPixelData = cvarSystem->GetCVarBool( "n3ds_skipImageData" );
+	common->Printf( "shadows: %s\n", r_n3dsNoShadows ? "disabled (n3ds_noShadows)" : "enabled" );
+#endif
+
 	// allocate the vertex array range or vertex objects
 	vertexCache.Init();
 
@@ -840,6 +875,7 @@ void R_InitOpenGL() {
 	// Reset our gamma
 	R_SetColorMappings();
 
+#if !defined( ID_3DS )
 	static bool glCheck = false;
 	if ( !glCheck && win32.osversion.dwMajorVersion == 6 ) {
 		glCheck = true;
@@ -859,6 +895,7 @@ void R_InitOpenGL() {
 			}
 		}
 	}
+#endif // !ID_3DS
 }
 
 /*
@@ -1652,6 +1689,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 
 	common->Printf( "-------\n" );
 
+#if !defined( ID_3DS )
 	// WGL_EXT_swap_interval
 	typedef BOOL (WINAPI * PFNWGLSWAPINTERVALEXTPROC) (int interval);
 	extern	PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT;
@@ -1661,6 +1699,7 @@ void GfxInfo_f( const idCmdArgs &args ) {
 	} else {
 		common->Printf( "swapInterval not forced\n" );
 	}
+#endif
 
 	if ( glConfig.stereoPixelFormatAvailable && glConfig.isStereoPixelFormat ) {
 		idLib::Printf( "OpenGl quad buffer stereo pixel format active\n" );

@@ -1,0 +1,190 @@
+/*
+================================================================================================
+
+	New 3DS GPU layer (citro3d), plain C interface.
+
+	n3ds_gpu.c is the only file that includes <3ds.h> / <citro3d.h>; engine code
+	talks to the GPU through these functions so the libctru names never meet the
+	engine headers. n3ds_gpu.c is also compiled with the toolchain's default short
+	enums, because citro3d/libctru structs (DVLE_s, C3D_TexEnv, ...) contain enums.
+
+================================================================================================
+*/
+#ifndef __N3DS_GPU_H__
+#define __N3DS_GPU_H__
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int				N3DSGPU_Init( void );						// 1 on success
+void			N3DSGPU_Shutdown( void );
+const char *	N3DSGPU_LastError( void );
+
+// waits for the GPU to finish the previous frame; if that takes over 2 s the hang
+// callback is called once (then the wait goes on)
+void			N3DSGPU_BeginFrame( unsigned int clearRGBA );
+void			N3DSGPU_SetHangCallback( void ( *callback )( unsigned int waitedMs ) );
+// log lines from the GPU layer (lost completion interrupts, see N3DS_LostCompletion)
+void			N3DSGPU_SetNoticeCallback( void ( *callback )( const char * text ) );
+void			N3DSGPU_EndFrame( void );
+
+// rows[16]: row-major 4x4, already converted to PICA clip space
+void			N3DSGPU_SetMatrix( const float * rows );
+void			N3DSGPU_SetColor( float r, float g, float b, float a );
+
+// verts: idDrawVert layout (xyz float3 @0, normal ubyte4 @16), linear memory
+// indexes: 16-bit, linear memory
+void			N3DSGPU_DrawIndexed( const void * verts, int stride, const unsigned short * indexes, int numIndexes );
+
+// diagnostics: a triangle from a private buffer (16-byte vertices, exact layout),
+// drawn with an identity matrix; isolates the engine's buffers from the GPU setup
+void			N3DSGPU_DrawTestTriangle( void );
+// copy a draw into a private linear buffer first (tests the engine buffer addresses)
+void			N3DSGPU_DrawIndexedCopied( const void * verts, int stride, int numVerts, const unsigned short * indexes, int numIndexes );
+
+// diagnostics: command buffer use 0..1, GPU time of the last frame (ms)
+float			N3DSGPU_CmdBufUsage( void );
+float			N3DSGPU_DrawingTimeMs( void );
+// time spent waiting since the last call: for the previous frame's GPU work, for a vblank before submitting
+void			N3DSGPU_WaitStats( float * gpuMs, float * vblankMs );
+// the same for the frame being drawn now (gpu: at its start) and the one before (vblank)
+void			N3DSGPU_LastWaits( float * gpuMs, float * vblankMs );
+// hand what was recorded of the frame so far to the GPU (it draws while the rest is recorded)
+void			N3DSGPU_Kick( void );
+// N3DSGPU_Kick every this many draws (0: only at the frame end)
+void			N3DSGPU_SetKickDraws( int draws );
+// diagnostics: 1 = everything drawn into a 30x50 box (pixel work ~1/64, vertex work unchanged)
+void			N3DSGPU_SetFillProbe( int enable );
+// diagnostics: every draw draws only its first triangle (state changes and draw count unchanged)
+void			N3DSGPU_SetOneTriangle( int enable );
+
+// make CPU writes in linear memory visible to the GPU
+void			N3DSGPU_FlushRange( const void * p, unsigned int size );
+
+// textures: PICA tiled layout, mip levels contiguous. 0-3 are built on the console
+// (n3ds_texconv), the rest only come from the texture pack (tools/n3ds/n3dstex)
+enum {
+	N3DS_TEX_RGB565		= 0,
+	N3DS_TEX_RGBA5551	= 1,
+	N3DS_TEX_RGBA4		= 2,
+	N3DS_TEX_A8			= 3,
+	N3DS_TEX_ETC1		= 4,
+	N3DS_TEX_ETC1A4		= 5,
+	N3DS_TEX_HILO8		= 6,		// normal maps: x in hi, y in lo
+	N3DS_TEX_A4			= 7
+};
+unsigned int	N3DSGPU_VRAMFree( void );
+unsigned int	N3DSGPU_LinearFree( void );
+unsigned int	N3DSGPU_PendingFreeBytes( int vram );	// released textures whose memory comes back after this frame
+void *			N3DSGPU_LinearAlloc( unsigned int size );
+// NULL when VRAM has no room; maxLevel = number of mip levels - 1; wrap: N3DS_WRAP_*
+void *			N3DSGPU_TexCreate( int width, int height, int format, int maxLevel, int repeat );
+// a texture in linear memory (FCRAM) instead of VRAM: the GPU samples it from there
+// (slower); its data is written directly (N3DSGPU_TexData, then N3DSGPU_TexFlush)
+void *			N3DSGPU_TexCreateLinear( int width, int height, int format, int maxLevel, int repeat );
+void *			N3DSGPU_TexData( void * tex );
+void			N3DSGPU_TexFlush( void * tex, unsigned int size );
+// before the CPU reads memory the GPU wrote (diagnostics)
+void			N3DSGPU_InvalidateRange( void * data, unsigned int size );
+// room for another texture copy in this frame (the GX queue is small)
+int				N3DSGPU_CanQueueTexture( void );
+// copies the whole chain from staging (linear memory, takes ownership) to VRAM; during a
+// frame the copy is done at the next N3DSGPU_BeginFrame, before anything is drawn
+int				N3DSGPU_TexUpload( void * tex, void * staging, unsigned int size );
+// 1 while the texture's copy has not been done: it must not be drawn yet
+int				N3DSGPU_TexPending( void * tex );
+void			N3DSGPU_TexFree( void * tex );
+// wrap modes for N3DSGPU_TexCreate
+enum {
+	N3DS_WRAP_CLAMP		= 0,
+	N3DS_WRAP_REPEAT	= 1,
+	N3DS_WRAP_ZERO		= 2		// clamp to a black, transparent border
+};
+
+// fill pass: diffuse (or NULL = vertex colour only) modulated by the vertex colour,
+// depth written; alphaSource 0 = no alpha test, 1 = diffuse alpha, 2 = mask alpha
+void			N3DSGPU_SetFillPass( void * diffuse, void * mask, int alphaSource );
+// light pass: projection x falloff x diffuse x vertex colour x 4, added where the
+// depth equals the fill pass; NULL textures count as white; projective: unit 0
+// divides by q per pixel
+void			N3DSGPU_SetLightPass( void * projection, void * falloff, void * diffuse, int projective );
+// model-space light origin (w = 1: N.L shading, 0: none) and the S, T, Q and
+// falloff planes of the light projection
+void			N3DSGPU_SetLightUniforms( const float * origin, const float * s, const float * t, const float * q, const float * f );
+void			N3DSGPU_SetPassParams( int fill, int projective );
+// hardware fragment lighting (n3ds_lighting 2): program 1 = n3ds_vshader_lit
+int				N3DSGPU_UseProgram( int lit );		// 0 if the lit program is not available
+// rows[12]: model -> eye 3x4, row-major (lit program)
+void			N3DSGPU_SetModelView( const float * rows );
+// slot 0..7: eye-space position, colour (already / scale), 1 / radius for the
+// distance attenuation; spotDir (eye space, pointing away from the light) and the
+// cone's outer cosine, or NULL for a point light
+void			N3DSGPU_HWSetLight( int slot, const float * eyePos, const float * color, float invRadius, float attnBias,
+								const float * spotDir, float cosOuter );
+void			N3DSGPU_HWEnableLights( int mask );
+void			N3DSGPU_HWAmbient( float r, float g, float b );
+void			N3DSGPU_HWQuatMode( int mode );		// diagnostics
+void			N3DSGPU_HWEnvDiag( int keepEnv, int envDirty );	// diagnostics
+void			N3DSGPU_HWFlatUnit1( int on );		// diagnostics
+void			N3DSGPU_HWDepthBias( int units );	// polygon offset in the HW pass
+void			N3DSGPU_HWDepthBiasReset( void );
+void			N3DSGPU_HWForgetLights( void );		// diagnostics
+void			N3DSGPU_HWAddPass( int on );		// 1: add onto the pixels of the same surface (lights beyond 8)
+// one pass: diffuse (unit 0, or NULL) x (lit ? fragment lighting x scale : 1) x vertex
+// colour; alphaSource as N3DSGPU_SetFillPass (mask on unit 1); depth written. Lit only:
+// normalMap (HILO8, unit 1; not with a mask) turns the bump unit on, specMap (unit 2)
+// adds specular map x highlight (D0 table over N.H) x scale
+void			N3DSGPU_SetHWPass( void * diffuse, void * mask, int alphaSource, int lit, int scale,
+								   void * normalMap, void * specMap );
+// exponent of the highlight table (uploaded only when it changes)
+void			N3DSGPU_HWSpecularPower( float power );
+
+// ambient / GUI stages (program 2 = n3ds_vshader_amb)
+// colour = ( vertex colour * vcModulate + vcAdd ) * color; st through texS / texT
+void			N3DSGPU_SetStageUniforms( const float * color, float vcModulate, float vcAdd, const float * texS, const float * texT );
+// blend factors in GL order (0 zero, 1 one, 2 src colour, 3 1-src colour, 4 dst colour,
+// 5 1-dst colour, 6 src alpha, 7 1-src alpha, 8 dst alpha, 9 1-dst alpha); blendOp 0 add,
+// 1 subtract, 2 min, 3 max; depthFunc 0 GL lequal, 1 always, 2 GL greater, 3 equal;
+// writeMask PICA bits (1 r, 2 g, 4 b, 8 a, 0x10 depth); alphaRef 0..255 or -1; depth bias
+// in 1/65536 units towards the viewer
+void			N3DSGPU_SetStageState( int srcBlend, int dstBlend, int blendOp, int depthFunc, int writeMask,
+									int alphaRef, int depthBiasUnits );
+// texture (or NULL) x vertex colour; swf: + swfAdd[4] (signed) and premultiplied alpha;
+// alphaTex: an A8 texture, only its alpha is used
+void			N3DSGPU_SetStageTexEnv( void * tex, int swf, const float * swfAdd, int alphaTex );
+// stencil (SWF masks): func -1 = off, else GL order (0 always, 1 less, 2 lequal, 3 greater,
+// 4 gequal, 5 equal, 6 notequal, 7 never); ops GL order (0 keep, 1 zero, 2 replace, 3 incr,
+// 4 decr, 5 invert, 6 incr wrap, 7 decr wrap). The stencil starts every frame at 128.
+void			N3DSGPU_SetStencil( int func, int ref, int mask, int opFail, int opZFail, int opPass );
+void			N3DSGPU_EndStages( void );
+// hang hunting: submit everything drawn so far, wait up to timeoutMs; 0 = the GPU did not finish,
+// 2 = it finished but its completion interrupt had to be counted by hand (lost)
+int				N3DSGPU_DebugSync( unsigned int timeoutMs );
+// GPU hang report: where citro3d's GX queue stands (which transfer or command list
+// the GPU is stuck on), one line per entry into out; returns the number of lines
+int				N3DSGPU_HangQueueReport( char * out, int outSize );
+// writes the queue and every command list of the hung frame to path (decoded on the PC
+// by tools/n3ds/gpuhang.py), then, if withRegs, appends the GPU's registers as they stand
+// (which state the GPU is stuck in); 0 if the file could not be written
+int				N3DSGPU_DumpKeysHeld( void );		// diagnostics: touch on the lower half of the bottom screen
+int				N3DSGPU_DumpColorBuffer( const char * path );	// diagnostics
+void			N3DSGPU_RingCapture( int slots, int frame );	// diagnostics: keep this frame in the ring
+int				N3DSGPU_RingWrite( int firstIndex, int * frames, int maxFrames );
+int				N3DSGPU_HangDump( const char * path, int withRegs );
+// texture-copy destinations in the queue report are named through this (NULL: unknown)
+void			N3DSGPU_SetHangTexNamer( const char * ( *namer )( unsigned int address ) );
+// "ETC1 128x64 5 lv @18123400" (C3D_Tex: format, size, levels, data address)
+void			N3DSGPU_TexDescribe( void * tex, char * out, int outSize );
+// 1: clean the data cache over all linear memory at every frame end (citro3d default)
+void			N3DSGPU_SetFullFlush( int enable );
+
+// scissor in render target pixels (240 x 400, the 3DS framebuffer orientation),
+// right/bottom exclusive
+void			N3DSGPU_SetScissor( int enable, int left, int top, int right, int bottom );
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

@@ -515,6 +515,14 @@ void RB_ExecuteBackEndCommands( const emptyCommand_t *cmds ) {
 		return;
 	}
 
+#if defined( ID_3DS )
+	if ( r_n3dsC3D ) {
+		RB_N3DS_ExecuteBackEndCommands( cmds );
+		renderLog.EndFrame();
+		return;
+	}
+#endif
+
 	if ( renderSystem->GetStereo3DMode() != STEREO3D_OFF ) {
 		RB_StereoRenderExecuteBackEndCommands( cmds );
 		renderLog.EndFrame();

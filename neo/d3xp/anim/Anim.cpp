@@ -89,6 +89,11 @@ void idMD5Anim::Free() {
 	jointInfo.Clear();
 	bounds.Clear();
 	componentFrames.Clear();
+#if defined( ID_3DS )
+	quantFrames.Clear();
+	quantOffset.Clear();
+	quantScale.Clear();
+#endif
 }
 
 /*
@@ -157,6 +162,9 @@ idMD5Anim::Allocated
 */
 size_t idMD5Anim::Allocated() const {
 	size_t	size = bounds.Allocated() + jointInfo.Allocated() + componentFrames.Allocated() + name.Allocated();
+#if defined( ID_3DS )
+	size += quantFrames.Allocated() + quantOffset.Allocated() + quantScale.Allocated();
+#endif
 	return size;
 }
 
@@ -184,6 +192,9 @@ bool idMD5Anim::LoadAnim( const char * filename ) {
 			// for resource gathering write this anim to the preload file for this map
 			fileSystem->AddAnimPreload( name );
 		}
+#if defined( ID_3DS )
+		Quantize();
+#endif
 		return true;
 	}
 
@@ -355,6 +366,10 @@ bool idMD5Anim::LoadAnim( const char * filename ) {
 		idFileLocal outputFile( fileSystem->OpenFileWrite( generatedFileName, "fs_basepath" ) );
 		WriteBinary( outputFile, sourceTimeStamp );
 	}
+
+#if defined( ID_3DS )
+	Quantize();
+#endif
 
 	// done
 	return true;
@@ -599,6 +614,155 @@ void idMD5Anim::ConvertTimeToFrame( int time, int cyclecount, frameBlend_t &fram
 
 /*
 ====================
+idMD5Anim::FrameComponents
+====================
+*/
+const float * idMD5Anim::FrameComponents( int frameNum, int first, int count, float * scratch ) const {
+#if defined( ID_3DS )
+	if ( quantFrames.Num() > 0 ) {
+		const int16 * q = &quantFrames[ frameNum * numAnimatedComponents + first ];
+		const float * offset = &quantOffset[ first ];
+		const float * scale = &quantScale[ first ];
+		for ( int i = 0; i < count; i++ ) {
+			scratch[i] = offset[i] + scale[i] * (float)q[i];
+		}
+		scratch[count] = 0.0f;		// like JOINT_FRAME_PAD
+		return scratch;
+	}
+#endif
+	return &componentFrames[ frameNum * numAnimatedComponents + first ];
+}
+
+#if defined( ID_3DS )
+
+/*
+====================
+idMD5Anim quantization statistics
+====================
+*/
+static int		quantAnims = 0;
+static int		quantBytesBefore = 0;
+static int		quantBytesAfter = 0;
+static int		quantBoundsBytes = 0;
+static int		quantJointBytes = 0;
+static float	quantMaxQuatError = 0.0f;
+static float	quantMaxTransError = 0.0f;
+static idStr	quantWorstAnim;
+
+/*
+====================
+idMD5Anim::Quantize
+
+Replaces componentFrames by 16-bit values with a per-component offset and scale.
+Rotation components (quaternion x/y/z, range -1..1) end up with < 0.00002 error;
+translations with range/65534 (about 0.01 units for a 600 unit root motion).
+The decoded values are compared against the originals and the worst error is
+reported, so a bug here shows up in the log rather than as broken AI movement.
+====================
+*/
+void idMD5Anim::Quantize() {
+	const int numComp = numAnimatedComponents;
+	if ( numComp == 0 || numFrames == 0 || quantFrames.Num() > 0 ) {
+		return;
+	}
+	if ( !cvarSystem->GetCVarBool( "n3ds_animQuant" ) ) {
+		return;
+	}
+
+	// which components are rotations (for error reporting)
+	idTempArray<bool> isQuat( numComp );
+	for ( int c = 0; c < numComp; c++ ) {
+		isQuat[c] = false;
+	}
+	for ( int j = 0; j < jointInfo.Num(); j++ ) {
+		const int bits = jointInfo[j].animBits;
+		int c = jointInfo[j].firstComponent;
+		if ( bits & ANIM_TX ) { c++; }
+		if ( bits & ANIM_TY ) { c++; }
+		if ( bits & ANIM_TZ ) { c++; }
+		if ( bits & ANIM_QX ) { if ( c < numComp ) { isQuat[c] = true; } c++; }
+		if ( bits & ANIM_QY ) { if ( c < numComp ) { isQuat[c] = true; } c++; }
+		if ( bits & ANIM_QZ ) { if ( c < numComp ) { isQuat[c] = true; } c++; }
+	}
+
+	quantOffset.SetGranularity( 1 );
+	quantScale.SetGranularity( 1 );
+	quantFrames.SetGranularity( 1 );
+	quantOffset.SetNum( numComp );
+	quantScale.SetNum( numComp );
+	quantFrames.SetNum( numFrames * numComp );
+
+	float maxQuatError = 0.0f;
+	float maxTransError = 0.0f;
+
+	for ( int c = 0; c < numComp; c++ ) {
+		float minV = componentFrames[c];
+		float maxV = minV;
+		for ( int f = 1; f < numFrames; f++ ) {
+			const float v = componentFrames[ f * numComp + c ];
+			minV = Min( minV, v );
+			maxV = Max( maxV, v );
+		}
+		const float mid = 0.5f * ( minV + maxV );
+		const float half = 0.5f * ( maxV - minV );
+		const float scale = ( half > 0.0f ) ? half / 32767.0f : 0.0f;
+		const float invScale = ( half > 0.0f ) ? 32767.0f / half : 0.0f;
+		quantOffset[c] = mid;
+		quantScale[c] = scale;
+
+		for ( int f = 0; f < numFrames; f++ ) {
+			const float v = componentFrames[ f * numComp + c ];
+			int q = idMath::Ftoi( ( v - mid ) * invScale + ( ( v >= mid ) ? 0.5f : -0.5f ) );
+			q = idMath::ClampInt( -32767, 32767, q );
+			quantFrames[ f * numComp + c ] = (int16)q;
+
+			const float err = idMath::Fabs( ( mid + scale * (float)q ) - v );
+			if ( isQuat[c] ) {
+				maxQuatError = Max( maxQuatError, err );
+			} else {
+				maxTransError = Max( maxTransError, err );
+			}
+		}
+	}
+
+	quantAnims++;
+	quantBytesBefore += componentFrames.Allocated();
+	componentFrames.Clear();
+	quantBytesAfter += quantFrames.Allocated() + quantOffset.Allocated() + quantScale.Allocated();
+	quantBoundsBytes += bounds.Allocated();
+	quantJointBytes += jointInfo.Allocated() + baseFrame.Allocated();
+
+	if ( maxQuatError > quantMaxQuatError || maxTransError > quantMaxTransError ) {
+		quantWorstAnim = name;
+	}
+	quantMaxQuatError = Max( quantMaxQuatError, maxQuatError );
+	quantMaxTransError = Max( quantMaxTransError, maxTransError );
+
+	// should never happen; if it does the decoder or the input is wrong
+	if ( maxQuatError > 0.001f || maxTransError > 0.5f ) {
+		idLib::Warning( "anim quantization error too large in %s: rotation %f, translation %f", name.c_str(), maxQuatError, maxTransError );
+	}
+}
+
+/*
+====================
+idMD5Anim::PrintQuantStats
+====================
+*/
+void idMD5Anim::PrintQuantStats() {
+	if ( quantAnims == 0 ) {
+		return;
+	}
+	idLib::Printf( "anim quantization: %d anims, %d KB -> %d KB, max error rotation %.6f translation %.4f (%s)\n",
+		quantAnims, quantBytesBefore / 1024, quantBytesAfter / 1024, quantMaxQuatError, quantMaxTransError, quantWorstAnim.c_str() );
+	idLib::Printf( "anim memory besides frames: bounds %d KB, joint info + base frame %d KB\n",
+		quantBoundsBytes / 1024, quantJointBytes / 1024 );
+}
+
+#endif // ID_3DS
+
+/*
+====================
 idMD5Anim::GetOrigin
 ====================
 */
@@ -612,8 +776,10 @@ void idMD5Anim::GetOrigin( idVec3 &offset, int time, int cyclecount ) const {
 	frameBlend_t frame;
 	ConvertTimeToFrame( time, cyclecount, frame );
 
-	const float *componentPtr1 = &componentFrames[ numAnimatedComponents * frame.frame1 + jointInfo[ 0 ].firstComponent ];
-	const float *componentPtr2 = &componentFrames[ numAnimatedComponents * frame.frame2 + jointInfo[ 0 ].firstComponent ];
+	float scratch1[7], scratch2[7];
+	const int rootCount = Min( 6, numAnimatedComponents - jointInfo[ 0 ].firstComponent );
+	const float *componentPtr1 = FrameComponents( frame.frame1, jointInfo[ 0 ].firstComponent, rootCount, scratch1 );
+	const float *componentPtr2 = FrameComponents( frame.frame2, jointInfo[ 0 ].firstComponent, rootCount, scratch2 );
 
 	if ( jointInfo[ 0 ].animBits & ANIM_TX ) {
 		offset.x = *componentPtr1 * frame.frontlerp + *componentPtr2 * frame.backlerp;
@@ -652,8 +818,10 @@ void idMD5Anim::GetOriginRotation( idQuat &rotation, int time, int cyclecount ) 
 	frameBlend_t frame;
 	ConvertTimeToFrame( time, cyclecount, frame );
 
-	const float	*jointframe1 = &componentFrames[ numAnimatedComponents * frame.frame1 + jointInfo[ 0 ].firstComponent ];
-	const float	*jointframe2 = &componentFrames[ numAnimatedComponents * frame.frame2 + jointInfo[ 0 ].firstComponent ];
+	float scratch1[7], scratch2[7];
+	const int rootCount = Min( 6, numAnimatedComponents - jointInfo[ 0 ].firstComponent );
+	const float	*jointframe1 = FrameComponents( frame.frame1, jointInfo[ 0 ].firstComponent, rootCount, scratch1 );
+	const float	*jointframe2 = FrameComponents( frame.frame2, jointInfo[ 0 ].firstComponent, rootCount, scratch2 );
 
 	if ( animBits & ANIM_TX ) {
 		jointframe1++;
@@ -764,8 +932,10 @@ void idMD5Anim::GetBounds( idBounds &bnds, int time, int cyclecount ) const {
 	// origin position
 	idVec3 offset = baseFrame[ 0 ].t;
 	if ( jointInfo[ 0 ].animBits & ( ANIM_TX | ANIM_TY | ANIM_TZ ) ) {
-		const float *componentPtr1 = &componentFrames[ numAnimatedComponents * frame.frame1 + jointInfo[ 0 ].firstComponent ];
-		const float *componentPtr2 = &componentFrames[ numAnimatedComponents * frame.frame2 + jointInfo[ 0 ].firstComponent ];
+		float scratch1[7], scratch2[7];
+		const int rootCount = Min( 6, numAnimatedComponents - jointInfo[ 0 ].firstComponent );
+		const float *componentPtr1 = FrameComponents( frame.frame1, jointInfo[ 0 ].firstComponent, rootCount, scratch1 );
+		const float *componentPtr2 = FrameComponents( frame.frame2, jointInfo[ 0 ].firstComponent, rootCount, scratch2 );
 
 		if ( jointInfo[ 0 ].animBits & ANIM_TX ) {
 			offset.x = *componentPtr1 * frame.frontlerp + *componentPtr2 * frame.backlerp;
@@ -867,8 +1037,10 @@ void idMD5Anim::GetInterpolatedFrame( frameBlend_t &frame, idJointQuat *joints, 
 	idJointQuat * blendJoints = (idJointQuat *)_alloca16( baseFrame.Num() * sizeof( blendJoints[ 0 ] ) );
 	int * lerpIndex = (int *)_alloca16( baseFrame.Num() * sizeof( lerpIndex[ 0 ] ) );
 
-	const float * frame1 = &componentFrames[frame.frame1 * numAnimatedComponents];
-	const float * frame2 = &componentFrames[frame.frame2 * numAnimatedComponents];
+	float * scratch1 = (float *)_alloca16( ( numAnimatedComponents + JOINT_FRAME_PAD ) * sizeof( float ) );
+	float * scratch2 = (float *)_alloca16( ( numAnimatedComponents + JOINT_FRAME_PAD ) * sizeof( float ) );
+	const float * frame1 = FrameComponents( frame.frame1, 0, numAnimatedComponents, scratch1 );
+	const float * frame2 = FrameComponents( frame.frame2, 0, numAnimatedComponents, scratch2 );
 
 	int numLerpJoints = DecodeInterpolatedFrames( joints, blendJoints, lerpIndex, frame1, frame2, jointInfo.Ptr(), index, numIndexes );
 
@@ -940,7 +1112,8 @@ void idMD5Anim::GetSingleFrame( int framenum, idJointQuat *joints, const int *in
 		return;
 	}
 
-	const float * frame = &componentFrames[framenum * numAnimatedComponents];
+	float * scratch = (float *)_alloca16( ( numAnimatedComponents + JOINT_FRAME_PAD ) * sizeof( float ) );
+	const float * frame = FrameComponents( framenum, 0, numAnimatedComponents, scratch );
 
 	DecodeSingleFrame( joints, frame, jointInfo.Ptr(), index, numIndexes );
 }
@@ -1065,6 +1238,9 @@ void idAnimManager::Preload( const idPreloadManifest &manifest ) {
 		}
 		int	end = Sys_Milliseconds();
 		common->Printf( "%05d anims preloaded ( or were already loaded ) in %5.1f seconds\n", numLoaded, ( end - start ) * 0.001 );
+#if defined( ID_3DS )
+		idMD5Anim::PrintQuantStats();
+#endif
 		common->Printf( "----------------------------------------\n" );
 	}
 }

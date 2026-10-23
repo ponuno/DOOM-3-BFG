@@ -182,6 +182,14 @@ private:
 	static const GLuint TEXTURE_NOT_LOADED = 0xFFFFFFFF;
 
 	GLuint				texnum;				// gl texture binding
+#if defined( ID_3DS )
+public:
+	void *				n3dsTex;			// citro3d texture cache entry (renderer/3DS/n3ds_textures.cpp)
+private:
+	void				N3DS_KeepLevel( class idBinaryImage & im, int keepSize, int streamIndex = -1,
+										const char * streamPath = NULL, int streamOffset = 0 );
+	int					N3DS_Wrap() const;
+#endif
 
 	// we could derive these in subImageUpload each time if necessary
 	GLuint				internalFormat;
@@ -193,6 +201,9 @@ private:
 
 ID_INLINE idImage::idImage( const char * name ) : imgName( name ) {
 	texnum = TEXTURE_NOT_LOADED;
+#if defined( ID_3DS )
+	n3dsTex = NULL;
+#endif
 	internalFormat = 0;
 	dataFormat = 0;
 	dataType = 0;

@@ -508,12 +508,12 @@ idInteraction *idInteraction::AllocAndLink( idRenderEntityLocal *edef, idRenderL
 	}
 
 	// update the interaction table
-	if ( renderWorld->interactionTable != NULL ) {
-		int index = ldef->index * renderWorld->interactionTableWidth + edef->index;
-		if ( renderWorld->interactionTable[index] != NULL ) {
+	if ( renderWorld->HasInteractionTable() ) {
+		idInteraction * & slot = renderWorld->InteractionSlot( ldef->index, edef->index );
+		if ( slot != NULL ) {
 			common->Error( "idInteraction::AllocAndLink: non NULL table entry" );
 		}
-		renderWorld->interactionTable[ index ] = interaction;
+		slot = interaction;
 	}
 
 	return interaction;
@@ -587,11 +587,11 @@ Removes links and puts it back on the free list.
 void idInteraction::UnlinkAndFree() {
 	// clear the table pointer
 	idRenderWorldLocal *renderWorld = this->lightDef->world;
-	int index = this->lightDef->index * renderWorld->interactionTableWidth + this->entityDef->index;
-	if ( renderWorld->interactionTable[index] != this && renderWorld->interactionTable[index] != INTERACTION_EMPTY ) {
+	idInteraction * & slot = renderWorld->InteractionSlot( this->lightDef->index, this->entityDef->index );
+	if ( slot != this && slot != INTERACTION_EMPTY ) {
 		common->Error( "idInteraction::UnlinkAndFree: interactionTable wasn't set" );
 	}
-	renderWorld->interactionTable[index] = NULL;
+	slot = NULL;
 
 	Unlink();
 
@@ -639,9 +639,9 @@ void idInteraction::MakeEmpty() {
 	}
 
 	// store the special marker in the interaction table
-	const int interactionIndex = lightDef->index * entityDef->world->interactionTableWidth + entityDef->index;
-	assert( entityDef->world->interactionTable[ interactionIndex ] == this );
-	entityDef->world->interactionTable[ interactionIndex ] = INTERACTION_EMPTY;
+	idInteraction * & slot = entityDef->world->InteractionSlot( lightDef->index, entityDef->index );
+	assert( slot == this );
+	slot = INTERACTION_EMPTY;
 }
 
 /*

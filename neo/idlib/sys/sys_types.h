@@ -51,6 +51,11 @@ typedef unsigned int		uint32;
 typedef long long			int64;
 typedef unsigned long long	uint64;
 
+#if defined( ID_3DS )
+#include <stdint.h>
+typedef uintptr_t			UINT_PTR;
+#endif
+
 // The C/C++ standard guarantees the size of an unsigned type is the same as the signed type.
 // The exact size in bytes of several types is guaranteed here.
 assert_sizeof( bool,	1 );
@@ -103,7 +108,7 @@ struct idNullPtr {
 //#endif
 
 // C99 Standard
-#ifndef nullptr
+#if !defined( nullptr ) && !defined( ID_3DS )	// C++11 compilers have the keyword
 		#define nullptr	idNullPtr()		
 #endif
 

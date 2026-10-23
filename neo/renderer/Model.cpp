@@ -390,6 +390,11 @@ bool idRenderModelStatic::LoadBinaryModel( idFile * file, const ID_TIME_T source
 			file->ReadBig( numInFile );
 			if ( numInFile == 0 ) {
 				tri.preLightShadowVertexes = NULL;
+#if defined( ID_3DS )
+			} else if ( r_n3dsNoShadows ) {
+				tri.preLightShadowVertexes = NULL;
+				file->Seek( numInFile * 16, FS_SEEK_CUR );		// idVec4 each
+#endif
 			} else {
 				R_AllocStaticTriSurfPreLightShadowVerts( &tri, numInFile );
 				for ( int j = 0; j < numInFile; j++ ) {
@@ -405,6 +410,11 @@ bool idRenderModelStatic::LoadBinaryModel( idFile * file, const ID_TIME_T source
 				file->ReadBigArray( tri.indexes, tri.numIndexes );
 			}
 			file->ReadBig( numInFile );
+#if defined( ID_3DS )
+			if ( numInFile > 0 && r_n3dsNoShadows ) {
+				file->Seek( tri.numIndexes * sizeof( triIndex_t ), FS_SEEK_CUR );
+			} else
+#endif
 			if ( numInFile > 0 ) {
 				R_AllocStaticTriSurfSilIndexes( &tri, tri.numIndexes );
 				file->ReadBigArray( tri.silIndexes, tri.numIndexes );
@@ -419,6 +429,12 @@ bool idRenderModelStatic::LoadBinaryModel( idFile * file, const ID_TIME_T source
 
 			file->ReadBig( tri.numDupVerts );
 			tri.dupVerts = NULL;
+#if defined( ID_3DS )
+			if ( tri.numDupVerts > 0 && r_n3dsNoShadows ) {
+				file->Seek( tri.numDupVerts * 2 * sizeof( int ), FS_SEEK_CUR );
+				tri.numDupVerts = 0;
+			}
+#endif
 			if ( tri.numDupVerts > 0 ) {
 				R_AllocStaticTriSurfDupVerts( &tri, tri.numDupVerts );
 				file->ReadBigArray( tri.dupVerts, tri.numDupVerts * 2 );
@@ -426,6 +442,12 @@ bool idRenderModelStatic::LoadBinaryModel( idFile * file, const ID_TIME_T source
 
 			file->ReadBig( tri.numSilEdges );
 			tri.silEdges = NULL;
+#if defined( ID_3DS )
+			if ( tri.numSilEdges > 0 && r_n3dsNoShadows ) {
+				file->Seek( tri.numSilEdges * 4 * sizeof( triIndex_t ), FS_SEEK_CUR );	// p1 p2 v1 v2
+				tri.numSilEdges = 0;
+			}
+#endif
 			if ( tri.numSilEdges > 0 ) {
 				R_AllocStaticTriSurfSilEdges( &tri, tri.numSilEdges );
 				assert( tri.silEdges != NULL );

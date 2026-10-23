@@ -678,10 +678,7 @@ dump all the interactions
 void idRenderWorldLocal::FreeDefs() {
 	generateAllInteractionsCalled = false;
 
-	if ( interactionTable ) {
-		R_StaticFree( interactionTable );
-		interactionTable = NULL;
-	}
+	FreeInteractionTable();
 
 	// free all lightDefs
 	for ( int i = 0; i < lightDefs.Num(); i++ ) {
@@ -774,10 +771,18 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 			file->ReadString( mapName );
 			file->ReadBig( mapTimeStamp );
 			loaded = true;
+#if defined( ID_3DS )
+			int numModelEntries = 0, numShadowEntries = 0;
+#endif
 			for ( int i = 0; i < numEntries; i++ ) {
 				idStrStatic< MAX_OSPATH > type;
 				file->ReadString( type );
 				type.ToLower();
+#if defined( ID_3DS )
+				if ( type == "model" || type == "shadowmodel" ) {
+					numModelEntries++;
+				}
+#endif
 				if ( type == "model" ) {
 					idRenderModel * lastModel = ReadBinaryModel( file );
 					if ( lastModel == NULL ) {
@@ -792,6 +797,16 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 						loaded = false;
 						break;
 					}
+#if defined( ID_3DS )
+					// NOTE: ParseModel writes ordinary models (the _area* world too) with
+					// type "shadowmodel", so only the dmap shadow volumes, which are
+					// named _prelight_<light>, can be dropped.
+					if ( r_n3dsNoShadows && idStr::Icmpn( lastModel->Name(), "_prelight_", 10 ) == 0 ) {
+						numShadowEntries++;
+						renderModelManager->FreeModel( lastModel );
+						continue;
+					}
+#endif
 					renderModelManager->AddModel( lastModel );
 					localModels.Append( lastModel );
 				} else if ( type == "interareaportals" ) {
@@ -802,6 +817,10 @@ bool idRenderWorldLocal::InitFromMap( const char *name ) {
 					idLib::Error( "Binary proc file failed, unexpected type %s\n", type.c_str() );
 				}
 			}
+#if defined( ID_3DS )
+			common->Printf( "bproc: %d entries, %d models (%d prelight shadow models dropped), %d areas, loaded %d, file pos %d / %d\n",
+				numEntries, numModelEntries, numShadowEntries, numPortalAreas, loaded, file->Tell(), file->Length() );
+#endif
 		}
 	}
 
@@ -967,6 +986,15 @@ void idRenderWorldLocal::AddWorldModelEntities() {
 		def->world = this;
 
 		def->parms.hModel = renderModelManager->FindModel( va("_area%i", i ) );
+#if defined( ID_3DS )
+		if ( def->parms.hModel->IsDefaultModel() || !def->parms.hModel->IsStaticWorldModel() ) {
+			common->Printf( "area %d of %d: got '%s' default %d staticWorld %d; first local models:\n",
+				i, numPortalAreas, def->parms.hModel->Name(), def->parms.hModel->IsDefaultModel(), def->parms.hModel->IsStaticWorldModel() );
+			for ( int m = 0; m < localModels.Num() && m < 8; m++ ) {
+				common->Printf( "  [%d] '%s' default %d staticWorld %d\n", m, localModels[m]->Name(), localModels[m]->IsDefaultModel(), localModels[m]->IsStaticWorldModel() );
+			}
+		}
+#endif
 		if ( def->parms.hModel->IsDefaultModel() || !def->parms.hModel->IsStaticWorldModel() ) {
 			common->Error( "idRenderWorldLocal::InitFromMap: bad area model lookup" );
 		}

@@ -76,6 +76,20 @@ idSaveGame::idSaveGame( idFile *savefile, idFile *stringTableFile, int saveVersi
 
 	// Put NULL at the start of the list so we can skip over it.
 	objects.Clear();
+#if defined( ID_3DS )
+	// New 3DS: the lists below grew by 16 entries at a time while saving, each step a new
+	// block of the whole list and the old one freed; the save's small allocations took the
+	// freed blocks, and on phobos3 the string table (~5300 entries of 36 bytes) found no
+	// 186 KB block with 8 MB free. Sized up front, at the start, while the heap still has
+	// big blocks (phobos3: 2313 objects, 10350 strings), and grown in big steps if that is
+	// not enough.
+	objects.SetGranularity( 1024 );
+	objects.Resize( 4096 );
+	stringTable.SetGranularity( 2048 );
+	stringTable.Resize( 12288 );		// phobos3: 10350
+	stringHash.Clear( 4096, 12288 );
+	stringHash.SetGranularity( 2048 );
+#endif
 	objects.Append( NULL );
 
 	curStringTableOffset = 0;
@@ -109,9 +123,19 @@ void idSaveGame::Close() {
 	for( int i = 1; i < objects.Num(); i++ ) {
 		CallSave_r( objects[ i ]->GetType(), objects[ i ] );
 	}
+#if defined( ID_3DS )
+	if ( cvarSystem->GetCVarBool( "n3ds_debug" ) ) {
+		idLib::Printf( "save: %d objects\n", objects.Num() - 1 );
+	}
+#endif
 
 	objects.Clear();
 
+#if defined( ID_3DS )
+	if ( cvarSystem->GetCVarBool( "n3ds_debug" ) ) {
+		idLib::Printf( "save: %d strings in the table\n", stringTable.Num() );
+	}
+#endif
 	// Save out the string table at the end of the file
 	for ( int i = 0; i < stringTable.Num(); ++i ) {
 		stringFile->WriteString( stringTable[i].string );

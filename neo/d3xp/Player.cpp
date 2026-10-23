@@ -7592,7 +7592,7 @@ void idPlayer::Think() {
 		weapon.GetEntity()->SetPushVelocity( physicsObj.GetPushedLinearVelocity() );
 	}
 
-	EvaluateControls();
+	{ N3DS_SLOW_SCOPE( "player EvaluateControls", 20 ); EvaluateControls(); }
 
 	if ( !af.IsActive() ) {
 		AdjustBodyAngles();
@@ -7601,10 +7601,10 @@ void idPlayer::Think() {
 
 	if ( IsLocallyControlled() ) {
 		// Local player on the server. Do normal movement.
-		Move();
+		{ N3DS_SLOW_SCOPE( "player Move", 20 ); Move(); }
 	} else {
 		// Server is processing a client. Run client's commands like normal...
-		Move();
+		{ N3DS_SLOW_SCOPE( "player Move", 20 ); Move(); }
 
 		// ...then correct if needed.
 		RunPhysics_RemoteClientCorrection();
@@ -7613,7 +7613,7 @@ void idPlayer::Think() {
 	if ( !g_stopTime.GetBool() ) {
 
 		if ( !noclip && !spectating && ( health > 0 ) && !IsHidden() ) {
-			TouchTriggers();
+			{ N3DS_SLOW_SCOPE( "player TouchTriggers", 20 ); TouchTriggers(); }
 		}
 
 		// not done on clients for various reasons. don't do it on server and save the sound channel for other things
@@ -7632,17 +7632,17 @@ void idPlayer::Think() {
 		}
 
 		// update GUIs, Items, and character interactions
-		UpdateFocus();
+		{ N3DS_SLOW_SCOPE( "player UpdateFocus", 20 ); UpdateFocus(); }
 		
 		UpdateLocation();
 
 		// update player script
-		UpdateScript();
+		{ N3DS_SLOW_SCOPE( "player UpdateScript", 20 ); UpdateScript(); }
 
 		// service animations
 		if ( !spectating && !af.IsActive() && !gameLocal.inCinematic ) {
-    		UpdateConditions();
-			UpdateAnimState();
+    		{ N3DS_SLOW_SCOPE( "player UpdateConditions", 20 ); UpdateConditions(); }
+			{ N3DS_SLOW_SCOPE( "player UpdateAnimState", 20 ); UpdateAnimState(); }
 			CheckBlink();
 		}
 
@@ -7655,23 +7655,23 @@ void idPlayer::Think() {
 	CalculateFirstPersonView();
 
 	// this may use firstPersonView, or a thirdPeroson / camera view
-	CalculateRenderView();
+	{ N3DS_SLOW_SCOPE( "player CalculateRenderView", 20 ); CalculateRenderView(); }
 
 	inventory.UpdateArmor();
 
 	if ( spectating ) {
 		UpdateSpectating();
 	} else if ( health > 0 ) {
-		UpdateWeapon();
+		{ N3DS_SLOW_SCOPE( "player UpdateWeapon", 20 ); UpdateWeapon(); }
 	}
 
-	UpdateFlashlight();
+	{ N3DS_SLOW_SCOPE( "player UpdateFlashlight", 20 ); UpdateFlashlight(); }
 
 	UpdateAir();
 	
 	UpdatePowerupHud();
 	
-	UpdateHud();
+	{ N3DS_SLOW_SCOPE( "player UpdateHud", 20 ); UpdateHud(); }
 
 	UpdatePowerUps();
 
