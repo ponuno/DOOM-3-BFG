@@ -63,7 +63,7 @@ idCVar n3ds_texUploadsAfterLoad( "n3ds_texUploadsAfterLoad", "256", CVAR_RENDERE
 idCVar n3ds_texFlip( "n3ds_texFlip", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: store texture rows bottom-up (the PICA samples t = 0 at the last row); toggle if textures are upside down" );
 idCVar n3ds_texStream( "n3ds_texStream", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: read texture levels from disk when first drawn instead of keeping them all in RAM (set at startup; applies to images loaded afterwards)" );
 idCVar n3ds_texPrefetch( "n3ds_texPrefetch", "1", CVAR_RENDERER | CVAR_BOOL, "citro3d: read the textures of the view's area and the areas next to it (through any portal, open or not) from the pack before they come into view" );
-idCVar n3ds_memReserveKB( "n3ds_memReserveKB", "6144", CVAR_RENDERER | CVAR_INTEGER, "citro3d: heap kept free for the game: the texture RAM cache only uses memory above this and gives memory back when the free heap falls below it (checked twice a second)" );
+idCVar n3ds_memReserveKB( "n3ds_memReserveKB", "8192", CVAR_RENDERER | CVAR_INTEGER, "citro3d: heap kept free for the game: the texture RAM cache only uses memory above this and gives memory back when the free heap falls below it (checked twice a second)" );
 idCVar n3ds_texRAMCacheKB( "n3ds_texRAMCacheKB", "6144", CVAR_RENDERER | CVAR_INTEGER, "citro3d: RAM kept for streamed texture levels already uploaded, so that textures evicted from VRAM come back without a read" );
 idCVar n3ds_texLinearKB( "n3ds_texLinearKB", "3072", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory (FCRAM) for textures that do not fit in VRAM; the GPU samples them from there" );
 idCVar n3ds_texLinearReserveKB( "n3ds_texLinearReserveKB", "2048", CVAR_RENDERER | CVAR_INTEGER, "citro3d: linear memory the texture cache always leaves free (citro3d, staging copies)" );
@@ -972,8 +972,36 @@ static void N3DS_TexRamBudget() {
 	}
 }
 
+static uintptr_t			texMainThread = 0;		// the thread that runs N3DS_TexBeginFrame (owns the RAM cache)
+
+/*
+========================
+N3DS_TexReleaseRAM
+
+Before a big allocation the game knows of (saving: the compressed save buffer grows in
+256 KB steps, each a contiguous block of the whole size): the RAM cache is emptied. Only
+the thread that owns the cache does it; the budget is worked out again within half a
+second.
+========================
+*/
+void N3DS_TexReleaseRAM( const char * why ) {
+	if ( texMainThread == 0 || Sys_GetCurrentThreadID() != texMainThread || ramTail == NULL ) {
+		return;
+	}
+	const int before = ramBytes;
+	while ( ramTail != NULL ) {
+		n3dsTexture_t * old = ramTail;
+		RAM_Unlink( old );
+		Mem_Free( old->data );
+		old->data = NULL;
+	}
+	ramBudget = 0;
+	common->Printf( "citro3d: texture RAM cache emptied for %s (%d KB)\n", why, before / 1024 );
+}
+
 void N3DS_TexBeginFrame( bool has3D ) {
 	texFrame++;
+	texMainThread = Sys_GetCurrentThreadID();
 	N3DS_TexRamBudget();
 	N3DS_VerifySome( 6 );
 	uploadsThisFrame = 0;

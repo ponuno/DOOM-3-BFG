@@ -373,7 +373,7 @@ usual MEM report.
 gets one of the DSP's 24 channels: the DSP resamples it (channel rate = sample rate x pitch,
 polyphase), applies its left/right levels and mixes all channels in hardware. The CPU only keeps
 each channel's 3 wave buffers of 1024 frames filled (288 KB of linear memory in all): a feeder thread
-on the system core (priority 0x18), woken by the DSP every ~5 ms, copies 16-bit PCM and decodes MS
+on core 2 (priority 0x18; on the time-sliced system core it was descheduled holding the sound lock and the main thread waited 10-16 ms a frame), woken by the DSP every ~5 ms, copies 16-bit PCM and decodes MS
 ADPCM block by block into them (`idSoundVoice_3DS::Feed`). Mono voices use the DSP's levels directly
 (updated at once); stereo ones get their 2x2 `CalculateSurround` matrix applied while filling.
 `s_maxEmitterChannels` is 24 on 3DS, so the sound world mutes the quietest sounds beyond that.
@@ -475,7 +475,7 @@ turns it off.
 | `n3ds_texLinearKB` | 3072 | textures that do not fit in VRAM go to linear memory (FCRAM) up to this much; the GPU samples them from there |
 | `n3ds_texLinearReserveKB` | 2048 | linear memory the texture cache always leaves free |
 | `n3ds_texStream` | 1 | texture levels read from SD when first drawn instead of all kept in RAM (applies to images loaded afterwards) |
-| `n3ds_memReserveKB` | 6144 | heap kept free for the game: the texture RAM cache only uses heap above it and gives memory back (least recently used first) when free heap falls below it; checked twice a second |
+| `n3ds_memReserveKB` | 8192 | heap kept free for the game: the texture RAM cache only uses heap above it and gives memory back (least recently used first) when free heap falls below it; checked twice a second |
 | `n3ds_texRAMCacheKB` | 6144 | RAM for already uploaded streamed levels, so VRAM evictions come back without a read |
 | `n3ds_texPrefetch` | 1 | read the textures of the view's area and of every area one portal away (closed doors too) from the pack into the RAM cache while the SD card is idle, so a room entered next uploads from RAM |
 | `n3ds_tourFrames` | 600 | map tour: frames each map runs before the next |

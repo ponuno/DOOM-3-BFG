@@ -213,9 +213,14 @@ int N3DSAudio_Init( n3dsFeedCallback_t feed, void * user ) {
 	reportStart = svcGetSystemTick();
 	ndspSetCallback( N3DS_FrameCallback, NULL );
 
-	// above the main and game threads; on the system core (core 1), which the app
-	// gets a share of (n3ds_core1Percent); fall back to core 0
-	feedThread = threadCreate( N3DS_FeedThread, NULL, 32 * 1024, 0x18, 1, false );
+	// above the main and game threads, on the New 3DS's extra core (core 2, the game
+	// thread's), falling back to core 0. It used to run on the system core (core 1),
+	// which the app only gets a time share of (n3ds_core1Percent): the feeder was
+	// descheduled while it held the sound lock for a voice, and the main thread, updating
+	// the voices in soundSystem->Render, waited 10-16 ms per frame for it (SPIKE lines,
+	// "lock waits") - frames over 33 ms whenever several sounds played. On core 2 it runs
+	// to the end of each refill (a few short copies) before anything else there.
+	feedThread = threadCreate( N3DS_FeedThread, NULL, 32 * 1024, 0x18, 2, false );
 	if ( feedThread == NULL ) {
 		feedThread = threadCreate( N3DS_FeedThread, NULL, 32 * 1024, 0x18, 0, false );
 	}

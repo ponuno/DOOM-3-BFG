@@ -278,6 +278,27 @@ void Mem_AddHeapRegion( void * mem, int bytes ) {
 }
 
 // size of the extra region, how much of it malloc has taken so far
+/*
+==================
+Mem_HeapUnclaimed
+
+Bytes malloc can still get from _sbrk_r: the rest of the region the break is in, and
+the extra region if malloc has not moved into it yet.
+==================
+*/
+int Mem_HeapUnclaimed() {
+	__malloc_lock( _REENT );
+	ptrdiff_t rest = 0;
+	if ( sbrkBreak != NULL ) {
+		rest = sbrkLimit - sbrkBreak;
+		if ( region2Begin != NULL && sbrkRegionStart != region2Begin ) {
+			rest += region2End - region2Begin;
+		}
+	}
+	__malloc_unlock( _REENT );
+	return (int)rest;
+}
+
 void Mem_HeapRegionStats( int & size, int & taken ) {
 	__malloc_lock( _REENT );
 	size = (int)( region2End - region2Begin );

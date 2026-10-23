@@ -16,6 +16,7 @@ void		N3DS_TexPrefetch( idImage ** images, int count );	// read ahead (backend, 
 bool		N3DS_TexIsAlphaOnly( idImage * image );	// A8 on the GPU (fonts, coverage): no colour
 bool		N3DS_TexIsNormalMap( idImage * image );	// HILO8 from the texture pack: usable by the bump unit
 void		N3DS_TexStatsLine( idStr & line );
+void		N3DS_TexReleaseRAM( const char * why );	// empty the RAM cache (owning thread only)
 // the running counters behind the stats line (reset with it): taken before and after a frame
 struct n3dsTexCounters_t {
 	int		uploads;

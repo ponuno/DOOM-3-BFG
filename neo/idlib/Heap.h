@@ -58,7 +58,8 @@ ID_INLINE void		Mem_Free( void *ptr ) { Mem_Free16( ptr ); }
 void *		Mem_ClearedAlloc( const int size, const memTag_t tag );
 #if defined( ID_3DS )
 void		Mem_LogTags( int maxLines );	// per-subsystem heap usage (3DS accounting)
-int		Mem_LargestFreeBlock();			// 3DS: largest single block malloc can still return (probed)
+int		Mem_LargestFreeBlock();
+int		Mem_HeapUnclaimed();				// 3DS: bytes malloc can still take from its regions			// 3DS: largest single block malloc can still return (probed)
 void	Mem_ArenaStats( int & used, int & peak, int & size );	// 3DS temp arena
 #endif
 char *		Mem_CopyString( const char *in );

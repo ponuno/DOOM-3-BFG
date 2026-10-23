@@ -343,17 +343,17 @@ taken from the heap (its high-water footprint), the heap size, free linear memor
 ==============
 Sys_N3DSMallocAvailableKB
 
-What malloc can still hand out: free memory inside its arena plus the heap it has not
-taken yet (the heap window and the second region). Fragmentation not counted.
+What malloc can still hand out: free memory inside its arena plus what it can still take
+from its regions (Mem_HeapUnclaimed). Fragmentation not counted. (0136 took the heap
+window's full size, __ctru_heap_size, as malloc's: but malloc's part starts after the
+main stack and argv, so the result was megabytes too high and the texture RAM cache never
+gave anything back.)
 ==============
 */
 int Sys_N3DSMallocAvailableKB() {
 	struct mallinfo mi = Mem_MallInfo();
-	int h2Size, h2Taken;
-	Mem_HeapRegionStats( h2Size, h2Taken );
-	const int64 total = (int64)__ctru_heap_size + h2Size;
-	const int64 avail = total - (int64)mi.arena + (int64)mi.fordblks;
-	return (int)( Max( avail, (int64)0 ) / 1024 );
+	const int64 avail = (int64)mi.fordblks + Mem_HeapUnclaimed();
+	return (int)( avail / 1024 );
 }
 
 void Sys_N3DSMemSample( int & mallocUsedKB, int & mallocArenaKB, int & heapKB, int & linearFreeKB ) {

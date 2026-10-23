@@ -844,6 +844,15 @@ bool idCommonLocal::SaveGame( const char * saveName ) {
 		return false;
 	}
 
+#if defined( ID_3DS )
+	{
+		// the save buffers need megabytes of heap on the biggest maps: the texture RAM
+		// cache gives its memory back first (it refills from the pack as needed)
+		extern void N3DS_TexReleaseRAM( const char * why );
+		N3DS_TexReleaseRAM( "saving" );
+		Sys_LogMemory( "save start" );
+	}
+#endif
 	soundWorld->Pause();
 	soundSystem->SetPlayingSoundWorld( menuSoundWorld );
 	soundSystem->Render();
