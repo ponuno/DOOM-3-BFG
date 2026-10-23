@@ -27,13 +27,6 @@ If you have questions concerning this license or the applicable additional terms
 */
 #pragma hdrstop
 #include "precompiled.h"
-
-#ifdef __3DS__
-extern volatile uint32 n3dsYieldSite[];
-#define N3DS_YIELD_SITE( i )	n3dsYieldSite[i]++
-#else
-#define N3DS_YIELD_SITE( i )
-#endif
 #include "ParallelJobList.h"
 
 /*
@@ -444,13 +437,11 @@ void idParallelJobList_Threads::Wait() {
 		uint64 waitStart = Sys_Microseconds();
 
 		while ( signalJobCount[signalJobCount.Num() - 1].GetValue() > 0 ) {
-			N3DS_YIELD_SITE( 0 );
 			Sys_Yield();
 			waited = true;
 		}
 		version.Increment();
 		while ( numThreadsExecuting.GetValue() > 0 ) {
-			N3DS_YIELD_SITE( 1 );
 			Sys_Yield();
 			waited = true;
 		}
@@ -982,7 +973,6 @@ void idJobThread::AddJobList( idParallelJobList_Threads * jobList ) {
 	addJobMutex.Lock();
 	// wait until there is space available because in rare cases multiple versions of the same job lists may still be queued 
 	while( lastJobList - firstJobList >= MAX_JOBLISTS ) {
-		N3DS_YIELD_SITE( 2 );
 		Sys_Yield();
 	}
 	assert( lastJobList - firstJobList < MAX_JOBLISTS );
@@ -1058,7 +1048,6 @@ int idJobThread::Run() {
 			// yield when stalled on the same job list again without making any progress
 			if ( currentJobList == lastStalledJobList ) {
 				if ( ( result & idParallelJobList_Threads::RUN_PROGRESS ) == 0 ) {
-					N3DS_YIELD_SITE( 3 );
 					Sys_Yield();
 				}
 			}

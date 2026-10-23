@@ -244,13 +244,6 @@ int N3DSAudio_Init( n3dsFeedCallback_t feed, void * user, int feederCore ) {
 	return 1;
 }
 
-// the feeder thread to the lowest priority while the game is in the HOME menu / asleep
-void N3DSAudio_SetBackground( int background ) {
-	if ( feedThread != NULL ) {
-		svcSetThreadPriority( threadGetHandle( feedThread ), background ? 0x3F : 0x18 );
-	}
-}
-
 void N3DSAudio_Shutdown( void ) {
 	if ( !initialized ) {
 		return;

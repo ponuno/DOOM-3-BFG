@@ -647,13 +647,8 @@ double Sys_ClockTicksPerSecond() {
 Sys_Sleep
 ==============
 */
-idCVar n3ds_yieldNs( "n3ds_yieldNs", "0", CVAR_SYSTEM | CVAR_INTEGER, "New 3DS: nanoseconds Sys_Yield sleeps (job threads waiting); 0 = yield to equal priorities only (0139), 1000 = 0140", 0, 1000000 );
-idCVar n3ds_idleNs( "n3ds_idleNs", "0", CVAR_SYSTEM | CVAR_INTEGER, "New 3DS: nanoseconds Sys_Sleep( 0 ) sleeps (the main loop waiting for the next game tick); 0 = yield to equal priorities only (0139), 1000 = 0140", 0, 1000000 );
-extern int n3dsYieldNs;
-
 void Sys_Sleep( int msec ) {
-	// 0: the main loop waiting for the next game tick (n3ds_idleNs, see Sys_Yield)
-	svcSleepThread( msec > 0 ? (s64)msec * 1000000LL : (s64)n3ds_idleNs.GetInteger() );
+	svcSleepThread( (s64)msec * 1000000LL );
 }
 
 /*
@@ -1034,11 +1029,7 @@ static void N3DS_WatchdogLog( const char * fmt, ... ) {
 	LightLock_Unlock( &logLock );
 }
 
-void Sys_N3DSYieldReport( char * out, int size );
-static volatile bool n3dsSuspended;	// in the HOME menu / asleep (N3DS_AptLogHook)
-
 static void N3DS_WatchdogMain( void * ) {
-	static char yieldText[512];
 	uint32 lastFrames = n3dsFramesDone;
 	int stalledMs = 0;
 	bool reported = false;
@@ -1052,17 +1043,9 @@ static void N3DS_WatchdogMain( void * ) {
 			lastFrames = frames;
 			stalledMs = 0;
 			reported = false;
-			Sys_N3DSYieldReport( yieldText, sizeof( yieldText ) );	// new baseline
 			continue;
 		}
 		stalledMs += 500;
-		// who spins on Sys_Yield while no frame comes (in the HOME menu a spinning thread
-		// starves the system)
-		if ( ( frames > 0 || n3dsSuspended ) && ( stalledMs % 2000 ) == 0 && !n3dsLoadingMap ) {
-			Sys_N3DSYieldReport( yieldText, sizeof( yieldText ) );
-			N3DS_WatchdogLog( "WATCHDOG %.0f s, main '%s': Sys_Yield calls in 2 s: %s\n", stalledMs * 0.001f,
-				n3dsStages[N3DS_STAGE_MAIN], yieldText );
-		}
 		// frames only count once a map runs; loading has its own long pauses. The screen
 		// first: writing to the log can block (the SD card, or the log lock held by the
 		// frozen thread), which kept the 0142 watchdog from ever reaching the screen.
@@ -1151,24 +1134,10 @@ static void Sys_BuildCommandLine() {
 
 // sleep / HOME menu transitions in the log (these hooks run on the main thread)
 static aptHookCookie n3dsAptCookie;
-idCVar n3ds_bgThreads( "n3ds_bgThreads", "1", CVAR_SYSTEM | CVAR_BOOL, "New 3DS: in the HOME menu / asleep the engine threads run at the lowest priority" );
-
 static void N3DS_AptLogHook( APT_HookType hook, void * ) {
 	static const char * names[] = { "suspend (HOME menu)", "restore", "sleep", "wake-up", "exit" };
 	const int i = (int)hook;
 	Sys_Printf( "APT: %s\n", ( i >= 0 && i < 5 ) ? names[i] : "?" );
-	n3dsSuspended = ( hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP );
-	// the engine threads and the DSP feeder at the lowest priority while suspended, so a
-	// thread still busy then cannot starve the HOME menu (n3ds_bgThreads)
-	static bool lowered = false;
-	const bool lower = n3dsSuspended && n3ds_bgThreads.GetBool();
-	if ( lower != lowered ) {
-		void Sys_N3DSBackgroundThreads( bool background );
-		Sys_N3DSBackgroundThreads( lower );
-		N3DSAudio_SetBackground( lower );
-		lowered = lower;
-		Sys_Printf( "APT: engine threads %s\n", lower ? "lowered to priority 0x3F" : "back to their priorities" );
-	}
 	if ( hook == APTHOOK_ONSUSPEND ) {
 		N3DS_STAGE( N3DS_STAGE_MAIN, "HOME: citro3d waits for GPU" );
 	} else if ( hook == APTHOOK_ONSLEEP ) {
@@ -1285,13 +1254,7 @@ N3DS_Main
 Called from main() in 3ds_exe.cpp (the executable's own translation unit).
 ==================
 */
-void Sys_N3DSSetMainPriority();
-
 int N3DS_Main( int argc, char ** argv ) {
-	// below libctru's APT thread, so a spinning main thread cannot keep HOME / sleep from
-	// being handled (see MapPriority in 3ds_thread.cpp)
-	Sys_N3DSSetMainPriority();
-
 	// registered first, so libctru calls it after every other APT hook (citro3d's, ...)
 	aptHook( &n3dsAptLateCookie, N3DS_AptLateHook, NULL );
 
@@ -1340,7 +1303,6 @@ int N3DS_Main( int argc, char ** argv ) {
 	// stage tells the watchdog so
 	aptHook( &n3dsAptCookie, N3DS_AptLogHook, NULL );
 	for ( ;; ) {
-		n3dsYieldNs = n3ds_yieldNs.GetInteger();
 		N3DS_STAGE( N3DS_STAGE_MAIN, "aptMainLoop (sleep / HOME menu)" );
 		if ( !aptMainLoop() || n3ds.quitRequested ) {
 			break;

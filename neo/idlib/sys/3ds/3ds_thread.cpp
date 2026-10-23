@@ -36,8 +36,7 @@ static_assert( offsetof( signalHandle_t, lock ) == offsetof( LightEvent, lock ),
 
 	Thread priorities and cores
 
-	libctru: lower number = higher priority. The main thread starts at 0x30 and is
-	lowered to N3DS_PRIORITY_MAIN (see MapPriority).
+	libctru: lower number = higher priority. The main thread runs at 0x30.
 	Valid application range is 0x18..0x3F.
 
 	Cores on New 3DS (application view):
@@ -53,44 +52,15 @@ static_assert( offsetof( signalHandle_t, lock ) == offsetof( LightEvent, lock ),
 ================================================================================================
 */
 
-#define N3DS_PRIORITY_MAIN		0x32
-#define N3DS_YIELD_SITES		5
-
-/*
-	libctru's APT event thread (HOME button, sleep, power) runs on core 0 at 0x31.
-	svcSleepThread( 0 ) - what Sys_Yield does - only yields to threads of equal or
-	higher priority, so a core-0 thread at 0x30 that spins on Sys_Yield (a job
-	thread stalled on a job list the suspended main thread will never finish, the
-	main thread waiting for shadow volumes) starves the APT thread forever and the
-	game never comes back from the HOME menu or sleep mode.
-
-	So every thread that can spin runs below the APT thread: the main thread is
-	lowered to N3DS_PRIORITY_MAIN at startup (Sys_N3DSSetMainPriority) and
-	THREAD_NORMAL maps to the same value, keeping the main thread and the job
-	threads equal so their Sys_Yield still hands the core to each other.
-	THREAD_ABOVE_NORMAL (the texture / sound loaders: they block on I/O and never
-	spin) stays above the main thread.
-*/
 static int MapPriority( xthreadPriority priority ) {
 	switch ( priority ) {
 		case THREAD_LOWEST:			return 0x3F;
-		case THREAD_BELOW_NORMAL:	return N3DS_PRIORITY_MAIN + 1;
-		case THREAD_NORMAL:			return N3DS_PRIORITY_MAIN;
-		case THREAD_ABOVE_NORMAL:	return 0x30;
+		case THREAD_BELOW_NORMAL:	return 0x31;
+		case THREAD_NORMAL:			return 0x30;
+		case THREAD_ABOVE_NORMAL:	return 0x2F;
 		case THREAD_HIGHEST:		return 0x2C;
 	}
-	return N3DS_PRIORITY_MAIN;
-}
-
-/*
-==================
-Sys_N3DSSetMainPriority
-
-Lowers the calling (main) thread below libctru's APT thread, see MapPriority.
-==================
-*/
-void Sys_N3DSSetMainPriority() {
-	svcSetThreadPriority( CUR_THREAD_HANDLE, N3DS_PRIORITY_MAIN );
+	return 0x30;
 }
 
 static int MapCore( core_t core ) {
@@ -128,15 +98,10 @@ struct threadCoreRecord_t {
 	int		asked;		// core asked for (libctru numbering), -2 = default
 	int		fallback;	// threadCreate on that core failed
 	int		ran;		// core the thread found itself on, -1 until it started
-	volatile uint32	yields;	// Sys_Yield calls (Sys_N3DSYieldReport)
-	Handle	handle;		// for Sys_N3DSBackgroundThreads, 0 if not created
-	int		priority;	// as created
 };
 static const int			MAX_THREAD_RECORDS = 16;
 static threadCoreRecord_t	threadRecords[MAX_THREAD_RECORDS];
 static int					numThreadRecords = 0;
-static __thread threadCoreRecord_t * myThreadRecord;	// NULL: main thread or not ours
-static volatile uint32		mainYields;
 
 static void ThreadEntry( void * arg ) {
 	threadStart_t * start = (threadStart_t *)arg;
@@ -146,7 +111,6 @@ static void ThreadEntry( void * arg ) {
 	for ( int i = 0; i < numThreadRecords; i++ ) {
 		if ( threadRecords[i].ran < 0 && idStr::Cmp( threadRecords[i].name, start->name ) == 0 ) {
 			threadRecords[i].ran = svcGetProcessorID();
-			myThreadRecord = &threadRecords[i];
 			break;
 		}
 	}
@@ -165,24 +129,6 @@ void Sys_N3DSThreadReport() {
 		const threadCoreRecord_t & r = threadRecords[i];
 		idLib::Printf( "threads: %-22s asked core %2d, runs on core %2d%s\n", r.name, r.asked, r.ran,
 			r.fallback != 0 ? " (creating it there failed, fell back to the default core)" : "" );
-	}
-}
-
-/*
-========================
-Sys_N3DSBackgroundThreads
-
-In the HOME menu / asleep the engine threads drop to the lowest priority (0x3F), back to
-their own on return: whatever they still do then cannot keep the HOME menu, which shares
-core 0 with them, from running.
-========================
-*/
-void Sys_N3DSBackgroundThreads( bool background ) {
-	for ( int i = 0; i < numThreadRecords; i++ ) {
-		const threadCoreRecord_t & r = threadRecords[i];
-		if ( r.handle != 0 ) {
-			svcSetThreadPriority( r.handle, background ? 0x3F : r.priority );
-		}
 	}
 }
 
@@ -226,10 +172,6 @@ uintptr_t Sys_CreateThread( xthread_t function, void *parms, xthreadPriority pri
 		}
 		// requested core not available (e.g. old 3DS or speedup not enabled): fall back to core 0
 		t = threadCreate( ThreadEntry, start, stackSize, MapPriority( priority ), -2, false );
-	}
-	if ( t != NULL && record != NULL ) {
-		record->handle = threadGetHandle( t );
-		record->priority = MapPriority( priority );
 	}
 	if ( t == NULL ) {
 		idLib::common->FatalError( "Sys_CreateThread: failed to create thread '%s'", start->name );
@@ -297,54 +239,11 @@ void Sys_SetCurrentThreadName( const char * name ) {
 Sys_Yield
 ========================
 */
-// nanoseconds Sys_Yield sleeps (n3ds_yieldNs, set by the main loop). 0: svcSleepThread( 0 ),
-// which only yields to threads of the same or a higher priority. 0140 made it 1 us so that
-// libctru's APT event thread got the core (the game hung after sleep / HOME), but that froze
-// the whole console on a shot on le_hell. The APT thread is now kept running by the thread
-// priorities instead (see MapPriority); this stays a test switch.
-int n3dsYieldNs = 0;
-
-// spin sites calling Sys_Yield (ParallelJobList.cpp, tr_backend_draw.cpp), see
-// Sys_N3DSYieldReport
-volatile uint32 n3dsYieldSite[N3DS_YIELD_SITES];
-
+// only yields to threads of the same or a higher priority. 0140-0145 slept 1 us here
+// instead, chasing the HOME / sleep hang - that froze the whole console on a shot on
+// le_hell, and the hang turned out to be the gsp::Lcd session (3ds_bottom.cpp).
 void Sys_Yield() {
-	threadCoreRecord_t * r = myThreadRecord;
-	if ( r != NULL ) {
-		r->yields++;
-	} else {
-		mainYields++;
-	}
-	svcSleepThread( n3dsYieldNs );
-}
-
-/*
-========================
-Sys_N3DSYieldReport
-
-Who spun on Sys_Yield since the last call - for the watchdog while no frames come (the
-game suspended in the HOME menu: a thread spinning then starves the system).
-========================
-*/
-void Sys_N3DSYieldReport( char * out, int size ) {
-	static uint32 lastMain, lastThread[MAX_THREAD_RECORDS], lastSite[N3DS_YIELD_SITES];
-	static const char * siteNames[N3DS_YIELD_SITES] = { "Wait jobs", "Wait threads", "AddJobList", "job thread stalled", "backend shadows" };
-	int len = idStr::snPrintf( out, size, "main %u", mainYields - lastMain );
-	lastMain = mainYields;
-	for ( int i = 0; i < numThreadRecords && len < size; i++ ) {
-		const uint32 y = threadRecords[i].yields;
-		if ( y != lastThread[i] ) {
-			len += idStr::snPrintf( out + len, size - len, ", %s %u", threadRecords[i].name, y - lastThread[i] );
-		}
-		lastThread[i] = y;
-	}
-	for ( int i = 0; i < N3DS_YIELD_SITES && len < size; i++ ) {
-		const uint32 y = n3dsYieldSite[i];
-		if ( y != lastSite[i] ) {
-			len += idStr::snPrintf( out + len, size - len, " | %s %u", siteNames[i], y - lastSite[i] );
-		}
-		lastSite[i] = y;
-	}
+	svcSleepThread( 0 );
 }
 
 /*
