@@ -60,7 +60,6 @@ extern idCVar n3ds_gyro;
 static PrintConsole	panelConsole;
 static PrintConsole	logConsole;
 static bool			bottomReady = false;
-static bool			lcdReady = false;
 static bool			hidden = false;			// backlight off
 static bool			swallowTouch = false;	// the tap that woke the screen, until released
 static bool			touchWasDown = false;
@@ -94,11 +93,28 @@ static const float		SCALE_MIN = 0.25f, SCALE_MAX = 3.0f, SCALE_STEP = 0.05f;
 
 bool RB_N3DS_BenchRunning();
 
+/*
+	The gsp::Lcd session is opened only for the moment the backlight is switched. Kept open
+	(0136-0151) it froze the console on the HOME button: the HOME menu needs gsp::Lcd too
+	and waited for a session forever, with the game's last frame left on the screen.
+*/
+static void N3DS_Backlight( bool on ) {
+	if ( R_FAILED( gspLcdInit() ) ) {
+		return;
+	}
+	if ( on ) {
+		GSPLCD_PowerOnBacklight( GSPLCD_SCREEN_BOTTOM );
+	} else {
+		GSPLCD_PowerOffBacklight( GSPLCD_SCREEN_BOTTOM );
+	}
+	gspLcdExit();
+}
+
 // back from the HOME menu or sleep the system may have lit the screen: keep it as chosen
 static aptHookCookie	aptCookie;
 static void N3DS_BottomAptHook( APT_HookType hook, void * param ) {
-	if ( ( hook == APTHOOK_ONRESTORE || hook == APTHOOK_ONWAKEUP ) && hidden && lcdReady ) {
-		GSPLCD_PowerOffBacklight( GSPLCD_SCREEN_BOTTOM );
+	if ( ( hook == APTHOOK_ONRESTORE || hook == APTHOOK_ONWAKEUP ) && hidden ) {
+		N3DS_Backlight( false );
 	}
 }
 
@@ -110,20 +126,15 @@ void N3DS_BottomInit() {
 	consoleSelect( &logConsole );
 	printf( "\x1b[2;2H\x1b[37mThe log is written to\x1b[0m" );
 	printf( "\x1b[3;2H\x1b[36m%s\x1b[0m", N3DS_LOG_FILE );
-	lcdReady = R_SUCCEEDED( gspLcdInit() );
 	aptHook( &aptCookie, N3DS_BottomAptHook, NULL );
 	bottomReady = true;
 }
 
 static void N3DS_SetHidden( bool hide ) {
-	if ( hide == hidden || !lcdReady ) {
+	if ( hide == hidden ) {
 		return;
 	}
-	if ( hide ) {
-		GSPLCD_PowerOffBacklight( GSPLCD_SCREEN_BOTTOM );
-	} else {
-		GSPLCD_PowerOnBacklight( GSPLCD_SCREEN_BOTTOM );
-	}
+	N3DS_Backlight( !hide );
 	hidden = hide;
 }
 
@@ -157,10 +168,6 @@ void N3DS_BottomShutdown() {
 	}
 	N3DS_SetHidden( false );
 	aptUnhook( &aptCookie );
-	if ( lcdReady ) {
-		gspLcdExit();
-		lcdReady = false;
-	}
 }
 
 // panel console selected, log lock held
