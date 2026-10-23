@@ -221,7 +221,12 @@ void idProfileMgr::OnLoadSettingsCompleted( idSaveLoadParms * parms ) {
 	bool foundProfile = profileFile != NULL && profileFile->Length() > 0;
 
 	if ( foundProfile ) {
+#if defined( ID_3DS )
+		// the file's own length, not MAX_PROFILE_SIZE (~1 MB): see InitSaveProfile
+		idTempArray< byte > buffer( Max( profileFile->Length(), 16 ) );
+#else
 		idTempArray< byte > buffer( MAX_PROFILE_SIZE );
+#endif
 
 		// Serialize settings from this buffer
 		profileFile->MakeReadOnly();
@@ -295,10 +300,21 @@ bool idSaveGameProcessorSaveProfile::InitSaveProfile( idPlayerProfile * profile_
 	profileFile->SetMaxLength( MAX_PROFILE_SIZE );
 
 	// Create a serialization object and let the game serialize the settings into the buffer
+#if defined( ID_3DS )
+	// New 3DS: the profile is saved whenever an archived setting changes (the bottom screen's
+	// buttons and slider too). A ~1 MB temporary block for a profile of a few KB failed on
+	// le_hell, where no 1 MB block was left after loading ("1000 KB for TEMP" on a touch of
+	// FPS COUNTER). A static buffer, big enough for any profile of this game.
+	static byte n3dsProfileBuffer[128 * 1024];
+	const int serializeSize = sizeof( n3dsProfileBuffer );
+	byte * bufferPtr = n3dsProfileBuffer;
+#else
 	const int serializeSize = MAX_PROFILE_SIZE - 8;	// -8 for checksum (all platforms) and length (on 360)
 	idTempArray< byte > buffer( serializeSize );
+	byte * bufferPtr = buffer.Ptr();
+#endif
 	idBitMsg msg;
-	msg.InitWrite( buffer.Ptr(), serializeSize );
+	msg.InitWrite( bufferPtr, serializeSize );
 	idSerializer ser( msg, true );
 	profile_->Serialize( ser );
 
@@ -306,7 +322,11 @@ bool idSaveGameProcessorSaveProfile::InitSaveProfile( idPlayerProfile * profile_
 	unsigned int checksum = MD5_BlockChecksum( msg.GetReadData(), msg.GetSize() );
 	profileFile->WriteBig( checksum );
 
+#if defined( ID_3DS )
+	idLib::PrintfIf( profile_verbose.GetBool() || Sys_N3DSDebug(), "profile: checksum 0x%08x, length %d of %d bytes\n", checksum, msg.GetSize(), serializeSize );
+#else
 	idLib::PrintfIf( profile_verbose.GetBool(), "checksum: 0x%08x, length: %d\n", checksum, msg.GetSize() );
+#endif
 
 	// Add data to the file and prepare for save
 	profileFile->Write( msg.GetReadData(), msg.GetSize() );
