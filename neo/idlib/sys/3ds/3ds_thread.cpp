@@ -36,7 +36,8 @@ static_assert( offsetof( signalHandle_t, lock ) == offsetof( LightEvent, lock ),
 
 	Thread priorities and cores
 
-	libctru: lower number = higher priority. The main thread runs at 0x30.
+	libctru: lower number = higher priority. The main thread starts at 0x30 and is
+	lowered to N3DS_PRIORITY_MAIN (see MapPriority).
 	Valid application range is 0x18..0x3F.
 
 	Cores on New 3DS (application view):
@@ -52,15 +53,43 @@ static_assert( offsetof( signalHandle_t, lock ) == offsetof( LightEvent, lock ),
 ================================================================================================
 */
 
+#define N3DS_PRIORITY_MAIN		0x32
+
+/*
+	libctru's APT event thread (HOME button, sleep, power) runs on core 0 at 0x31.
+	svcSleepThread( 0 ) - what Sys_Yield does - only yields to threads of equal or
+	higher priority, so a core-0 thread at 0x30 that spins on Sys_Yield (a job
+	thread stalled on a job list the suspended main thread will never finish, the
+	main thread waiting for shadow volumes) starves the APT thread forever and the
+	game never comes back from the HOME menu or sleep mode.
+
+	So every thread that can spin runs below the APT thread: the main thread is
+	lowered to N3DS_PRIORITY_MAIN at startup (Sys_N3DSSetMainPriority) and
+	THREAD_NORMAL maps to the same value, keeping the main thread and the job
+	threads equal so their Sys_Yield still hands the core to each other.
+	THREAD_ABOVE_NORMAL (the texture / sound loaders: they block on I/O and never
+	spin) stays above the main thread.
+*/
 static int MapPriority( xthreadPriority priority ) {
 	switch ( priority ) {
 		case THREAD_LOWEST:			return 0x3F;
-		case THREAD_BELOW_NORMAL:	return 0x31;
-		case THREAD_NORMAL:			return 0x30;
-		case THREAD_ABOVE_NORMAL:	return 0x2F;
+		case THREAD_BELOW_NORMAL:	return N3DS_PRIORITY_MAIN + 1;
+		case THREAD_NORMAL:			return N3DS_PRIORITY_MAIN;
+		case THREAD_ABOVE_NORMAL:	return 0x30;
 		case THREAD_HIGHEST:		return 0x2C;
 	}
-	return 0x30;
+	return N3DS_PRIORITY_MAIN;
+}
+
+/*
+==================
+Sys_N3DSSetMainPriority
+
+Lowers the calling (main) thread below libctru's APT thread, see MapPriority.
+==================
+*/
+void Sys_N3DSSetMainPriority() {
+	svcSetThreadPriority( CUR_THREAD_HANDLE, N3DS_PRIORITY_MAIN );
 }
 
 static int MapCore( core_t core ) {
@@ -241,9 +270,9 @@ Sys_Yield
 */
 // nanoseconds Sys_Yield sleeps (n3ds_yieldNs, set by the main loop). 0: svcSleepThread( 0 ),
 // which only yields to threads of the same or a higher priority. 0140 made it 1 us so that
-// libctru's APT event thread (core 0, 0x31, below the main and job threads) is never kept
-// from running - the game hung after sleep mode - but from 0140 on le_hell froze the whole
-// console on a shot; which of the two 0140 changes does which is being tested.
+// libctru's APT event thread got the core (the game hung after sleep / HOME), but that froze
+// the whole console on a shot on le_hell. The APT thread is now kept running by the thread
+// priorities instead (see MapPriority); this stays a test switch.
 int n3dsYieldNs = 0;
 
 void Sys_Yield() {

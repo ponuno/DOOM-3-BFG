@@ -1150,7 +1150,13 @@ N3DS_Main
 Called from main() in 3ds_exe.cpp (the executable's own translation unit).
 ==================
 */
+void Sys_N3DSSetMainPriority();
+
 int N3DS_Main( int argc, char ** argv ) {
+	// below libctru's APT thread, so a spinning main thread cannot keep HOME / sleep from
+	// being handled (see MapPriority in 3ds_thread.cpp)
+	Sys_N3DSSetMainPriority();
+
 	// New 3DS: 804 MHz + L2 cache
 	osSetSpeedupEnable( true );
 
