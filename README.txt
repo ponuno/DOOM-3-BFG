@@ -1,4 +1,140 @@
-Fanmade port for New3DS
+## Installing on a New Nintendo 3DS
+
+### What you need
+
+- **A New Nintendo 3DS, New 3DS XL or New 2DS XL.** The original 3DS / 2DS will not work: the port
+  needs the New models' 178 MB memory mode and 804 MHz CPU.
+- **Custom firmware** (Luma3DS) with **FBI** to install CIA files.
+- **Your own copy of DOOM 3 BFG Edition for PC** (Steam or GOG). The port ships no game data.
+- **A PC (Windows)** to convert the game data with `n3dstex`.
+- **The DSP firmware dump** for sound (made once with DSP1, see step 3).
+- **Free space on the SD card** for the converted game folder.
+
+### 1. Convert the game data on the PC
+
+The console cannot use the PC textures, sounds and videos as they are. `n3dstex` converts them into
+formats the 3DS hardware reads directly and makes an SD-ready copy of the game folder.
+
+1. Run `n3dstex.exe` (no arguments: it opens a window).
+2. **Game folder:** your DOOM 3 BFG Edition folder, or its `base` folder (the one with
+   `_common.resources` and `maps\`).
+3. Tick **textures**, **sounds**, **videos** and **complete SD folder**.
+4. Press **Start** and wait. Converting everything takes a while.
+
+The result is written to `outputDoom3` next to the game's `base` folder, already laid out like the
+SD card:
+
+    outputDoom3/doom3/base/_n3ds_textures.pak
+    outputDoom3/doom3/base/_n3ds_sounds.pak
+    outputDoom3/doom3/base/video/...
+    outputDoom3/doom3/base/... (the rest of the game files, slimmed down)
+
+Your original game files are only read, never changed.
+
+Command line alternative (same tool):
+
+    n3dstex <game or base folder> -sd
+
+### 2. Copy the game to the SD card
+
+Copy the **contents** of `outputDoom3` to the **root** of the SD card, so you end up with:
+
+    sdmc:/doom3/base/_common.resources
+    sdmc:/doom3/base/_ordered.resources
+    sdmc:/doom3/base/_sound_pc.resources
+    sdmc:/doom3/base/_sound_pc_<language>.resources   (e.g. _sound_pc_en.resources)
+    sdmc:/doom3/base/_n3ds_textures.pak
+    sdmc:/doom3/base/_n3ds_sounds.pak
+    sdmc:/doom3/base/default.cfg
+    sdmc:/doom3/base/strings/...
+    sdmc:/doom3/base/maps/...
+    sdmc:/doom3/base/video/...
+
+### 3. Dump the DSP firmware (for sound)
+
+Run **DSP1** once on the console. It writes `sdmc:/3ds/dspfirm.cdc`. Without that file the game runs
+but is silent.
+
+### 4. Install the game
+
+Copy `doom3ds.cia` to the SD card, open **FBI** → SD → `doom3ds.cia` → **Install CIA**.
+DOOM 3 BFG then appears on the HOME menu (title ID `000400000D3BF000`).
+
+Use the CIA. The `.3dsx` build from the Homebrew Launcher only gets the 124 MB memory mode, and the
+biggest maps do not fit in it.
+
+### 5. Play
+
+Start it from the HOME menu.
+
+#### Controls
+
+| Button | In game | In menus |
+|---|---|---|
+| Circle Pad | move | navigate |
+| C-Stick | look around | |
+| ZR | fire | |
+| ZL | flashlight | |
+| A | jump | select |
+| B | crouch | back |
+| X | reload | |
+| Y / D-pad up | next weapon | |
+| L / D-pad down | previous weapon | |
+| R (hold) | run | |
+| SELECT | PDA | |
+| START | pause menu | |
+| START + SELECT | quit the game | |
+
+During a cutscene, A or ZR fast-forwards it.
+
+The bottom screen is a touch panel:
+
+- **GYRO AIM**: aim by turning the console. Hold the console still for a moment after switching it on
+  while it calibrates.
+- **FPS COUNTER**: frame rate in the top right corner of the top screen.
+- **HIDE SCREEN**: switches the bottom screen off. Tap anywhere to switch it back on.
+- **C-STICK SENSITIVITY**: tap or drag the slider.
+
+Saves go to `sdmc:/doom3/save/`. Autosaves are off; save from the pause menu.
+
+### Optional settings
+
+Create `sdmc:/doom3/cmdline.txt` to add settings to the command line, for example:
+
+    +set n3ds_uiMinTextPx 12 +set n3ds_gyroInvertPitch 1
+
+All settings are listed in `PORTING_3DS.md` (section "Runtime switches").
+
+### Diagnostics (for testers and bug reports)
+
+Everything below is off for normal play and is switched on in `sdmc:/doom3/cmdline.txt`.
+
+| Setting | What it does |
+|---|---|
+| `+set n3ds_debug 1` | Writes performance and memory diagnostics to `sdmc:/doom3/log.txt`: `PERF` lines every 2 seconds (frame rate, CPU and GPU times, draws, textures, sound), `SPIKE` lines for every frame longer than 36 ms with a breakdown of where its time went, `SLOW` lines, memory snapshots at map load and save, and which CPU core each thread runs on. Also shows the **GPU TEST** button on the bottom screen. |
+| `+set n3ds_spikeMs 40` | With `n3ds_debug`: the frame length (ms) from which a `SPIKE` line is written (default 36, `0` = none). |
+| **GPU TEST** button | With `n3ds_debug`: stand still and tap it. For ~20 seconds the same view is drawn in six modes (normal, almost no pixels, no light passes, no textures, one triangle per draw, normal again); the log gets the GPU time of each and a summary of what the GPU time goes to. The picture looks odd meanwhile. |
+| `+set n3ds_c3dFrameRing 8` | With `n3ds_debug`: keeps the last 8 frames (GPU command lists, pictures, draw lists) in memory; a touch on the lower half of the bottom screen writes them to `sdmc:/doom3/ringN.bin` / `ringN.fb`. For rendering bugs that last a frame or two (flicker). |
+| `+set n3ds_c3dFrameDump 3` | With `n3ds_debug`: a touch on the lower half of the bottom screen writes the next 3 frames' GPU command lists to `sdmc:/doom3/frameN.bin`. The game stalls while they are written. |
+| `+set n3ds_gyroDebug 1` | Logs the gyroscope's rates once a second (to check the axes and directions). |
+
+Example `cmdline.txt` for a performance report:
+
+    +set n3ds_debug 1
+
+Without `n3ds_debug` the log still gets the engine's normal messages, and on a fatal error the error
+message with a memory snapshot.
+
+### If something goes wrong
+
+- **No sound:** check that `sdmc:/3ds/dspfirm.cdc` exists (step 3).
+- **Missing or blurry textures, very long loading:** check that `_n3ds_textures.pak` is in
+  `sdmc:/doom3/base/`.
+- **Crash or error:** the game writes `sdmc:/doom3/log.txt`. Attach it to your bug report; for
+  performance problems run once with `+set n3ds_debug 1` in `cmdline.txt` first.
+  A fatal error is also shown on the bottom screen; press START to exit.
+- The largest maps are close to the console's memory limit and can still run out of memory.
+
 
 Doom 3 BFG Edition GPL Source Code
 ==================================
