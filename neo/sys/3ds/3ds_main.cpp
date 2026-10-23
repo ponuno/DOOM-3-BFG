@@ -165,6 +165,14 @@ void __system_allocateHeaps( void ) {
 	New 3DS memory/CPU switches. All default to on; each can be turned off from
 	sdmc:/doom3/cmdline.txt (e.g. "+set n3ds_animQuant 0") to isolate a problem.
 */
+// diagnostics in the log (PERF / SPIKE / SLOW lines, memory snapshots, thread report) and the
+// bottom screen's GPU TEST button; off for players, +set n3ds_debug 1 in cmdline.txt
+idCVar n3ds_debug( "n3ds_debug", "0", CVAR_SYSTEM | CVAR_BOOL | CVAR_NOCHEAT, "New 3DS: write the performance and memory diagnostics to the log (PERF, SPIKE and SLOW lines, MEM snapshots) and show the GPU TEST button" );
+
+bool Sys_N3DSDebug() {
+	return n3ds_debug.GetBool();
+}
+
 idCVar n3ds_animQuant( "n3ds_animQuant", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "store MD5 anim frames as 16-bit (halves anim memory)" );
 idCVar n3ds_noShadows( "n3ds_noShadows", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "drop stencil shadow data at load and disable shadow casting" );
 idCVar n3ds_mapEntitiesOnly( "n3ds_mapEntitiesOnly", "1", CVAR_SYSTEM | CVAR_BOOL | CVAR_INIT, "discard .map brushes/patches while parsing (collision comes from .bcmodel)" );
@@ -368,6 +376,10 @@ void Sys_N3DSMemSample( int & mallocUsedKB, int & mallocArenaKB, int & heapKB, i
 }
 
 void Sys_LogMemory( const char * when ) {
+	// a fatal error always gets its snapshot; the others only with n3ds_debug
+	if ( !Sys_N3DSDebug() && idStr::Cmp( when, "error" ) != 0 ) {
+		return;
+	}
 	const int appFree = (int)osGetMemRegionFree( MEMREGION_APPLICATION );
 	const int appSize = (int)osGetMemRegionSize( MEMREGION_APPLICATION );
 	const int linFree = (int)linearSpaceFree();
@@ -954,7 +966,7 @@ idN3DSSlowScope::idN3DSSlowScope( const char * label_, int limitMs ) :
 
 idN3DSSlowScope::~idN3DSSlowScope() {
 	const uint64 us = Sys_Microseconds() - start;
-	if ( us > (uint64)limitUs ) {
+	if ( us > (uint64)limitUs && Sys_N3DSDebug() ) {
 		Sys_Printf( "SLOW %s: %.1f ms\n", label, us * 0.001f );
 	}
 }

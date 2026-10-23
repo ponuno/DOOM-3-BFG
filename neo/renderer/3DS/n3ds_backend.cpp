@@ -140,7 +140,7 @@ static void N3DS_GPUNotice( const char * text ) {
 }
 
 // n3ds_c3dFrameDump: a touch on the lower half of the bottom screen writes the GPU command lists of the next frames
-idCVar n3ds_c3dFrameDump( "n3ds_c3dFrameDump", "3", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: touching the lower half of the bottom screen writes the GPU command lists of this many following frames to sdmc:/doom3/frameN.bin and their draws to the log (0 = off)" );
+idCVar n3ds_c3dFrameDump( "n3ds_c3dFrameDump", "0", CVAR_RENDERER | CVAR_INTEGER, "citro3d diagnostics: touching the lower half of the bottom screen writes the GPU command lists of this many following frames to sdmc:/doom3/frameN.bin and their draws to the log (0 = off)" );
 static int	c3dDumpLeft = 0;
 static int	c3dDumpIndex = 0;
 static bool	c3dDumpKeysWere = false;
@@ -1989,7 +1989,9 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	c3dRecordSet ^= 1;
 	c3dNumRecords[c3dRecordSet] = 0;
 	{
-		const bool keys = n3ds_c3dFrameDump.GetInteger() > 0 && N3DSGPU_DumpKeysHeld();
+		// frame captures: only with n3ds_debug (a touch on the lower half of the bottom screen
+		// would otherwise write frames whenever the panel is used)
+		const bool keys = Sys_N3DSDebug() && ( n3ds_c3dFrameDump.GetInteger() > 0 || n3ds_c3dFrameRing.GetInteger() > 0 ) && N3DSGPU_DumpKeysHeld();
 		const int ringSize = Min( n3ds_c3dFrameRing.GetInteger(), C3D_RING_MAX );
 		if ( keys && !c3dDumpKeysWere && ringSize > 0 ) {
 			// the frames just shown: written now, the game waits meanwhile
@@ -2128,16 +2130,17 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 	}
 	if ( now - c3dStatStart >= 2000 && c3dFrame3D > 0 ) {
 		const float f = (float)Max( c3dStatFrames, 1 );
+		const bool printStats = Sys_N3DSDebug();	// counted either way, printed with n3ds_debug
 		float waitGpuMs, waitVBlankMs;
 		N3DSGPU_WaitStats( &waitGpuMs, &waitVBlankMs );
-		common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights, light area %.1f screens) %.0f tris per frame, GPU span %.1f ms, cmdbuf peak %.0f%%, bad draws %d | waited for the GPU %.1f ms, for vblank %.1f ms per frame\n",
+		if ( printStats ) common->Printf( "PERF   citro3d: %.0f draws (%.0f textured, %.0f light draws for %.1f lights, light area %.1f screens) %.0f tris per frame, GPU span %.1f ms, cmdbuf peak %.0f%%, bad draws %d | waited for the GPU %.1f ms, for vblank %.1f ms per frame\n",
 			c3dStatDraws / f, c3dStatTextured / f, c3dStatLightDraws / f, c3dStatLights / f, c3dStatScissorPixels / ( f * 96000.0f ),
 			c3dStatTris / f, c3dStatGpuMs / f, c3dStatCmdMax * 100.0f, c3dStatBad, waitGpuMs / f, waitVBlankMs / f );
-		common->Printf( "PERF   citro3d stages: %.0f ambient/GUI stage draws per frame (%.0f video), %.0f skipped (texgen, video without .n3v, program, not loaded)\n",
+		if ( printStats ) common->Printf( "PERF   citro3d stages: %.0f ambient/GUI stage draws per frame (%.0f video), %.0f skipped (texgen, video without .n3v, program, not loaded)\n",
 			c3dStatStages / f, c3dStatVideoStages / f, c3dStatStagesSkipped / f );
 		c3dStatStages = c3dStatStagesSkipped = c3dStatVideoStages = 0;
 		if ( c3dStatHWLit > 0 ) {
-			common->Printf( "PERF   citro3d HW lights: %.0f lit surfaces, %.2f lights each, %.0f slot loads, %.0f lights over the limit dropped, %.0f extra passes for lights beyond 8, %.0f with normal map (%.0f waiting for it), %.0f with specular map per frame\n",
+			if ( printStats ) common->Printf( "PERF   citro3d HW lights: %.0f lit surfaces, %.2f lights each, %.0f slot loads, %.0f lights over the limit dropped, %.0f extra passes for lights beyond 8, %.0f with normal map (%.0f waiting for it), %.0f with specular map per frame\n",
 				c3dStatHWLit / f, c3dStatHWLightsPerSurf / (float)c3dStatHWLit, c3dStatHWSlotLoads / f, c3dStatHWDropped / f, c3dStatHWExtraPasses / f,
 				c3dStatBump / f, c3dStatBumpWaiting / f, c3dStatSpec / f );
 		}
@@ -2145,7 +2148,7 @@ void RB_N3DS_ExecuteBackEndCommands( const emptyCommand_t * cmds ) {
 		c3dStatBump = c3dStatBumpWaiting = c3dStatSpec = 0;
 		idStr texLine;
 		N3DS_TexStatsLine( texLine );
-		common->Printf( "PERF   citro3d: %s\n", texLine.c_str() );
+		if ( printStats ) common->Printf( "PERF   citro3d: %s\n", texLine.c_str() );
 		c3dStatTextured = c3dStatLights = c3dStatLightDraws = c3dStatScissorPixels = 0;
 		c3dStatStart = now;
 		c3dStatFrames = c3dStatDraws = c3dStatTris = c3dStatBad = 0;

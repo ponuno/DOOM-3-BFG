@@ -247,7 +247,7 @@ void idSoundHardware_3DS::Update() {
 		}
 	}
 
-	if ( n3ds_soundStats.GetBool() && now - lastReportMs >= 2000 ) {
+	if ( n3ds_soundStats.GetBool() && Sys_N3DSDebug() && now - lastReportMs >= 2000 ) {
 		int active = 0;
 		int channels = 0;
 		for ( int i = 0; i < voices.Num(); i++ ) {

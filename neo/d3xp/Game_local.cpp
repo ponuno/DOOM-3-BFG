@@ -2574,7 +2574,7 @@ void idGameLocal::RunFrameOnce( idUserCmdMgr & cmdMgr, gameReturn_t & ret ) {
 		{
 			const uint64 end = Sys_Microseconds();
 			const float totalMs = ( end - n3dsFrameStart ) * 0.001f;
-			if ( totalMs >= n3ds_slowFrameMs.GetFloat() ) {
+			if ( totalMs >= n3ds_slowFrameMs.GetFloat() && cvarSystem->GetCVarBool( "n3ds_debug" ) ) {
 				idStr slow;
 				for ( int i = 0; i < N3DS_SLOW_LIST && n3dsThinkEnt[i] != NULL; i++ ) {
 					slow += va( "%s%s %.1f ms", i ? ", " : "", n3dsThinkName[i].c_str(), n3dsThinkUs[i] * 0.001f );

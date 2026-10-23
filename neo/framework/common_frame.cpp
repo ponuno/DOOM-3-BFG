@@ -140,7 +140,7 @@ static void N3DS_SpikeFrame( bool mapSpawned ) {
 	extern float N3DS_SoundLockWaitMs();		// main thread, since the last call
 	const float soundLockMs = N3DS_SoundLockWaitMs();
 	const float limit = n3ds_spikeMs.GetFloat();
-	if ( !mapSpawned || limit <= 0.0f || frameMs <= limit ) {
+	if ( !mapSpawned || limit <= 0.0f || frameMs <= limit || !Sys_N3DSDebug() ) {
 		return;
 	}
 	const int nowMs = Sys_Milliseconds();
@@ -1042,7 +1042,16 @@ void idCommonLocal::Frame() {
 				perfFrontendUs += time_frontend;
 				perfBackendUs += time_backend;
 				const int elapsed = now - perfStart;
-				if ( elapsed >= 2000 && perfFrames > 0 ) {
+				if ( elapsed >= 2000 && perfFrames > 0 && !Sys_N3DSDebug() ) {
+					// counted, not printed (n3ds_debug 0)
+					perfStart = now;
+					perfFrames = 0;
+					perfFrontendUs = perfBackendUs = 0;
+					n3dsPerfTicks = 0;
+					n3dsPerfGameUs = n3dsPerfGameMaxUs = n3dsPerfDrawUs = 0;
+					extern int n3dsRenderStats[8];
+					memset( n3dsRenderStats, 0, sizeof( n3dsRenderStats ) );
+				} else if ( elapsed >= 2000 && perfFrames > 0 ) {
 					static bool threadsReported = false;
 					if ( !threadsReported ) {
 						// once: which core each engine thread got (all threads have started by now)

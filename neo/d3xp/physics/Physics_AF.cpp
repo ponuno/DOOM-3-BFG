@@ -6675,7 +6675,7 @@ bool idPhysics_AF::Evaluate( int timeStepMSec, int endTimeMSec ) {
 				rowsA += auxiliaryConstraints[k]->J1.GetNumRows();
 			}
 			const bool stop = n3ds_afMaxEvalMs.GetInteger() > 0 && totalMs >= n3ds_afMaxEvalMs.GetFloat();
-			if ( N3DS_DBG || stop ) {
+			if ( ( N3DS_DBG || stop ) && cvarSystem->GetCVarBool( "n3ds_debug" ) ) {
 				gameLocal.Printf( "SLOW AF %s: %.1f ms = contacts %.1f + primary %.1f + auxiliary/LCP %.1f + collisions %.1f | %d bodies, %d contacts, %d primary rows, %d auxiliary rows, active %.1f s%s | cm: %d nodes, %d node tests, %d polygon refs, %d brush refs\n",
 					self->name.c_str(), totalMs, ( n3dsT1 - n3dsT0 ) * 0.001f, ( n3dsT2 - n3dsT1 ) * 0.001f,
 					( n3dsT3 - n3dsT2 ) * 0.001f, ( n3dsT4 - n3dsT3 ) * 0.001f,

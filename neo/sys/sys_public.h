@@ -537,6 +537,7 @@ void			Sys_ShowConsole( int visLevel, bool quitOnClose );
 enum { N3DS_STAGE_MAIN, N3DS_STAGE_GAME, N3DS_STAGE_RENDER, N3DS_STAGE_COUNT };
 void			Sys_N3DSStage( int slot, const char * what );
 void			Sys_N3DSFrameDone();
+bool			Sys_N3DSDebug();				// n3ds_debug: diagnostics in the log, GPU TEST button
 void			Sys_N3DSFatalCheck();			// stops this thread if another one shows a fatal error
 int				Sys_N3DSMallocAvailableKB();	// free in malloc + heap not taken yet
 // true in the 178 MB New 3DS memory mode (the CIA): big linear heap, second heap

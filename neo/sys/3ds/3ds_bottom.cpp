@@ -17,7 +17,8 @@ This file is part of the Doom 3 BFG Edition GPL Source Code ("Doom 3 BFG Edition
 	The bottom screen is two libctru text consoles (8x8 cells, 40 x 30, rows and columns
 	counted from 0 here; the escape codes count from 1):
 		row 0		title
-		rows 1-3	GYRO AIM (toggles n3ds_gyro)		GPU TEST (starts n3ds_gpuBench)
+		rows 1-3	GYRO AIM (toggles n3ds_gyro)		GPU TEST (starts n3ds_gpuBench; only with
+					n3ds_debug 1, else GYRO AIM takes the whole row)
 		rows 5-7	FPS COUNTER (toggles n3ds_showFPS)	HIDE SCREEN
 		rows 9-12	C-STICK SENSITIVITY slider (n3ds_cstickScale, tap or drag)
 		row 14		status line (gyro, GPU test)
@@ -82,6 +83,7 @@ struct cellRect_t {
 	}
 };
 static const cellRect_t	gyroButton		= { 2, 1, 20, 4 };
+static const cellRect_t	gyroButtonWide	= { 2, 1, 38, 4 };		// without GPU TEST (n3ds_debug 0)
 static const cellRect_t	benchButton		= { 21, 1, 38, 4 };
 static const cellRect_t	fpsButton		= { 2, 5, 20, 8 };
 static const cellRect_t	hideButton		= { 21, 5, 38, 8 };
@@ -168,8 +170,11 @@ static void N3DS_PanelDraw( int state, float yawDps, float pitchDps, bool bench,
 	// title bar
 	printf( "\x1b[1;1H\x1b[37;44m DOOM 3 BFG  New 3DS                    \x1b[0m" );
 
-	N3DS_DrawButton( gyroButton, state != 0 ? "\x1b[30;42m" : "\x1b[37;41m", state != 0 ? "GYRO AIM: ON" : "GYRO AIM: OFF" );
-	N3DS_DrawButton( benchButton, bench ? "\x1b[30;43m" : "\x1b[37;45m", bench ? "RUNNING" : "GPU TEST" );
+	const bool debug = Sys_N3DSDebug();
+	N3DS_DrawButton( debug ? gyroButton : gyroButtonWide, state != 0 ? "\x1b[30;42m" : "\x1b[37;41m", state != 0 ? "GYRO AIM: ON" : "GYRO AIM: OFF" );
+	if ( debug ) {
+		N3DS_DrawButton( benchButton, bench ? "\x1b[30;43m" : "\x1b[37;45m", bench ? "RUNNING" : "GPU TEST" );
+	}
 	N3DS_DrawButton( fpsButton, fps ? "\x1b[30;42m" : "\x1b[37;41m", fps ? "FPS COUNTER: ON" : "FPS COUNTER: OFF" );
 	N3DS_DrawButton( hideButton, "\x1b[37;46m", "HIDE SCREEN" );
 
@@ -274,10 +279,11 @@ void N3DS_BottomFrame() {
 	}
 
 	if ( pressed ) {
-		if ( gyroButton.Contains( t ) ) {
+		const bool debug = Sys_N3DSDebug();
+		if ( ( debug ? gyroButton : gyroButtonWide ).Contains( t ) ) {
 			n3ds_gyro.SetBool( !n3ds_gyro.GetBool() );
 			common->Printf( "gyro aim %s (touch)\n", n3ds_gyro.GetBool() ? "on" : "off" );
-		} else if ( benchButton.Contains( t ) && !RB_N3DS_BenchRunning() ) {
+		} else if ( debug && benchButton.Contains( t ) && !RB_N3DS_BenchRunning() ) {
 			cvarSystem->SetCVarBool( "n3ds_gpuBench", true );
 			common->Printf( "GPU TEST: asked for (touch)\n" );
 		} else if ( fpsButton.Contains( t ) ) {
