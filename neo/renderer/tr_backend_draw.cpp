@@ -31,6 +31,13 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "tr_local.h"
 
+#ifdef __3DS__
+extern volatile uint32 n3dsYieldSite[];
+#define N3DS_YIELD_SITE( i )	n3dsYieldSite[i]++
+#else
+#define N3DS_YIELD_SITE( i )
+#endif
+
 idCVar r_drawEyeColor( "r_drawEyeColor", "0", CVAR_RENDERER | CVAR_BOOL, "Draw a colored box, red = left eye, blue = right eye, grey = non-stereo" );
 idCVar r_motionBlur( "r_motionBlur", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "1 - 5, log2 of the number of motion blur samples" );
 idCVar r_forceZPassStencilShadows( "r_forceZPassStencilShadows", "0", CVAR_RENDERER | CVAR_BOOL, "force Z-pass rendering for performance testing" );
@@ -1058,6 +1065,7 @@ static void RB_RenderInteractions( const drawSurf_t *surfList, const viewLight_t
 
 			uint64 start = Sys_Microseconds();
 			while ( walk->shadowVolumeState == SHADOWVOLUME_UNFINISHED ) {
+				N3DS_YIELD_SITE( 4 );
 				Sys_Yield();
 			}
 			uint64 end = Sys_Microseconds();
@@ -1385,6 +1393,7 @@ static void RB_StencilShadowPass( const drawSurf_t *drawSurfs, const viewLight_t
 
 			uint64 start = Sys_Microseconds();
 			while ( drawSurf->shadowVolumeState == SHADOWVOLUME_UNFINISHED ) {
+				N3DS_YIELD_SITE( 4 );
 				Sys_Yield();
 			}
 			uint64 end = Sys_Microseconds();

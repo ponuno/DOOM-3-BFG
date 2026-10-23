@@ -1034,7 +1034,10 @@ static void N3DS_WatchdogLog( const char * fmt, ... ) {
 	LightLock_Unlock( &logLock );
 }
 
+void Sys_N3DSYieldReport( char * out, int size );
+
 static void N3DS_WatchdogMain( void * ) {
+	static char yieldText[512];
 	uint32 lastFrames = n3dsFramesDone;
 	int stalledMs = 0;
 	bool reported = false;
@@ -1048,9 +1051,17 @@ static void N3DS_WatchdogMain( void * ) {
 			lastFrames = frames;
 			stalledMs = 0;
 			reported = false;
+			Sys_N3DSYieldReport( yieldText, sizeof( yieldText ) );	// new baseline
 			continue;
 		}
 		stalledMs += 500;
+		// who spins on Sys_Yield while no frame comes (in the HOME menu a spinning thread
+		// starves the system)
+		if ( frames > 0 && ( stalledMs % 2000 ) == 0 && !n3dsLoadingMap ) {
+			Sys_N3DSYieldReport( yieldText, sizeof( yieldText ) );
+			N3DS_WatchdogLog( "WATCHDOG %.0f s, main '%s': Sys_Yield calls in 2 s: %s\n", stalledMs * 0.001f,
+				n3dsStages[N3DS_STAGE_MAIN], yieldText );
+		}
 		// frames only count once a map runs; loading has its own long pauses. The screen
 		// first: writing to the log can block (the SD card, or the log lock held by the
 		// frozen thread), which kept the 0142 watchdog from ever reaching the screen.

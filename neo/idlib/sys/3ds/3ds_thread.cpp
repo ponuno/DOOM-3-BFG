@@ -54,6 +54,7 @@ static_assert( offsetof( signalHandle_t, lock ) == offsetof( LightEvent, lock ),
 */
 
 #define N3DS_PRIORITY_MAIN		0x32
+#define N3DS_YIELD_SITES		5
 
 /*
 	libctru's APT event thread (HOME button, sleep, power) runs on core 0 at 0x31.
@@ -127,10 +128,13 @@ struct threadCoreRecord_t {
 	int		asked;		// core asked for (libctru numbering), -2 = default
 	int		fallback;	// threadCreate on that core failed
 	int		ran;		// core the thread found itself on, -1 until it started
+	volatile uint32	yields;	// Sys_Yield calls (Sys_N3DSYieldReport)
 };
 static const int			MAX_THREAD_RECORDS = 16;
 static threadCoreRecord_t	threadRecords[MAX_THREAD_RECORDS];
 static int					numThreadRecords = 0;
+static __thread threadCoreRecord_t * myThreadRecord;	// NULL: main thread or not ours
+static volatile uint32		mainYields;
 
 static void ThreadEntry( void * arg ) {
 	threadStart_t * start = (threadStart_t *)arg;
@@ -140,6 +144,7 @@ static void ThreadEntry( void * arg ) {
 	for ( int i = 0; i < numThreadRecords; i++ ) {
 		if ( threadRecords[i].ran < 0 && idStr::Cmp( threadRecords[i].name, start->name ) == 0 ) {
 			threadRecords[i].ran = svcGetProcessorID();
+			myThreadRecord = &threadRecords[i];
 			break;
 		}
 	}
@@ -275,8 +280,47 @@ Sys_Yield
 // priorities instead (see MapPriority); this stays a test switch.
 int n3dsYieldNs = 0;
 
+// spin sites calling Sys_Yield (ParallelJobList.cpp, tr_backend_draw.cpp), see
+// Sys_N3DSYieldReport
+volatile uint32 n3dsYieldSite[N3DS_YIELD_SITES];
+
 void Sys_Yield() {
+	threadCoreRecord_t * r = myThreadRecord;
+	if ( r != NULL ) {
+		r->yields++;
+	} else {
+		mainYields++;
+	}
 	svcSleepThread( n3dsYieldNs );
+}
+
+/*
+========================
+Sys_N3DSYieldReport
+
+Who spun on Sys_Yield since the last call - for the watchdog while no frames come (the
+game suspended in the HOME menu: a thread spinning then starves the system).
+========================
+*/
+void Sys_N3DSYieldReport( char * out, int size ) {
+	static uint32 lastMain, lastThread[MAX_THREAD_RECORDS], lastSite[N3DS_YIELD_SITES];
+	static const char * siteNames[N3DS_YIELD_SITES] = { "Wait jobs", "Wait threads", "AddJobList", "job thread stalled", "backend shadows" };
+	int len = idStr::snPrintf( out, size, "main %u", mainYields - lastMain );
+	lastMain = mainYields;
+	for ( int i = 0; i < numThreadRecords && len < size; i++ ) {
+		const uint32 y = threadRecords[i].yields;
+		if ( y != lastThread[i] ) {
+			len += idStr::snPrintf( out + len, size - len, ", %s %u", threadRecords[i].name, y - lastThread[i] );
+		}
+		lastThread[i] = y;
+	}
+	for ( int i = 0; i < N3DS_YIELD_SITES && len < size; i++ ) {
+		const uint32 y = n3dsYieldSite[i];
+		if ( y != lastSite[i] ) {
+			len += idStr::snPrintf( out + len, size - len, " | %s %u", siteNames[i], y - lastSite[i] );
+		}
+		lastSite[i] = y;
+	}
 }
 
 /*
