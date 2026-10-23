@@ -991,6 +991,11 @@ void idCommonLocal::Init( int argc, const char * const * argv, const char *cmdli
 		// init the console so we can take prints
 		console->Init();
 
+#ifdef ID_3DS
+		// Sys_Init sets the core 1 time limit and starts the watchdog there: the command
+		// line's value must be in before (the general StartupVariable below comes too late)
+		StartupVariable( "n3ds_core1Percent" );
+#endif
 		// get architecture info
 		Sys_Init();
 
