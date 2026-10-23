@@ -382,6 +382,8 @@ void idCommonLocal::LoadLoadingGui( const char *mapName, bool & hellMap ) {
 void Sys_LogMemory( const char * when );	// sys/3ds/3ds_main.cpp
 
 void N3DS_TourSample();		// framework/common_frame.cpp
+static int n3dsLastSaveBytes = 0;		// sizes of the last save written (lazy save buffers)
+static int n3dsLastStringsBytes = 0;
 int n3dsMapLoads = 0;			// maps fully loaded so far
 int n3dsLastLoadMsec = 0;
 
@@ -874,6 +876,18 @@ bool idCommonLocal::SaveGame( const char * saveName ) {
 	saveFile.Clear( false );
 	stringsFile.MakeWritable();
 	stringsFile.Clear( false );
+#if defined( ID_3DS )
+	if ( cvarSystem->GetCVarBool( "n3ds_lazySaveBuffer" ) ) {
+		// Clear() put the granularity back to 16 KB: each step of the buffers' growth is a
+		// new block of the whole size. They are sized now, while the heap has big blocks
+		// (the last save's sizes plus a quarter, at least 1.5 MB / 256 KB), grow in big
+		// steps if needed, and are freed once the save is written (OnSaveCompleted).
+		saveFile.SetGranularity( 256 * 1024 );
+		stringsFile.SetGranularity( 64 * 1024 );
+		saveFile.PreAllocate( Max( n3dsLastSaveBytes + n3dsLastSaveBytes / 4, 1536 * 1024 ) );
+		stringsFile.PreAllocate( Max( n3dsLastStringsBytes + n3dsLastStringsBytes / 4, 256 * 1024 ) );
+	}
+#endif
 
 	// Setup the save pipeline
 	pipelineFile = new (TAG_SAVEGAMES) idFile_SaveGamePipelined();
@@ -1064,6 +1078,17 @@ void idCommonLocal::OnSaveCompleted( idSaveLoadParms & parms ) {
 	assert( pipelineFile != NULL );
 	delete pipelineFile;
 	pipelineFile = NULL;
+#if defined( ID_3DS )
+	if ( cvarSystem->GetCVarBool( "n3ds_lazySaveBuffer" ) ) {
+		// the save is written: its buffers go back to the game until the next one
+		n3dsLastSaveBytes = saveFile.Length();
+		n3dsLastStringsBytes = stringsFile.Length();
+		idLib::Printf( "save: written, %d KB of game state, %d KB of strings\n", n3dsLastSaveBytes / 1024, n3dsLastStringsBytes / 1024 );
+		saveFile.Clear( true );
+		stringsFile.Clear( true );
+		Sys_LogMemory( "save done" );
+	}
+#endif
 
 	if ( parms.GetError() == SAVEGAME_E_NONE ) {
 		game->Shell_UpdateSavedGames();
