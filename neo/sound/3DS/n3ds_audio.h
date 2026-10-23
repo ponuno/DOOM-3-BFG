@@ -34,6 +34,7 @@ typedef void ( *n3dsFeedCallback_t )( void * user );
 // 1 on success; on failure N3DSAudio_LastError says why (no DSP firmware, ...)
 // feederCore: 2 (New 3DS extra core) or 1 (system core); falls back to core 0
 int				N3DSAudio_Init( n3dsFeedCallback_t feed, void * user, int feederCore );
+void			N3DSAudio_SetBackground( int background );
 void			N3DSAudio_Shutdown( void );
 const char *	N3DSAudio_LastError( void );
 

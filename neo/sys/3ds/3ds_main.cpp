@@ -1138,6 +1138,21 @@ static void N3DS_AptLogHook( APT_HookType hook, void * ) {
 	static const char * names[] = { "suspend (HOME menu)", "restore", "sleep", "wake-up", "exit" };
 	const int i = (int)hook;
 	Sys_Printf( "APT: %s\n", ( i >= 0 && i < 5 ) ? names[i] : "?" );
+	// the engine threads and the DSP feeder at the lowest priority while suspended / asleep,
+	// so none of them can keep libctru's APT thread (core 0, 0x31) from waking the game up
+	// (Sys_N3DSBackgroundThreads)
+	static bool lowered = false;
+	const bool lower = ( hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP );
+	if ( lower != lowered ) {
+		void Sys_N3DSBackgroundThreads( bool background );
+		Sys_N3DSBackgroundThreads( lower );
+		N3DSAudio_SetBackground( lower );
+		lowered = lower;
+		if ( Sys_N3DSDebug() ) {
+			Sys_Printf( "APT: engine threads %s
+", lower ? "lowered to priority 0x3F" : "back to their priorities" );
+		}
+	}
 	if ( hook == APTHOOK_ONSUSPEND ) {
 		N3DS_STAGE( N3DS_STAGE_MAIN, "HOME: citro3d waits for GPU" );
 	} else if ( hook == APTHOOK_ONSLEEP ) {
